@@ -934,10 +934,6 @@ void STRETRAudioProcessorEditor::updateEngineControls()
     grainSlider.setAlpha (grainActive ? 1.0f : 0.35f);
     grainSlider.setEnabled (grainActive);
 
-    const bool fftActive = (engineVal == 2);     // FFT only
-    windowSlider.setAlpha (fftActive ? 1.0f : 0.35f);
-    windowSlider.setEnabled (fftActive);
-
     repaint();
 }
 
@@ -1058,13 +1054,13 @@ juce::String STRETRAudioProcessorEditor::getEngineTextShort() const
 
 juce::String STRETRAudioProcessorEditor::getWindowText() const
 {
-    const int idx = (int) std::lround (windowSlider.getValue());
-    return juce::String (STRETRAudioProcessor::windowIndexToSize (idx)) + " WINDOW";
+    const int sz = (int) std::lround (windowSlider.getValue());
+    return juce::String (sz) + " WINDOW";
 }
 juce::String STRETRAudioProcessorEditor::getWindowTextShort() const
 {
-    const int idx = (int) std::lround (windowSlider.getValue());
-    return juce::String (STRETRAudioProcessor::windowIndexToSize (idx)) + " WIN";
+    const int sz = (int) std::lround (windowSlider.getValue());
+    return juce::String (sz) + " WIN";
 }
 
 juce::String STRETRAudioProcessorEditor::getStyleText() const
@@ -1198,7 +1194,7 @@ bool STRETRAudioProcessorEditor::refreshLegendTextCache()
     }
     cachedGrainIntOnly   = juce::String ((int) std::lround (grainSlider.getValue())) + "ms";
     cachedEngineIntOnly  = getEngineTextShort();
-    cachedWindowIntOnly  = juce::String (STRETRAudioProcessor::windowIndexToSize ((int) std::lround (windowSlider.getValue())));
+    cachedWindowIntOnly  = juce::String ((int) std::lround (windowSlider.getValue()));
     cachedStyleIntOnly   = getStyleTextShort();
     cachedInputIntOnly   = juce::String ((int) inputSlider.getValue()) + "dB";
     cachedOutputIntOnly  = juce::String ((int) outputSlider.getValue()) + "dB";
@@ -2125,6 +2121,7 @@ void STRETRAudioProcessorEditor::openFilterPrompt()
 void STRETRAudioProcessorEditor::openChaosConfigPrompt (const char* amtParamId, const char* spdParamId,
                                                          const juce::String& /*title*/)
 {
+    using namespace TR;
     lnf.setScheme (activeScheme);
     const auto scheme = activeScheme;
 
@@ -2133,44 +2130,236 @@ void STRETRAudioProcessorEditor::openChaosConfigPrompt (const char* amtParamId, 
 
     auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
     aw->setLookAndFeel (&lnf);
-
     aw->addTextEditor ("amt", juce::String (juce::roundToInt (currentAmt)), juce::String());
-    aw->addTextEditor ("spd", juce::String (currentSpd, 1), juce::String());
+    aw->addTextEditor ("spd", juce::String (currentSpd, 2), juce::String());
+
+    // ── PromptBar: interactive fill bar ──────────────────────────
+    struct PromptBar : public juce::Component
+    {
+        STREScheme colours; float value = 0.5f; float defaultVal = 0.5f;
+        std::function<void (float)> onValueChanged;
+        PromptBar (const STREScheme& s, float initial01, float default01) : colours (s), value (initial01), defaultVal (default01) {}
+        void paint (juce::Graphics& g) override
+        { const auto r = getLocalBounds().toFloat(); g.setColour (colours.outline); g.drawRect (r, 4.0f);
+          const float pad = 7.0f; auto inner = r.reduced (pad); g.setColour (colours.bg); g.fillRect (inner);
+          const float fillW = juce::jlimit (0.0f, inner.getWidth(), inner.getWidth() * value);
+          g.setColour (colours.fg); g.fillRect (inner.withWidth (fillW)); }
+        void mouseDown (const juce::MouseEvent& e) override { updateFromMouse (e); }
+        void mouseDrag (const juce::MouseEvent& e) override { updateFromMouse (e); }
+        void mouseDoubleClick (const juce::MouseEvent&) override { setValue (defaultVal); }
+        void setValue (float v01) { value = juce::jlimit (0.0f, 1.0f, v01); repaint(); if (onValueChanged) onValueChanged (value); }
+    private:
+        void updateFromMouse (const juce::MouseEvent& e)
+        { const float pad = 7.0f; const float innerW = (float) getWidth() - pad * 2.0f; setValue (innerW > 0.0f ? ((float) e.x - pad) / innerW : 0.0f); }
+    };
+
+    struct ResetLabel : public juce::Label
+    { PromptBar* pairedBar = nullptr;
+      void mouseDoubleClick (const juce::MouseEvent&) override { if (pairedBar != nullptr) pairedBar->setValue (pairedBar->defaultVal); } };
+
+    const auto& f = kBoldFont40();
+    ResetLabel* amtSuffix = nullptr; ResetLabel* spdSuffix = nullptr;
+    juce::Label* amtUnitLabel = nullptr; juce::Label* spdUnitLabel = nullptr;
+
+    auto setupField = [&] (const char* editorId, const juce::String& suffixText,
+                           const juce::String& unitText, bool useDecimalFilter,
+                           ResetLabel*& suffixOut, juce::Label*& unitOut)
+    {
+        if (auto* te = aw->getTextEditor (editorId))
+        {
+            te->setFont (f); te->applyFontToAllText (f);
+            if (useDecimalFilter) te->setInputRestrictions (6, "0123456789.");
+            else                  te->setInputFilter (new PctInputFilter(), true);
+            auto r = te->getBounds();
+            r.setHeight ((int) (f.getHeight() * kPromptEditorHeightScale) + kPromptEditorHeightPadPx);
+            te->setBounds (r);
+
+            suffixOut = new ResetLabel();
+            suffixOut->setText (suffixText, juce::dontSendNotification);
+            suffixOut->setJustificationType (juce::Justification::centredLeft);
+            applyLabelTextColour (*suffixOut, scheme.text);
+            suffixOut->setBorderSize (juce::BorderSize<int> (0));
+            suffixOut->setFont (f);
+            aw->addAndMakeVisible (suffixOut);
+
+            unitOut = new juce::Label ("", unitText);
+            unitOut->setJustificationType (juce::Justification::centredLeft);
+            applyLabelTextColour (*unitOut, scheme.text);
+            unitOut->setBorderSize (juce::BorderSize<int> (0));
+            unitOut->setFont (f);
+            aw->addAndMakeVisible (unitOut);
+        }
+    };
+
+    setupField ("amt", "AMT", "%",  false, amtSuffix, amtUnitLabel);
+    setupField ("spd", "SPD", "Hz", true,  spdSuffix, spdUnitLabel);
+
+    // ── Logarithmic speed mapping ────────────────────────────────
+    const float spdLogMin   = std::log (STRETRAudioProcessor::kChaosSpdMin);
+    const float spdLogMax   = std::log (STRETRAudioProcessor::kChaosSpdMax);
+    const float spdLogRange = spdLogMax - spdLogMin;
+
+    auto hzToBar = [spdLogMin, spdLogRange] (float hz) -> float
+    { if (hz <= STRETRAudioProcessor::kChaosSpdMin) return 0.0f;
+      if (hz >= STRETRAudioProcessor::kChaosSpdMax) return 1.0f;
+      return (std::log (hz) - spdLogMin) / spdLogRange; };
+    auto barToHz = [spdLogMin, spdLogRange] (float v01) -> float
+    { return std::exp (spdLogMin + v01 * spdLogRange); };
+
+    auto* amtBar = new PromptBar (scheme, currentAmt * 0.01f, STRETRAudioProcessor::kChaosAmtDefault * 0.01f);
+    auto* spdBar = new PromptBar (scheme, hzToBar (currentSpd), hzToBar (STRETRAudioProcessor::kChaosSpdDefault));
+    aw->addAndMakeVisible (amtBar);
+    aw->addAndMakeVisible (spdBar);
+
+    if (amtSuffix != nullptr) amtSuffix->pairedBar = amtBar;
+    if (spdSuffix != nullptr) spdSuffix->pairedBar = spdBar;
+
+    // ── Bar ↔ text sync ──────────────────────────────────────────
+    auto syncing = std::make_shared<bool> (false);
+    auto* amtApvts = audioProcessor.apvts.getParameter (amtParamId);
+    auto* spdApvts = audioProcessor.apvts.getParameter (spdParamId);
+
+    auto barToTextAmt = [aw, syncing, amtApvts] (float v01)
+    { if (*syncing) return; *syncing = true;
+      if (auto* te = aw->getTextEditor ("amt")) { te->setText (juce::String (juce::roundToInt (v01 * 100.0f)), juce::sendNotification); te->selectAll(); }
+      if (amtApvts != nullptr) amtApvts->setValueNotifyingHost (amtApvts->convertTo0to1 (v01 * 100.0f));
+      *syncing = false; };
+
+    auto barToTextSpd = [aw, syncing, spdApvts, barToHz] (float v01)
+    { if (*syncing) return; *syncing = true;
+      const float hz = juce::jlimit (STRETRAudioProcessor::kChaosSpdMin, STRETRAudioProcessor::kChaosSpdMax, barToHz (v01));
+      if (auto* te = aw->getTextEditor ("spd")) { te->setText (juce::String (hz, 2), juce::sendNotification); te->selectAll(); }
+      if (spdApvts != nullptr) spdApvts->setValueNotifyingHost (spdApvts->convertTo0to1 (hz));
+      *syncing = false; };
+
+    amtBar->onValueChanged = barToTextAmt;
+    spdBar->onValueChanged = barToTextSpd;
+
+    // ── Layout rows ──────────────────────────────────────────────
+    auto layoutRows = [aw, amtSuffix, spdSuffix, amtUnitLabel, spdUnitLabel, amtBar, spdBar] ()
+    {
+        auto* amtTe = aw->getTextEditor ("amt");
+        auto* spdTe = aw->getTextEditor ("spd");
+        if (amtTe == nullptr || spdTe == nullptr) return;
+        const int buttonsTop = getAlertButtonsTop (*aw);
+        const int rowH = amtTe->getHeight();
+        const int barH = juce::jmax (10, rowH / 2);
+        const int barGap = juce::jmax (2, rowH / 6);
+        const int rowTotal = rowH + barGap + barH;
+        const int gap = juce::jmax (4, rowH / 3);
+        const int totalH = rowTotal * 2 + gap;
+        const int startY = juce::jmax (kPromptEditorMinTopPx, (buttonsTop - totalH) / 2);
+        const int contentPad = kPromptInlineContentPadPx;
+        const int contentW = aw->getWidth() - contentPad * 2;
+        const auto& font = amtTe->getFont();
+        const int spaceW = juce::jmax (2, stringWidth (font, " "));
+
+        auto placeRow = [&] (juce::TextEditor* te, juce::Label* suffix, juce::Label* unitLabel, PromptBar* bar, int y)
+        {
+            if (te == nullptr || suffix == nullptr || bar == nullptr) return;
+            const int labelW = stringWidth (suffix->getFont(), suffix->getText()) + 2;
+            const auto txt = te->getText();
+            const int textW = juce::jmax (1, stringWidth (font, txt));
+            const int unitW = (unitLabel != nullptr) ? stringWidth (font, unitLabel->getText()) + 2 : 0;
+            constexpr int kEditorTextPadPx = 12; constexpr int kMinEditorWidthPx = 24;
+            const int editorW = juce::jlimit (kMinEditorWidthPx, 80, textW + kEditorTextPadPx * 2);
+            const int visualW = labelW + spaceW + textW + unitW;
+            const int centerX = contentPad + contentW / 2;
+            int blockLeft = juce::jlimit (contentPad, juce::jmax (contentPad, contentPad + contentW - visualW), centerX - visualW / 2);
+            suffix->setBounds (blockLeft, y, labelW, rowH);
+            int teX = blockLeft + labelW + spaceW - (editorW - textW) / 2;
+            teX = juce::jlimit (contentPad, juce::jmax (contentPad, contentPad + contentW - editorW), teX);
+            te->setBounds (teX, y, editorW, rowH);
+            if (unitLabel != nullptr) { const int textRightX = blockLeft + labelW + spaceW + textW; unitLabel->setBounds (textRightX, y, unitW, rowH); }
+            const int barX = kPromptInnerMargin;
+            const int barW = juce::jmax (60, aw->getWidth() - kPromptInnerMargin * 2);
+            bar->setBounds (barX, y + rowH + barGap, barW, barH);
+        };
+        placeRow (amtTe, amtSuffix, amtUnitLabel, amtBar, startY);
+        placeRow (spdTe, spdSuffix, spdUnitLabel, spdBar, startY + rowTotal + gap);
+    };
+
+    // ── Text → bar sync ──────────────────────────────────────────
+    auto textToBar = [syncing, hzToBar] (juce::TextEditor* te, PromptBar* bar, juce::RangedAudioParameter* param, bool isSpeed)
+    {
+        if (*syncing || te == nullptr || bar == nullptr) return;
+        *syncing = true;
+        const float raw = juce::jlimit (0.0f, 100.0f, te->getText().getFloatValue());
+        if (isSpeed)
+        { const float hz = juce::jlimit (STRETRAudioProcessor::kChaosSpdMin, STRETRAudioProcessor::kChaosSpdMax, raw);
+          bar->value = hzToBar (hz);
+          if (param != nullptr) param->setValueNotifyingHost (param->convertTo0to1 (hz)); }
+        else
+        { bar->value = raw * 0.01f;
+          if (param != nullptr) param->setValueNotifyingHost (param->convertTo0to1 (raw)); }
+        bar->repaint(); *syncing = false;
+    };
+
+    if (auto* amtTe = aw->getTextEditor ("amt"))
+        amtTe->onTextChange = [layoutRows, amtTe, amtBar, textToBar, amtApvts] () mutable { textToBar (amtTe, amtBar, amtApvts, false); layoutRows(); };
+    if (auto* spdTe = aw->getTextEditor ("spd"))
+        spdTe->onTextChange = [layoutRows, spdTe, spdBar, textToBar, spdApvts] () mutable { textToBar (spdTe, spdBar, spdApvts, true); layoutRows(); };
 
     aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
     aw->addButton ("CANCEL", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    aw->setEscapeKeyCancels (true);
     applyPromptShellSize (*aw);
     layoutAlertWindowButtons (*aw);
+    layoutRows();
+
+    const auto& kChaosFont = kBoldFont40();
+    preparePromptTextEditor (*aw, "amt", scheme.bg, scheme.text, scheme.fg, kChaosFont, false);
+    preparePromptTextEditor (*aw, "spd", scheme.bg, scheme.text, scheme.fg, kChaosFont, false);
+    layoutRows();
     styleAlertButtons (*aw, lnf);
 
-    for (const char* id : { "amt", "spd" })
-        if (auto* te = aw->getTextEditor (id))
-            preparePromptTextEditor (*aw, id, scheme.bg, scheme.text, scheme.fg, kBoldFont40(), false);
-
     juce::Component::SafePointer<STRETRAudioProcessorEditor> safeThis (this);
-    setPromptOverlayActive (true);
 
-    const float origAmt = currentAmt, origSpd = currentSpd;
+    if (safeThis != nullptr)
+    {
+        fitAlertWindowToEditor (*aw, safeThis.getComponent(), [layoutRows] (juce::AlertWindow& a)
+        { juce::ignoreUnused (a); layoutAlertWindowButtons (a); layoutRows(); });
+        embedAlertWindowInOverlay (safeThis.getComponent(), aw);
+    }
+    else
+    {
+        aw->centreAroundComponent (this, aw->getWidth(), aw->getHeight());
+        bringPromptWindowToFront (*aw);
+    }
 
-    fitAlertWindowToEditor (*aw, safeThis.getComponent(), [] (juce::AlertWindow& a) { layoutAlertWindowButtons (a); });
-    embedAlertWindowInOverlay (safeThis.getComponent(), aw);
+    {
+        preparePromptTextEditor (*aw, "amt", scheme.bg, scheme.text, scheme.fg, kChaosFont, false);
+        preparePromptTextEditor (*aw, "spd", scheme.bg, scheme.text, scheme.fg, kChaosFont, false);
+        layoutRows();
+        if (amtSuffix != nullptr) { if (auto* te = aw->getTextEditor ("amt")) { amtSuffix->setFont (te->getFont()); if (amtUnitLabel != nullptr) amtUnitLabel->setFont (te->getFont()); } }
+        if (spdSuffix != nullptr) { if (auto* te = aw->getTextEditor ("spd")) { spdSuffix->setFont (te->getFont()); if (spdUnitLabel != nullptr) spdUnitLabel->setFont (te->getFont()); } }
+        layoutRows();
+        juce::Component::SafePointer<juce::AlertWindow> safeAw (aw);
+        juce::MessageManager::callAsync ([safeAw]() { if (safeAw == nullptr) return; bringPromptWindowToFront (*safeAw); safeAw->repaint(); });
+    }
 
-    const juce::String amtId (amtParamId), spdId (spdParamId);
     aw->enterModalState (true,
-        juce::ModalCallbackFunction::create ([safeThis, aw, origAmt, origSpd, amtId, spdId] (int result)
+        juce::ModalCallbackFunction::create (
+            [safeThis, aw, amtBar, spdBar, savedAmt = currentAmt, savedSpd = currentSpd,
+             spdLogMin, spdLogRange, amtParamId, spdParamId] (int result) mutable
         {
             std::unique_ptr<juce::AlertWindow> killer (aw);
-            if (safeThis) safeThis->setPromptOverlayActive (false);
-            if (safeThis == nullptr || result != 1) return;
-
-            auto& p = safeThis->audioProcessor;
-            const auto amtTxt = aw->getTextEditorContents ("amt").trim();
-            const auto spdTxt = aw->getTextEditorContents ("spd").trim();
-            auto setP = [&p] (const juce::String& id, float plain)
-            { if (auto* param = p.apvts.getParameter (id)) param->setValueNotifyingHost (param->convertTo0to1 (plain)); };
-
-            if (amtTxt.isNotEmpty()) setP (amtId, juce::jlimit (0.0f, 100.0f, (float) amtTxt.getDoubleValue()));
-            if (spdTxt.isNotEmpty()) setP (spdId, juce::jlimit (0.01f, 100.0f, (float) spdTxt.getDoubleValue()));
+            if (safeThis != nullptr) safeThis->setPromptOverlayActive (false);
+            if (safeThis == nullptr) return;
+            if (result != 1)
+            {
+                if (auto* p = safeThis->audioProcessor.apvts.getParameter (amtParamId))
+                    p->setValueNotifyingHost (p->convertTo0to1 (savedAmt));
+                if (auto* p = safeThis->audioProcessor.apvts.getParameter (spdParamId))
+                    p->setValueNotifyingHost (p->convertTo0to1 (savedSpd));
+                return;
+            }
+            const float newAmt = juce::jlimit (0.0f, 100.0f, amtBar->value * 100.0f);
+            const float newSpd = juce::jlimit (STRETRAudioProcessor::kChaosSpdMin, STRETRAudioProcessor::kChaosSpdMax,
+                                                std::exp (spdLogMin + juce::jlimit (0.0f, 1.0f, spdBar->value) * spdLogRange));
+            auto tip = juce::String (juce::roundToInt (newAmt)) + "% | " + juce::String (juce::roundToInt (newSpd)) + " Hz";
+            safeThis->chaosFilterDisplay.setTooltip (tip);
+            safeThis->chaosDelayDisplay.setTooltip (tip);
         }), false);
 }
 
@@ -2178,14 +2367,14 @@ void STRETRAudioProcessorEditor::openChaosFilterPrompt()
 {
     openChaosConfigPrompt (STRETRAudioProcessor::kParamChaosAmtFilter,
                            STRETRAudioProcessor::kParamChaosSpdFilter,
-                           "CHAOS FILTER");
+                           "CHS F");
 }
 
 void STRETRAudioProcessorEditor::openChaosDelayPrompt()
 {
     openChaosConfigPrompt (STRETRAudioProcessor::kParamChaosAmt,
                            STRETRAudioProcessor::kParamChaosSpd,
-                           "CHAOS DELAY");
+                           "CHS D");
 }
 
 void STRETRAudioProcessorEditor::openInfoPopup()
@@ -2361,7 +2550,7 @@ void STRETRAudioProcessorEditor::openGraphicsPopup()
     fxToggle->setToggleState (crtEnabled, juce::dontSendNotification);
     aw->addAndMakeVisible (fxToggle);
 
-    auto* fxLabel = new juce::Label ("fxLabel", "CRT EFFECT");
+    auto* fxLabel = new juce::Label ("fxLabel", "GRAPHIC FX");
     fxLabel->setComponentID ("fxLabel");
     fxLabel->setFont (juce::Font (juce::FontOptions (14.0f).withStyle ("Bold")));
     fxLabel->setColour (juce::Label::textColourId, scheme.text);

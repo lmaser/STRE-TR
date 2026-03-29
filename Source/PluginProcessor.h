@@ -17,7 +17,7 @@ public:
 	static constexpr const char* kParamMod       = "mod";
 	static constexpr const char* kParamGrain     = "grain";
 	static constexpr const char* kParamEngine    = "engine";     // 0=STRETCH 1=GRAIN 2=FFT
-	static constexpr const char* kParamWindow    = "window";     // 0..6 → 128..8192
+	static constexpr const char* kParamWindow    = "window";     // 21..8192 continuous
 	static constexpr const char* kParamStyle     = "style";      // 0=MONO 1=STEREO 2=WIDE 3=DUAL
 	static constexpr const char* kParamInput     = "input";
 	static constexpr const char* kParamOutput    = "output";
@@ -75,9 +75,9 @@ public:
 	static constexpr int   kEngineMax     = 2;
 	static constexpr float kEngineDefault = 0.0f;
 
-	static constexpr int   kWindowMin     = 0;
-	static constexpr int   kWindowMax     = 6;
-	static constexpr float kWindowDefault = 3.0f;  // 1024
+	static constexpr int   kWindowMin     = 16;
+	static constexpr int   kWindowMax     = 8192;
+	static constexpr float kWindowDefault = 1024.0f;
 
 	static constexpr int   kStyleMin     = 0;
 	static constexpr int   kStyleMax     = 3;
@@ -122,10 +122,12 @@ public:
 	static constexpr float kChaosSpdMax     = 100.0f;
 	static constexpr float kChaosSpdDefault = 5.0f;
 
-	static int windowIndexToSize (int index)
+	// Round up to nearest power of 2 (for FFT engine)
+	static int nextPowerOf2 (int v)
 	{
-		constexpr int sizes[] = { 128, 256, 512, 1024, 2048, 4096, 8192 };
-		return sizes[juce::jlimit (0, 6, index)];
+		int p = 1;
+		while (p < v) p <<= 1;
+		return p;
 	}
 
 	// ── AudioProcessor overrides ──────────────────────────────────
@@ -198,10 +200,11 @@ private:
 	double currentSampleRate = 44100.0;
 
 	// ── Circular input buffer (shared by both engines) ─────────────
-	static constexpr int kInputBufMaxLen = 262144;  // ~5.9s @ 44100
+	static constexpr int kInputBufMaxLen = 262144;  // 2^18, ~5.9s @ 44100
 	std::vector<float> inputBuf_[2];    // L, R
 	int inputBufWritePos_ = 0;
 	int inputBufLen_ = 0;
+	int inputBufMask_ = 0;  // power-of-2 bitmask for fast wrapping
 
 	bool  triggerWasOn_ = false;  // tracks previous trigger state for edge detection
 
@@ -269,28 +272,39 @@ private:
 	void  performStftCycle (int fftSize, int analysisHop, int synthesisHop,
 	                        float pitchRate, bool reverseOn);
 
+	// ── Precomputed 1/sqrt(n) for granular normalization ───────────
+	float invSqrtLut_[kMaxGrains + 1] = {};
+
 	// ── Dry delay buffer for PDC Align ─────────────────────────────
 	float dryDelayBuf_[2][kMaxFftSize] = {};
 	int   dryDelayWritePos_ = 0;
 	int   dryDelayLen_       = 0;
 
+	static constexpr int kHannLutSize = 2048;
+	float hannLut_[kHannLutSize + 1] = {};
+
 	inline float hannWindow (float phase) const noexcept
 	{
-		return 0.5f * (1.0f - std::cos (juce::MathConstants<float>::twoPi * phase));
+		const float idx = phase * (float) kHannLutSize;
+		const int i0 = juce::jlimit (0, kHannLutSize - 1, (int) idx);
+		const float frac = idx - (float) i0;
+		return hannLut_[i0] + frac * (hannLut_[i0 + 1] - hannLut_[i0]);
 	}
 
 	inline float readInputBuf (int ch, double pos) const noexcept
 	{
-		const int len = inputBufLen_;
-		const int i0 = ((int) pos % len + len) % len;
-		const int i1 = (i0 + 1) % len;
+		const int i0 = (int) pos & inputBufMask_;
+		const int i1 = (i0 + 1) & inputBufMask_;
 		const float frac = (float) (pos - std::floor (pos));
-		return inputBuf_[ch][i0] + frac * (inputBuf_[ch][i1] - inputBuf_[ch][i0]);
+		return inputBuf_[ch][(size_t) i0] + frac * (inputBuf_[ch][(size_t) i1] - inputBuf_[ch][(size_t) i0]);
 	}
 
 	float smoothedInputGain  = 1.0f;
 	float smoothedOutputGain = 1.0f;
 	float smoothedMix        = 0.5f;
+	float smoothedWindow_    = (float) kWindowDefault;  // smoothed window size in samples
+	float smoothedSpeed_     = 1.0f;   // smoothed stretch speed (0=freeze, 1=normal)
+	float smoothedPitchRate_ = 1.0f;   // smoothed pitch ratio
 
 	struct WetFilterChannelState
 	{

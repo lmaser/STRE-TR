@@ -188,9 +188,30 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	smoothedInputGain  = 1.0f;
 	smoothedOutputGain = 1.0f;
 	smoothedMix        = 0.5f;
+	smoothedWindow_    = loadAtomicOrDefault (windowParam, kWindowDefault);
+	smoothedSpeed_     = juce::jmax (0.0f, 1.0f - loadAtomicOrDefault (amountParam, kAmountDefault) / 100.0f);
+	smoothedPitchRate_ = std::exp2 ((loadAtomicOrDefault (modParam, kModDefault) - 0.5f) * 4.0f);
 
-	// ── Initialize input buffer ──
-	inputBufLen_ = juce::jmin (kInputBufMaxLen, (int) (sampleRate * 5.5));
+	// ── Initialize Hann LUT ──
+	for (int i = 0; i <= kHannLutSize; ++i)
+		hannLut_[i] = 0.5f * (1.0f - std::cos (juce::MathConstants<float>::twoPi
+		              * (float) i / (float) kHannLutSize));
+
+	// ── Initialize inverse sqrt LUT for granular normalization ──
+	invSqrtLut_[0] = 1.0f;
+	for (int i = 1; i <= kMaxGrains; ++i)
+		invSqrtLut_[i] = 1.0f / std::sqrt ((float) i);
+
+	// ── Initialize input buffer (power-of-2 for bitmask wrapping) ──
+	{
+		const int desired = juce::jmin (kInputBufMaxLen, (int) (sampleRate * 5.5));
+		// Round up to next power of 2 (kInputBufMaxLen is already 2^18)
+		int po2 = 1;
+		while (po2 < desired) po2 <<= 1;
+		if (po2 > kInputBufMaxLen) po2 = kInputBufMaxLen;
+		inputBufLen_ = po2;
+		inputBufMask_ = po2 - 1;
+	}
 	for (int ch = 0; ch < 2; ++ch)
 	{
 		inputBuf_[ch].resize ((size_t) inputBufLen_, 0.0f);
@@ -242,6 +263,10 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	chaosFilterEnabled_ = false;
 	chaosDelayEnabled_  = false;
 	chaosAmtD_ = 0.0f; chaosAmtF_ = 0.0f;
+	chaosParamSmoothCoeff_ = std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.02f));
+	chaosDSmoothCoeff_ = std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.005f));
+	chaosGSmoothCoeff_ = chaosDSmoothCoeff_;
+	chaosFSmoothCoeff_ = std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.01f));
 	chaosShPeriodD_ = 8820.0f; smoothedChaosShPeriodD_ = 8820.0f;
 	chaosShPeriodF_ = 8820.0f; smoothedChaosShPeriodF_ = 8820.0f;
 	chaosDelayMaxSamples_ = 0.0f; smoothedChaosDelayMaxSamples_ = 0.0f;
@@ -399,27 +424,34 @@ int STRETRAudioProcessor::wsolaBestOverlapOffset (int nominalPos, int overlapLen
 {
 	if (overlapLen <= 0 || inputBufLen_ <= 0) return 0;
 
-	const int seekWindow = juce::jmin (overlapLen, inputBufLen_ / 4);
+	const int len = inputBufLen_;
+	// Limit seek range to half the overlap — sufficient for good matches,
+	// avoids O(overlapLen²) blowup with large windows.
+	const int seekWindow = juce::jmin (overlapLen / 2, len / 4);
+	// Coarser inner step for large windows (8192→step 8 vs 4)
+	const int step = (overlapLen >= 2048) ? 8 : 4;
 	float bestCorr = -1e30f;
 	int bestOffset = 0;
+
+	// Pre-wrap nominalPos once
+	const int nomWrapped = ((nominalPos % len) + len) % len;
 
 	for (int off = -seekWindow; off <= seekWindow; ++off)
 	{
 		float corr = 0.0f;
-		const int testPos = nominalPos + off;
-		for (int j = 0; j < overlapLen; j += 4)
+		// Compute start indices once per offset — avoid modulo in inner loop
+		int idxA = ((nomWrapped + off) % len + len) % len;
+		int idxB = nomWrapped;
+
+		for (int j = 0; j < overlapLen; j += step)
 		{
-			const int idxA = ((testPos + j) % inputBufLen_ + inputBufLen_) % inputBufLen_;
-			const int idxB = ((nominalPos + j) % inputBufLen_ + inputBufLen_) % inputBufLen_;
-			const float sL = inputBuf_[0][idxA];
-			const float rL = inputBuf_[0][idxB];
-			corr += sL * rL;
+			corr += inputBuf_[0][(size_t) idxA] * inputBuf_[0][(size_t) idxB];
 			if (ch0Weight < 2)
-			{
-				const float sR = inputBuf_[1][idxA];
-				const float rR = inputBuf_[1][idxB];
-				corr += sR * rR;
-			}
+				corr += inputBuf_[1][(size_t) idxA] * inputBuf_[1][(size_t) idxB];
+
+			// Advance with conditional wrap — much cheaper than modulo
+			idxA += step; if (idxA >= len) idxA -= len;
+			idxB += step; if (idxB >= len) idxB -= len;
 		}
 		if (corr > bestCorr) { bestCorr = corr; bestOffset = off; }
 	}
@@ -443,8 +475,8 @@ void STRETRAudioProcessor::ensureFft (int fftSize)
 
 		std::memset (&stft_, 0, sizeof (stft_));
 		stft_.activeFftSize = fftSize;
-		const int behind = (inputBufWritePos_ - fftSize + inputBufLen_) % inputBufLen_;
-		stft_.analysisReadPos = (double) ((behind + inputBufLen_) % inputBufLen_);
+		const int behind = (inputBufWritePos_ - fftSize + inputBufLen_) & inputBufMask_;
+		stft_.analysisReadPos = (double) behind;
 	}
 }
 
@@ -467,8 +499,7 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 		{
 			for (int j = 0; j < fftSize; ++j)
 			{
-				int idx = ((int) stft_.analysisReadPos + j) % inputBufLen_;
-				if (idx < 0) idx += inputBufLen_;
+				const int idx = ((int) stft_.analysisReadPos + j) & inputBufMask_;
 				fftWork_[j] = inputBuf_[ch][(size_t) idx] * fftWindow_[j];
 			}
 			for (int j = fftSize; j < fftSize * 2; ++j)
@@ -552,7 +583,7 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 
 		for (int j = 0; j < fftSize; ++j)
 		{
-			const int outIdx = (stft_.outputReadPos + j) % outBufLen;
+			const int outIdx = (stft_.outputReadPos + j) & (outBufLen - 1);
 			stft_.outputAccum[ch][outIdx] += fftWork_[j] * fftWindow_[j] * olaScale;
 		}
 	}
@@ -616,40 +647,34 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const int   engineVal  = loadIntParamOrDefault (engineParam, 0);
 	const float amountVal  = loadAtomicOrDefault (amountParam, kAmountDefault);   // 0..100
 	const float modVal     = loadAtomicOrDefault (modParam, kModDefault);         // 0..1
-	const int   windowVal  = loadIntParamOrDefault (windowParam, 3);
+	const int   windowVal  = loadIntParamOrDefault (windowParam, (int) kWindowDefault);
 	const int   styleVal   = loadIntParamOrDefault (styleParam, 1);
 	const float grainMs    = loadAtomicOrDefault (grainParam, kGrainDefault);     // 1..500 ms
 	const bool  reverseOn  = loadBoolParamOrDefault (reverseParam, false);
 	const bool  triggerOn  = loadBoolParamOrDefault (triggerParam, false);
 
-	// Amount → stretch ratio: 0%=1.0x, 50%=2.0x, 100%=4.0x
-	const float stretchRatio = std::exp2 (amountVal * 0.02f);
+	// Amount → speed: 0%=1.0 (no stretch), 100%=0.0 (freeze)
+	// Unified mapping across all three engines — true freeze at 100%.
+	const float targetSpeed = juce::jmax (0.0f, 1.0f - amountVal / 100.0f);
 
 	// Mod → pitch rate: center (0.5)=1.0x, 0=0.0625x, 1=16x
-	const float pitchRate = std::exp2 ((modVal - 0.5f) * 4.0f);
+	const float targetPitchRate = std::exp2 ((modVal - 0.5f) * 4.0f);
 
-	// Window → WSOLA segment size
-	const int windowSamples = windowIndexToSize (windowVal);
+	// Window → continuous size (21..8192), smoothed
+	const float targetWindow = (float) juce::jlimit (kWindowMin, kWindowMax, windowVal);
+	const int windowSamples = (int) smoothedWindow_;
 
 	// Grain size in samples
 	const int grainSamples = juce::jmax (4, (int) (grainMs * 0.001f * (float) currentSampleRate));
 
-	// WSOLA analysis hop: how far to jump in input between segments
-	// synthesisHop = segLen - overlapLen (output advance per segment)
-	// analysisHop = synthesisHop * pitchRate / stretchRatio
-	// When pitchRate=1 and stretchRatio=2 → analysisHop = half of synthesisHop → time stretch 2x, no pitch change
-	// When pitchRate=2 and stretchRatio=1 → analysisHop = double → pitch up 1 oct, same duration
-
 	// Granular read rate: how fast the grain spawn position advances
-	// For grain engine: read rate = 1 / stretchRatio (stretch = slow read)
-	// Pitch is handled separately within each grain via pitchRate
-	const double grainReadRate = 1.0 / (double) stretchRatio;
+	// Granular read rate computed per-sample from smoothedSpeed_ below
 
 	// ── Trigger edge detection: reset engines on trigger press ──
 	if (triggerOn && ! triggerWasOn_)
 	{
 		// Trigger just pressed — capture current write position as starting read point
-		const double capturePos = (double) ((inputBufWritePos_ - 1 + inputBufLen_) % inputBufLen_);
+		const double capturePos = (double) ((inputBufWritePos_ - 1 + inputBufLen_) & inputBufMask_);
 		wsola_ = {};
 		wsola_.readPos = capturePos;
 		wsola_.segInputStart = capturePos;
@@ -665,13 +690,11 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	triggerWasOn_ = triggerOn;
 
 	// ── FFT engine setup (auto-active, no trigger needed) ──
-	int fftAnalysisHop = 0;
 	if (engineVal == 2 && inputBufLen_ > 0)
 	{
-		ensureFft (windowSamples);
-		const int fftSynthHop = stft_.activeFftSize / 4;
-		const float fftSpeed  = juce::jmax (0.0f, 1.0f - amountVal / 100.0f);
-		fftAnalysisHop = (int) ((float) fftSynthHop * fftSpeed);
+		// FFT requires power-of-2 sizes — snap continuous window value
+		const int fftSize = juce::jlimit (64, kMaxFftSize, nextPowerOf2 (windowSamples));
+		ensureFft (fftSize);
 	}
 
 	// ── PDC and Align ──
@@ -700,11 +723,6 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		chaosGainMaxDb_       = chaosAmtD_ * 0.06f;
 	}
 
-	chaosParamSmoothCoeff_ = std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.02f));
-	chaosDSmoothCoeff_ = std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.005f));
-	chaosGSmoothCoeff_ = chaosDSmoothCoeff_;
-	chaosFSmoothCoeff_ = std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.01f));
-
 	// ── Per-sample processing ──
 	for (int i = 0; i < numSamples; ++i)
 	{
@@ -712,6 +730,12 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		smoothedInputGain  += (targetInputGain  - smoothedInputGain)  * kGainSmoothStep;
 		smoothedOutputGain += (targetOutputGain - smoothedOutputGain) * kGainSmoothStep;
 		smoothedMix        += (mixValue         - smoothedMix)        * kGainSmoothStep;
+		smoothedWindow_    += (targetWindow     - smoothedWindow_)    * kGainSmoothStep;
+		smoothedSpeed_     += (targetSpeed      - smoothedSpeed_)     * kGainSmoothStep;
+		smoothedPitchRate_ += (targetPitchRate  - smoothedPitchRate_) * kGainSmoothStep;
+
+		const float speed     = smoothedSpeed_;
+		const float pitchRate = smoothedPitchRate_;
 
 		float inL = channelL[i] * smoothedInputGain;
 		float inR = (channelR != nullptr) ? channelR[i] * smoothedInputGain : inL;
@@ -722,10 +746,10 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		{
 			dryDelayBuf_[0][dryDelayWritePos_] = channelL[i];
 			dryDelayBuf_[1][dryDelayWritePos_] = (channelR != nullptr) ? channelR[i] : channelL[i];
-			const int rdp = (dryDelayWritePos_ - dryDelayLen_ + kMaxFftSize) % kMaxFftSize;
+			const int rdp = (dryDelayWritePos_ - dryDelayLen_ + kMaxFftSize) & (kMaxFftSize - 1);
 			dryOrigL = dryDelayBuf_[0][rdp];
 			dryOrigR = dryDelayBuf_[1][rdp];
-			dryDelayWritePos_ = (dryDelayWritePos_ + 1) % kMaxFftSize;
+			dryDelayWritePos_ = (dryDelayWritePos_ + 1) & (kMaxFftSize - 1);
 		}
 		else
 		{
@@ -746,7 +770,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		{
 			inputBuf_[0][inputBufWritePos_] = inL;
 			inputBuf_[1][inputBufWritePos_] = inR;
-			inputBufWritePos_ = (inputBufWritePos_ + 1) % inputBufLen_;
+			inputBufWritePos_ = (inputBufWritePos_ + 1) & inputBufMask_;
 		}
 
 		float wetL = 0.0f;
@@ -763,13 +787,15 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			wetR = stft_.outputAccum[1][stft_.outputReadPos];
 			stft_.outputAccum[0][stft_.outputReadPos] = 0.0f;
 			stft_.outputAccum[1][stft_.outputReadPos] = 0.0f;
-			stft_.outputReadPos = (stft_.outputReadPos + 1) % outBufLen;
+			stft_.outputReadPos = (stft_.outputReadPos + 1) & (outBufLen - 1);
 
 			if (++stft_.synthCounter >= stft_.activeFftSize / 4)
 			{
 				stft_.synthCounter = 0;
+				const int fftSynthHop = stft_.activeFftSize / 4;
+				const int fftAnalysisHop = (int) ((float) fftSynthHop * speed);
 				performStftCycle (stft_.activeFftSize, fftAnalysisHop,
-				                  stft_.activeFftSize / 4, pitchRate, reverseOn);
+				                  fftSynthHop, pitchRate, reverseOn);
 			}
 		}
 		else if (! triggerOn)
@@ -785,13 +811,10 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			// Between segments: analysis hop controls time stretch ratio
 			const int segLen = juce::jmax (64, windowSamples);
 			const int overlapLen = juce::jmax (16, segLen / 4);
-			const int synthesisHop = segLen - overlapLen;
-			(void) synthesisHop;  // unused — output per segment is segLen, not synthesisHop
 			// analysisHop: how far to jump in input per segment
-			// = segLen * pitchRate / stretchRatio
-			// Each segment outputs segLen samples; readPos advances segLen*pitchRate in input.
-			// For 1:1 (no stretch, no pitch change) analysisHop must equal segLen.
-			const double analysisHop = (double) segLen * (double) pitchRate / (double) stretchRatio;
+			// = segLen * speed * pitchRate
+			// speed=1 → 1:1, speed=0 → freeze (analysisHop=0, reads same position)
+			const double analysisHop = (double) segLen * (double) speed * (double) pitchRate;
 
 			if (wsola_.segRemaining <= 0)
 			{
@@ -865,7 +888,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			// ── Engine 1: GRANULAR ──
 			// Advance grain spawn read position (slower = more stretch)
 			const float direction = reverseOn ? -1.0f : 1.0f;
-			grainReadPos_ += (float) grainReadRate * direction;
+			grainReadPos_ += speed * direction;
 			if (grainReadPos_ >= (float) inputBufLen_)
 				grainReadPos_ -= (float) inputBufLen_;
 			else if (grainReadPos_ < 0.0f)
@@ -934,7 +957,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			// Normalize by sqrt of active grains to prevent excessive buildup
 			if (activeCount > 1)
 			{
-				const float norm = 1.0f / std::sqrt ((float) activeCount);
+				const float norm = invSqrtLut_[juce::jmin (activeCount, kMaxGrains)];
 				sumL *= norm;
 				sumR *= norm;
 			}
@@ -985,8 +1008,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			                                         chaosDSmoothed_ * smoothedChaosDelayMaxSamples_);
 			const int delayInt = (int) delaySamples;
 			const float delayFrac = delaySamples - (float) delayInt;
-			const int readPos0 = (chaosDelayWritePos_ - delayInt + kChaosDelayBufLen) % kChaosDelayBufLen;
-			const int readPos1 = (readPos0 - 1 + kChaosDelayBufLen) % kChaosDelayBufLen;
+			const int readPos0 = (chaosDelayWritePos_ - delayInt + kChaosDelayBufLen) & (kChaosDelayBufLen - 1);
+			const int readPos1 = (readPos0 - 1 + kChaosDelayBufLen) & (kChaosDelayBufLen - 1);
 			wetL = chaosDelayBuf_[0][readPos0] + delayFrac * (chaosDelayBuf_[0][readPos1] - chaosDelayBuf_[0][readPos0]);
 			wetR = chaosDelayBuf_[1][readPos0] + delayFrac * (chaosDelayBuf_[1][readPos1] - chaosDelayBuf_[1][readPos0]);
 
@@ -995,7 +1018,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			wetL *= chaosGain;
 			wetR *= chaosGain;
 
-			chaosDelayWritePos_ = (chaosDelayWritePos_ + 1) % kChaosDelayBufLen;
+			chaosDelayWritePos_ = (chaosDelayWritePos_ + 1) & (kChaosDelayBufLen - 1);
 		}
 
 		// Mode Out: M/S encode wet output
@@ -1104,7 +1127,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 		juce::NormalisableRange<float> ((float) kEngineMin, (float) kEngineMax, 1.0f, 1.0f), kEngineDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamWindow, "Window",
-		juce::NormalisableRange<float> ((float) kWindowMin, (float) kWindowMax, 1.0f, 1.0f), kWindowDefault));
+		juce::NormalisableRange<float> ((float) kWindowMin, (float) kWindowMax, 1.0f, 0.5f), kWindowDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamStyle, "Style",
 		juce::NormalisableRange<float> ((float) kStyleMin, (float) kStyleMax, 1.0f, 1.0f), kStyleDefault));

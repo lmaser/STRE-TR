@@ -120,10 +120,10 @@ private:
                 }
             }
 
-            // Window (index → size)
+            // Window (continuous 21..8192)
             if (owner != nullptr && this == &owner->windowSlider)
             {
-                return juce::String (STRETRAudioProcessor::windowIndexToSize ((int) std::lround (v)));
+                return juce::String ((int) std::lround (v));
             }
 
             // Style (0=MONO 1=STEREO 2=WIDE 3=DUAL)
