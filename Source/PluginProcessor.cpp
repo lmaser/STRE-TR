@@ -281,6 +281,15 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	lastPan_ = 0.5f;
 	lastPanLeft_  = 0.70710678f;
 	lastPanRight_ = 0.70710678f;
+
+	// Engine crossfade
+	prevEngineVal_ = -1;
+	engineFadePos_ = 0;
+
+	// DC blocker
+	dcBlockR_ = 1.0f - (juce::MathConstants<float>::twoPi * 5.0f / (float) sampleRate);
+	dcBlockPrevIn_[0] = dcBlockPrevIn_[1] = 0.0f;
+	dcBlockPrevOut_[0] = dcBlockPrevOut_[1] = 0.0f;
 }
 
 void STRETRAudioProcessor::releaseResources()
@@ -537,8 +546,9 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 		}
 
 		// ── Synthesis ──
-		std::memset (fftWork_, 0, sizeof (float) * (size_t) (fftSize * 2));
 
+		// Step 1: compute per-bin magnitude and accumulate phase
+		float synthMag[kMaxFftBins];
 		for (int k = 0; k < numBins; ++k)
 		{
 			float mag, freq;
@@ -566,10 +576,48 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 				freq = stft_.lastFreq[ch][k];
 			}
 
+			synthMag[k] = mag;
 			stft_.synthPhase[ch][k] += freq * (float) synthesisHop;
+		}
 
-			fftWork_[k * 2]     = mag * std::cos (stft_.synthPhase[ch][k]);
-			fftWork_[k * 2 + 1] = mag * std::sin (stft_.synthPhase[ch][k]);
+		// Step 2: Phase locking — lock non-peak bin phases to nearest peak
+		{
+			bool isPeak[kMaxFftBins];
+			isPeak[0] = (numBins > 1) ? (synthMag[0] >= synthMag[1]) : true;
+			for (int k = 1; k < numBins - 1; ++k)
+				isPeak[k] = (synthMag[k] >= synthMag[k - 1] && synthMag[k] >= synthMag[k + 1]);
+			if (numBins > 1)
+				isPeak[numBins - 1] = (synthMag[numBins - 1] >= synthMag[numBins - 2]);
+
+			int nearestPk[kMaxFftBins];
+			int lp = 0;
+			for (int k = 0; k < numBins; ++k) { if (isPeak[k]) lp = k; nearestPk[k] = lp; }
+			lp = numBins - 1;
+			for (int k = numBins - 1; k >= 0; --k)
+			{
+				if (isPeak[k]) lp = k;
+				if (std::abs (k - lp) < std::abs (k - nearestPk[k]))
+					nearestPk[k] = lp;
+			}
+
+			for (int k = 0; k < numBins; ++k)
+			{
+				if (! isPeak[k])
+				{
+					const int pk = nearestPk[k];
+					stft_.synthPhase[ch][k] = stft_.synthPhase[ch][pk]
+					    + (stft_.prevPhase[ch][k] - stft_.prevPhase[ch][pk]);
+				}
+			}
+		}
+
+		// Step 3: write complex output
+		std::memset (fftWork_, 0, sizeof (float) * (size_t) (fftSize * 2));
+
+		for (int k = 0; k < numBins; ++k)
+		{
+			fftWork_[k * 2]     = synthMag[k] * std::cos (stft_.synthPhase[ch][k]);
+			fftWork_[k * 2 + 1] = synthMag[k] * std::sin (stft_.synthPhase[ch][k]);
 		}
 
 		// Mirror conjugates for negative frequencies
@@ -696,6 +744,11 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const int fftSize = juce::jlimit (64, kMaxFftSize, nextPowerOf2 (windowSamples));
 		ensureFft (fftSize);
 	}
+
+	// ── Engine crossfade: trigger fade-in on engine change ──
+	if (prevEngineVal_ >= 0 && engineVal != prevEngineVal_)
+		engineFadePos_ = kEngineFadeLen;
+	prevEngineVal_ = engineVal;
 
 	// ── PDC and Align ──
 	{
@@ -832,8 +885,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				int nomInt = ((int) wsola_.segInputStart % inputBufLen_ + inputBufLen_) % inputBufLen_;
 				const int bestOff = wsolaBestOverlapOffset (nomInt, overlapLen,
 				                                           (styleVal == 0) ? 2 : 0);
-				wsola_.segInputStart = (double) (nomInt + bestOff);
-				wsola_.readPos = wsola_.segInputStart;
+				// Only readPos gets the offset — segInputStart keeps nominal trajectory
+				wsola_.readPos = (double) (nomInt + bestOff);
 
 				wsola_.segRemaining = segLen;
 				wsola_.overlapRemain = overlapLen;
@@ -924,16 +977,16 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 			// Mix active grains
 			float sumL = 0.0f, sumR = 0.0f;
-			int activeCount = 0;
+			float sumEnv = 0.0f;
 			for (int g = 0; g < kMaxGrains; ++g)
 			{
 				auto& gr = grains_[g];
 				if (! gr.active) continue;
-				activeCount++;
 
 				// Hann window envelope
 				const float phase = (float) gr.elapsed / (float) gr.length;
 				const float env = hannWindow (phase);
+				sumEnv += env;
 
 				// Read position in input buffer
 				const double bufPos = gr.readPos + gr.playPos;
@@ -954,10 +1007,10 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					gr.active = false;
 			}
 
-			// Normalize by sqrt of active grains to prevent excessive buildup
-			if (activeCount > 1)
+			// Normalize by actual envelope sum — unity gain regardless of overlap/correlation
+			if (sumEnv > 1.0f)
 			{
-				const float norm = invSqrtLut_[juce::jmin (activeCount, kMaxGrains)];
+				const float norm = 1.0f / sumEnv;
 				sumL *= norm;
 				sumR *= norm;
 			}
@@ -1027,6 +1080,25 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			const float l = wetL, r = wetR;
 			if (modeOutVal == 1)      { const float mid  = (l + r) * kSqrt2Over2; wetL = wetR = mid; }
 			else /* modeOutVal==2 */   { const float side = (l - r) * kSqrt2Over2; wetL = wetR = side; }
+		}
+
+		// Engine crossfade: smooth fade-in after engine switch
+		if (engineFadePos_ > 0)
+		{
+			const float fadeGain = 1.0f - (float) engineFadePos_ / (float) kEngineFadeLen;
+			wetL *= fadeGain;
+			wetR *= fadeGain;
+			--engineFadePos_;
+		}
+
+		// DC blocker (1-pole HP ~5 Hz)
+		{
+			const float outL = wetL - dcBlockPrevIn_[0] + dcBlockR_ * dcBlockPrevOut_[0];
+			const float outR = wetR - dcBlockPrevIn_[1] + dcBlockR_ * dcBlockPrevOut_[1];
+			dcBlockPrevIn_[0] = wetL;  dcBlockPrevIn_[1] = wetR;
+			dcBlockPrevOut_[0] = outL; dcBlockPrevOut_[1] = outR;
+			wetL = outL;
+			wetR = outR;
 		}
 
 		// Mix dry/wet with Sum Bus routing

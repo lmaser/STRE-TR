@@ -294,9 +294,18 @@ private:
 	inline float readInputBuf (int ch, double pos) const noexcept
 	{
 		const int i0 = (int) pos & inputBufMask_;
+		const int im1 = (i0 - 1) & inputBufMask_;
 		const int i1 = (i0 + 1) & inputBufMask_;
-		const float frac = (float) (pos - std::floor (pos));
-		return inputBuf_[ch][(size_t) i0] + frac * (inputBuf_[ch][(size_t) i1] - inputBuf_[ch][(size_t) i0]);
+		const int i2 = (i0 + 2) & inputBufMask_;
+		const float t = (float) (pos - std::floor (pos));
+		const float xm1 = inputBuf_[ch][(size_t) im1];
+		const float x0  = inputBuf_[ch][(size_t) i0];
+		const float x1  = inputBuf_[ch][(size_t) i1];
+		const float x2  = inputBuf_[ch][(size_t) i2];
+		const float c1 = 0.5f * (x1 - xm1);
+		const float c2 = xm1 - 2.5f * x0 + 2.0f * x1 - 0.5f * x2;
+		const float c3 = 0.5f * (x2 - xm1) + 1.5f * (x0 - x1);
+		return ((c3 * t + c2) * t + c1) * t + x0;
 	}
 
 	float smoothedInputGain  = 1.0f;
@@ -376,6 +385,16 @@ private:
 	float lastPan_      = 0.5f;
 	float lastPanLeft_  = 0.70710678f;
 	float lastPanRight_ = 0.70710678f;
+
+	// Engine crossfade state
+	int   prevEngineVal_   = -1;
+	int   engineFadePos_   = 0;
+	static constexpr int kEngineFadeLen = 1024; // ~23 ms @ 44.1 kHz
+
+	// DC blocker state (1-pole HP ~5 Hz)
+	float dcBlockR_        = 0.9997f;
+	float dcBlockPrevIn_[2]  = {};
+	float dcBlockPrevOut_[2] = {};
 
 	std::atomic<int> uiEditorWidth  { 360 };
 	std::atomic<int> uiEditorHeight { 540 };
