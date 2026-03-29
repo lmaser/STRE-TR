@@ -725,7 +725,6 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
 
     // Disable numeric popup for discrete sliders
     engineSlider.setAllowNumericPopup (false);
-    windowSlider.setAllowNumericPopup (false);
     styleSlider.setAllowNumericPopup (false);
 
     auto bindButton = [&] (std::unique_ptr<ButtonAttachment>& attachment,
@@ -1957,23 +1956,26 @@ void STRETRAudioProcessorEditor::resized()
 
 void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s)
 {
-    if (&s == &engineSlider || &s == &windowSlider || &s == &styleSlider)
+    if (&s == &engineSlider || &s == &styleSlider)
         return;
 
     lnf.setScheme (activeScheme);
     const auto scheme = activeScheme;
 
     juce::String suffix;
-    if (&s == &amountSlider)       suffix = " % AMOUNT";
-    else if (&s == &modSlider)     suffix = " X MOD";
-    else if (&s == &grainSlider)   suffix = " MS GRAIN";
-    else if (&s == &inputSlider)   suffix = " DB INPUT";
-    else if (&s == &outputSlider)  suffix = " DB OUTPUT";
-    else if (&s == &mixSlider)     suffix = " % MIX";
-    else if (&s == &panSlider)     suffix = " % PAN";
-    else if (&s == &tiltSlider)    suffix = " DB TILT";
+    juce::String suffixShort;
+    if (&s == &amountSlider)       { suffix = " % AMOUNT";   suffixShort = " % AMT"; }
+    else if (&s == &modSlider)     { suffix = " X MOD";      suffixShort = " X"; }
+    else if (&s == &grainSlider)   { suffix = " MS GRAIN";   suffixShort = " MS"; }
+    else if (&s == &windowSlider)  { suffix = " WINDOW";     suffixShort = " WIN"; }
+    else if (&s == &inputSlider)   { suffix = " DB INPUT";   suffixShort = " DB IN"; }
+    else if (&s == &outputSlider)  { suffix = " DB OUTPUT";  suffixShort = " DB OUT"; }
+    else if (&s == &mixSlider)     { suffix = " % MIX";      suffixShort = " % MIX"; }
+    else if (&s == &panSlider)     { suffix = " % PAN";      suffixShort = " %"; }
+    else if (&s == &tiltSlider)    { suffix = " DB TILT";    suffixShort = " DB"; }
 
-    const juce::String suffixText = suffix.trimStart();
+    const juce::String suffixText      = suffix.trimStart();
+    const juce::String suffixTextShort = suffixShort.trimStart();
 
     auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
     aw->setLookAndFeel (&lnf);
@@ -1983,10 +1985,16 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         currentDisplay = juce::String (modSliderToMultiplier (s.getValue()), 2);
     else if (&s == &panSlider)
         currentDisplay = juce::String (juce::jlimit (0.0, 100.0, s.getValue() * 100.0), 0);
+    else if (&s == &windowSlider)
+        currentDisplay = juce::String ((int) std::lround (s.getValue()));
     else
         currentDisplay = s.getTextFromValue (s.getValue());
 
     aw->addTextEditor ("val", currentDisplay, juce::String());
+
+    juce::Label* suffixLabel = nullptr;
+    juce::Rectangle<int> editorBaseBounds;
+    std::function<void()> layoutValueAndSuffix;
 
     if (auto* te = aw->getTextEditor ("val"))
     {
@@ -1996,8 +2004,101 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         auto r = te->getBounds();
         r.setHeight ((int) (f.getHeight() * kPromptEditorHeightScale) + kPromptEditorHeightPadPx);
         r.setY (juce::jmax (kPromptEditorMinTopPx, r.getY() - kPromptEditorRaiseYPx));
-        te->setBounds (r);
+        editorBaseBounds = r;
+
+        suffixLabel = new juce::Label ("suffix", suffixText);
+        suffixLabel->setComponentID (kPromptSuffixLabelId);
+        suffixLabel->setJustificationType (juce::Justification::centredLeft);
+        applyLabelTextColour (*suffixLabel, scheme.text);
+        suffixLabel->setBorderSize (juce::BorderSize<int> (0));
+        suffixLabel->setFont (f);
+        aw->addAndMakeVisible (suffixLabel);
+
+        juce::String worstCaseText;
+        if (&s == &amountSlider)       worstCaseText = "100.0";
+        else if (&s == &modSlider)     worstCaseText = "16.00";
+        else if (&s == &grainSlider)   worstCaseText = "1000.0";
+        else if (&s == &windowSlider)  worstCaseText = "8192";
+        else if (&s == &inputSlider)   worstCaseText = "-100.0";
+        else if (&s == &outputSlider)  worstCaseText = "-100.0";
+        else if (&s == &mixSlider)     worstCaseText = "100.0";
+        else if (&s == &panSlider)     worstCaseText = "100";
+        else if (&s == &tiltSlider)    worstCaseText = "-100.0";
+        else                           worstCaseText = "999.99";
+
+        const int maxInputTextW = juce::jmax (1, stringWidth (f, worstCaseText));
+
+        layoutValueAndSuffix = [aw, te, suffixLabel, editorBaseBounds, suffixText, suffixTextShort, maxInputTextW]()
+        {
+            const int contentPad = kPromptInlineContentPadPx;
+            const int contentLeft = contentPad;
+            const int contentRight = (aw != nullptr ? aw->getWidth() - contentPad : editorBaseBounds.getRight());
+            const int availableW = contentRight - contentLeft;
+            const int contentCenter = (contentLeft + contentRight) / 2;
+
+            const int fullLabelW = stringWidth (suffixLabel->getFont(), suffixText) + 2;
+            const bool stickPercentFull = suffixText.containsChar ('%');
+            const int spaceWFull = stickPercentFull ? 0 : juce::jmax (2, stringWidth (suffixLabel->getFont(), " "));
+            const int worstCaseFullW = maxInputTextW + spaceWFull + fullLabelW;
+
+            const bool useShort = (worstCaseFullW > availableW) && suffixTextShort != suffixText;
+            const juce::String& activeSuffix = useShort ? suffixTextShort : suffixText;
+            suffixLabel->setText (activeSuffix, juce::dontSendNotification);
+
+            const auto txt = te->getText();
+            const int textW = juce::jmax (1, stringWidth (te->getFont(), txt));
+            int labelW = stringWidth (suffixLabel->getFont(), activeSuffix) + 2;
+            auto er = te->getBounds();
+
+            const bool stickPercent = activeSuffix.containsChar ('%');
+            const int spaceW = stickPercent ? 0 : juce::jmax (2, stringWidth (te->getFont(), " "));
+            const int minGapPx = juce::jmax (1, spaceW);
+
+            constexpr int kEditorTextPadPx = 12;
+            constexpr int kMinEditorWidthPx = 24;
+            const int editorW = juce::jlimit (kMinEditorWidthPx,
+                                              editorBaseBounds.getWidth(),
+                                              textW + (kEditorTextPadPx * 2));
+            er.setWidth (editorW);
+
+            const int combinedW = textW + minGapPx + labelW;
+            int blockLeft = contentCenter - (combinedW / 2);
+            const int minBlockLeft = contentLeft;
+            const int maxBlockLeft = juce::jmax (minBlockLeft, contentRight - combinedW);
+            blockLeft = juce::jlimit (minBlockLeft, maxBlockLeft, blockLeft);
+
+            int teX = blockLeft - ((editorW - textW) / 2);
+            const int minTeX = contentLeft;
+            const int maxTeX = juce::jmax (minTeX, contentRight - editorW);
+            teX = juce::jlimit (minTeX, maxTeX, teX);
+            er.setX (teX);
+            te->setBounds (er);
+
+            const int textLeftActual = er.getX() + (er.getWidth() - textW) / 2;
+            int labelX = textLeftActual + textW + minGapPx;
+            const int minLabelX = contentLeft;
+            const int maxLabelX = juce::jmax (minLabelX, contentRight - labelW);
+            labelX = juce::jlimit (minLabelX, maxLabelX, labelX);
+
+            const int labelY = er.getY();
+            const int labelH = juce::jmax (1, er.getHeight());
+            suffixLabel->setBounds (labelX, labelY, labelW, labelH);
+        };
+
+        te->setBounds (editorBaseBounds);
+        int labelW0 = stringWidth (suffixLabel->getFont(), suffixText) + 2;
+        suffixLabel->setBounds (r.getRight() + 2, r.getY() + 1, labelW0, juce::jmax (1, r.getHeight() - 2));
+
+        if (layoutValueAndSuffix)
+            layoutValueAndSuffix();
+
         te->setInputFilter (new juce::TextEditor::LengthAndCharacterRestriction (10, "0123456789.-+"), true);
+
+        te->onTextChange = [te, layoutValueAndSuffix]() mutable
+        {
+            if (layoutValueAndSuffix)
+                layoutValueAndSuffix();
+        };
     }
 
     aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
@@ -2005,16 +2106,49 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     applyPromptShellSize (*aw);
     layoutAlertWindowButtons (*aw);
 
-    if (auto* te = aw->getTextEditor ("val"))
-        preparePromptTextEditor (*aw, "val", scheme.bg, scheme.text, scheme.fg, kBoldFont40(), false);
+    const juce::Font& kPromptFont = kBoldFont40();
+    preparePromptTextEditor (*aw, "val", scheme.bg, scheme.text, scheme.fg, kPromptFont, false);
+
+    if (suffixLabel != nullptr && ! editorBaseBounds.isEmpty())
+    {
+        if (auto* te = aw->getTextEditor ("val"))
+            suffixLabel->setFont (te->getFont());
+        if (layoutValueAndSuffix)
+            layoutValueAndSuffix();
+    }
 
     styleAlertButtons (*aw, lnf);
 
     juce::Component::SafePointer<STRETRAudioProcessorEditor> safeThis (this);
     setPromptOverlayActive (true);
 
-    fitAlertWindowToEditor (*aw, safeThis.getComponent(), [] (juce::AlertWindow& a) { layoutAlertWindowButtons (a); });
+    fitAlertWindowToEditor (*aw, safeThis.getComponent(), [layoutValueAndSuffix, scheme, kPromptFont] (juce::AlertWindow& a)
+    {
+        if (layoutValueAndSuffix)
+            layoutValueAndSuffix();
+        layoutAlertWindowButtons (a);
+        preparePromptTextEditor (a, "val", scheme.bg, scheme.text, scheme.fg, kPromptFont, false);
+    });
     embedAlertWindowInOverlay (safeThis.getComponent(), aw);
+
+    {
+        preparePromptTextEditor (*aw, "val", scheme.bg, scheme.text, scheme.fg, kPromptFont, false);
+        if (auto* suffixLbl = dynamic_cast<juce::Label*> (aw->findChildWithID (kPromptSuffixLabelId)))
+        {
+            if (auto* te = aw->getTextEditor ("val"))
+                suffixLbl->setFont (te->getFont());
+        }
+        if (layoutValueAndSuffix)
+            layoutValueAndSuffix();
+
+        juce::Component::SafePointer<juce::AlertWindow> safeAw (aw);
+        juce::MessageManager::callAsync ([safeAw]()
+        {
+            if (safeAw == nullptr) return;
+            bringPromptWindowToFront (*safeAw);
+            safeAw->repaint();
+        });
+    }
 
     juce::Slider* targetSlider = &s;
     aw->enterModalState (true,

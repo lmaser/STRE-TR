@@ -939,21 +939,22 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		else if (engineVal == 1 && inputBufLen_ > 0)
 		{
 			// ── Engine 1: GRANULAR ──
-			// Advance grain spawn read position (slower = more stretch)
-			const float direction = reverseOn ? -1.0f : 1.0f;
-			grainReadPos_ += speed * direction;
-			if (grainReadPos_ >= (float) inputBufLen_)
-				grainReadPos_ -= (float) inputBufLen_;
-			else if (grainReadPos_ < 0.0f)
-				grainReadPos_ += (float) inputBufLen_;
-
-			// Spawn new grains
+			// Spawn new grains — readPos advances per spawn, not per sample
 			if (--grainSpawnCountdown_ <= 0)
 			{
-				// Overlap: spawn interval = grainSamples / density
-				// density derived from window param: more overlap = smoother
-				const int density = juce::jmax (1, windowSamples / 64);
-				grainSpawnCountdown_ = juce::jmax (1, grainSamples / density);
+				// Overlap density from WINDOW (clamped for COLA safety)
+				const int density = juce::jlimit (2, kMaxGrains / 2, windowSamples / 64);
+				const int spawnInterval = juce::jmax (1, grainSamples / density);
+				grainSpawnCountdown_ = spawnInterval;
+
+				// Advance read position by analysis hop (per-spawn, not per-sample)
+				// analysisHop = spawnInterval × speed → stretch ratio = 1/speed
+				const float direction = reverseOn ? -1.0f : 1.0f;
+				grainReadPos_ += (float) spawnInterval * speed * direction;
+				if (grainReadPos_ >= (float) inputBufLen_)
+					grainReadPos_ -= (float) inputBufLen_;
+				else if (grainReadPos_ < 0.0f)
+					grainReadPos_ += (float) inputBufLen_;
 
 				// Find an inactive slot
 				for (int attempt = 0; attempt < kMaxGrains; ++attempt)
@@ -1007,10 +1008,13 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					gr.active = false;
 			}
 
-			// Normalize by actual envelope sum — unity gain regardless of overlap/correlation
+			// Normalize: speed=1 (no stretch) → grains correlated → 1/sumEnv;
+			// speed=0 (max stretch) → grains uncorrelated → 1/sqrt(sumEnv).
 			if (sumEnv > 1.0f)
 			{
-				const float norm = 1.0f / sumEnv;
+				const float corrNorm   = 1.0f / sumEnv;
+				const float uncorrNorm = 1.0f / std::sqrt (sumEnv);
+				const float norm = uncorrNorm + speed * (corrNorm - uncorrNorm);
 				sumL *= norm;
 				sumR *= norm;
 			}
