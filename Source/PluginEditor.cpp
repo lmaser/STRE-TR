@@ -934,6 +934,10 @@ void STRETRAudioProcessorEditor::updateEngineControls()
     grainSlider.setAlpha (grainActive ? 1.0f : 0.35f);
     grainSlider.setEnabled (grainActive);
 
+    const bool fftActive = (engineVal == 2);     // FFT only
+    windowSlider.setAlpha (fftActive ? 1.0f : 0.35f);
+    windowSlider.setEnabled (fftActive);
+
     repaint();
 }
 
@@ -2119,7 +2123,7 @@ void STRETRAudioProcessorEditor::openFilterPrompt()
 }
 
 void STRETRAudioProcessorEditor::openChaosConfigPrompt (const char* amtParamId, const char* spdParamId,
-                                                         const juce::String& title)
+                                                         const juce::String& /*title*/)
 {
     lnf.setScheme (activeScheme);
     const auto scheme = activeScheme;

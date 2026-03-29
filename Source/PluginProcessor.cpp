@@ -786,9 +786,12 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			const int segLen = juce::jmax (64, windowSamples);
 			const int overlapLen = juce::jmax (16, segLen / 4);
 			const int synthesisHop = segLen - overlapLen;
+			(void) synthesisHop;  // unused — output per segment is segLen, not synthesisHop
 			// analysisHop: how far to jump in input per segment
-			// = synthesisHop * pitchRate / stretchRatio
-			const double analysisHop = (double) synthesisHop * (double) pitchRate / (double) stretchRatio;
+			// = segLen * pitchRate / stretchRatio
+			// Each segment outputs segLen samples; readPos advances segLen*pitchRate in input.
+			// For 1:1 (no stretch, no pitch change) analysisHop must equal segLen.
+			const double analysisHop = (double) segLen * (double) pitchRate / (double) stretchRatio;
 
 			if (wsola_.segRemaining <= 0)
 			{
