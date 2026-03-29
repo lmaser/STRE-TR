@@ -2377,222 +2377,569 @@ void STRETRAudioProcessorEditor::openChaosDelayPrompt()
                            "CHS D");
 }
 
+// ── Info popup layout helper ─────────────────────────────────────
+static void layoutInfoPopupContent (juce::AlertWindow& aw)
+{
+    using namespace TR;
+    layoutAlertWindowButtons (aw);
+
+    const int contentTop = kPromptBodyTopPad;
+    const int contentBottom = getAlertButtonsTop (aw) - kPromptBodyBottomPad;
+    const int contentH = juce::jmax (0, contentBottom - contentTop);
+    const int bodyW = aw.getWidth() - (2 * kPromptInnerMargin);
+
+    auto* viewport = dynamic_cast<juce::Viewport*> (aw.findChildWithID ("bodyViewport"));
+    if (viewport == nullptr) return;
+
+    viewport->setBounds (kPromptInnerMargin, contentTop, bodyW, contentH);
+
+    auto* content = viewport->getViewedComponent();
+    if (content == nullptr) return;
+
+    constexpr int kItemGap = 10;
+    int y = 0;
+    const int innerW = bodyW - 10;
+
+    for (int i = 0; i < content->getNumChildComponents(); ++i)
+    {
+        auto* child = content->getChildComponent (i);
+        if (child == nullptr || ! child->isVisible()) continue;
+
+        int itemH = 30;
+        if (auto* label = dynamic_cast<juce::Label*> (child))
+        {
+            auto font = label->getFont();
+            const auto text = label->getText();
+            const auto border = label->getBorderSize();
+
+            if (! text.containsChar ('\n'))
+                itemH = (int) std::ceil (font.getHeight()) + border.getTopAndBottom();
+            else
+            {
+                juce::AttributedString as;
+                as.append (text, font, label->findColour (juce::Label::textColourId));
+                as.setJustification (label->getJustificationType());
+                juce::TextLayout layout;
+                const int textAreaW = innerW - border.getLeftAndRight();
+                layout.createLayout (as, (float) juce::jmax (1, textAreaW));
+                itemH = juce::jmax (20, (int) std::ceil (layout.getHeight() + font.getDescent())
+                                        + border.getTopAndBottom() + 4);
+            }
+        }
+        else if (dynamic_cast<juce::HyperlinkButton*> (child) != nullptr)
+            itemH = 28;
+
+        child->setBounds (0, y, innerW, itemH);
+
+        if (auto* label = dynamic_cast<juce::Label*> (child))
+        {
+            const auto& props = label->getProperties();
+            if (props.contains ("poemPadFraction"))
+            {
+                const float padFrac = (float) props["poemPadFraction"];
+                const int padPx = juce::jmax (4, (int) std::round (innerW * padFrac));
+                label->setBorderSize (juce::BorderSize<int> (0, padPx, 0, padPx));
+
+                auto font = label->getFont();
+                const int textAreaW = innerW - 2 * padPx;
+                for (float scale = 1.0f; scale >= 0.65f; scale -= 0.025f)
+                {
+                    font.setHorizontalScale (scale);
+                    juce::GlyphArrangement glyphs;
+                    glyphs.addLineOfText (font, label->getText(), 0.0f, 0.0f);
+                    if (static_cast<int> (std::ceil (glyphs.getBoundingBox (0, -1, false).getWidth())) <= textAreaW)
+                        break;
+                }
+                label->setFont (font);
+            }
+        }
+
+        y += itemH + kItemGap;
+    }
+
+    if (y > kItemGap) y -= kItemGap;
+    content->setSize (innerW, juce::jmax (contentH, y));
+}
+
 void STRETRAudioProcessorEditor::openInfoPopup()
 {
     lnf.setScheme (activeScheme);
-    const auto scheme = activeScheme;
+
+    setPromptOverlayActive (true);
 
     auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
+    juce::Component::SafePointer<juce::AlertWindow> safeAw (aw);
+    juce::Component::SafePointer<STRETRAudioProcessorEditor> safeThis (this);
     aw->setLookAndFeel (&lnf);
+    aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("GRAPHICS", 2);
+
+    applyPromptShellSize (*aw);
+
+    auto* bodyContent = new juce::Component();
+    bodyContent->setComponentID ("bodyContent");
+
+    auto infoFont = lnf.getAlertWindowMessageFont();
+    infoFont.setHeight (infoFont.getHeight() * 1.45f);
+
+    auto headingFont = infoFont;
+    headingFont.setBold (true);
+    headingFont.setHeight (infoFont.getHeight() * 1.25f);
+
+    auto linkFont = infoFont;
+    linkFont.setHeight (infoFont.getHeight() * 1.08f);
+
+    auto poemFont = infoFont;
+    poemFont.setItalic (true);
+
+    auto xmlDoc = juce::XmlDocument::parse (InfoContent::xml);
+    auto* contentNode = xmlDoc != nullptr ? xmlDoc->getChildByName ("content") : nullptr;
+
+    if (contentNode != nullptr)
+    {
+        int elemIdx = 0;
+        for (auto* node : contentNode->getChildIterator())
+        {
+            const auto tag  = node->getTagName();
+            const auto text = node->getAllSubText().trim();
+            const auto id   = tag + juce::String (elemIdx++);
+
+            if (tag == "heading")
+            {
+                auto* l = new juce::Label (id, text);
+                l->setComponentID (id);
+                l->setJustificationType (juce::Justification::centred);
+                applyLabelTextColour (*l, activeScheme.text);
+                l->setFont (headingFont);
+                bodyContent->addAndMakeVisible (l);
+            }
+            else if (tag == "text" || tag == "separator")
+            {
+                auto* l = new juce::Label (id, text);
+                l->setComponentID (id);
+                l->setJustificationType (juce::Justification::centred);
+                applyLabelTextColour (*l, activeScheme.text);
+                l->setFont (infoFont);
+                l->setBorderSize (juce::BorderSize<int> (0));
+                bodyContent->addAndMakeVisible (l);
+            }
+            else if (tag == "link")
+            {
+                const auto url = node->getStringAttribute ("url");
+                auto* lnk = new juce::HyperlinkButton (text, juce::URL (url));
+                lnk->setComponentID (id);
+                lnk->setJustificationType (juce::Justification::centred);
+                lnk->setColour (juce::HyperlinkButton::textColourId, activeScheme.text);
+                lnk->setFont (linkFont, false, juce::Justification::centred);
+                lnk->setTooltip ("");
+                bodyContent->addAndMakeVisible (lnk);
+            }
+            else if (tag == "poem")
+            {
+                auto* l = new juce::Label (id, text);
+                l->setComponentID (id);
+                l->setJustificationType (juce::Justification::centred);
+                applyLabelTextColour (*l, activeScheme.text);
+                l->setFont (poemFont);
+                l->setBorderSize (juce::BorderSize<int> (0, 0, 0, 0));
+                l->getProperties().set ("poemPadFraction", 0.12f);
+                bodyContent->addAndMakeVisible (l);
+            }
+            else if (tag == "spacer")
+            {
+                auto* l = new juce::Label (id, "");
+                l->setComponentID (id);
+                l->setFont (infoFont);
+                l->setBorderSize (juce::BorderSize<int> (0));
+                bodyContent->addAndMakeVisible (l);
+            }
+        }
+    }
 
     auto* viewport = new juce::Viewport();
     viewport->setComponentID ("bodyViewport");
+    viewport->setViewedComponent (bodyContent, true);
     viewport->setScrollBarsShown (true, false);
-
-    auto* content = new juce::Component();
-    viewport->setViewedComponent (content, true);
+    viewport->setScrollBarThickness (8);
+    viewport->setLookAndFeel (&lnf);
     aw->addAndMakeVisible (viewport);
 
-    // Title label
-    auto* titleLabel = new juce::Label ("title", juce::String ("STRE-TR v") + InfoContent::version);
-    titleLabel->setFont (juce::Font (juce::FontOptions (20.0f).withStyle ("Bold")));
-    titleLabel->setColour (juce::Label::textColourId, scheme.text);
-    titleLabel->setJustificationType (juce::Justification::centredLeft);
-    content->addAndMakeVisible (titleLabel);
+    layoutInfoPopupContent (*aw);
 
-    // Info body from XML
+    if (safeThis != nullptr)
     {
-        auto xmlDoc = juce::XmlDocument::parse (InfoContent::xml);
-        if (xmlDoc != nullptr)
-        {
-            if (auto* contentEl = xmlDoc->getChildByName ("content"))
-            {
-                for (auto* child : contentEl->getChildIterator())
-                {
-                    juce::String text;
-                    if (child->hasTagName ("text") || child->hasTagName ("heading"))
-                        text = child->getAllSubText().trim();
-                    else if (child->hasTagName ("link"))
-                        text = child->getAllSubText().trim();
-                    else if (child->hasTagName ("separator"))
-                        text = child->getAllSubText().trim();
-                    else continue;
-                    if (text.isEmpty()) continue;
-                    auto* sectionLabel = new TextLayoutLabel ("", text);
-                    sectionLabel->setFont (juce::Font (juce::FontOptions (14.0f).withStyle ("Bold")));
-                    sectionLabel->setColour (juce::Label::textColourId, scheme.text);
-                    sectionLabel->setJustificationType (juce::Justification::topLeft);
-                    content->addAndMakeVisible (sectionLabel);
-                }
-            }
-        }
+        fitAlertWindowToEditor (*aw, safeThis.getComponent(), [] (juce::AlertWindow& a)
+        { layoutInfoPopupContent (a); });
+        embedAlertWindowInOverlay (safeThis.getComponent(), aw);
+    }
+    else
+    {
+        aw->centreAroundComponent (this, aw->getWidth(), aw->getHeight());
+        bringPromptWindowToFront (*aw); aw->repaint();
     }
 
-    aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
-    aw->addButton ("GFX", 2);
-    applyPromptShellSize (*aw);
-    layoutAlertWindowButtons (*aw);
-
-    // Layout content
+    juce::MessageManager::callAsync ([safeAw, safeThis]()
     {
-        const int contentTop = kPromptBodyTopPad;
-        const int contentBottom = getAlertButtonsTop (*aw) - kPromptBodyBottomPad;
-        const int contentH = juce::jmax (0, contentBottom - contentTop);
-        const int bodyW = aw->getWidth() - (2 * kPromptInnerMargin);
-        viewport->setBounds (kPromptInnerMargin, contentTop, bodyW, contentH);
-        const int innerW = bodyW - 10;
-        int y = 0;
-        constexpr int kItemGap = 10;
-        for (int i = 0; i < content->getNumChildComponents(); ++i)
-        {
-            auto* child = content->getChildComponent (i);
-            if (! child->isVisible()) continue;
-            int itemH = 30;
-            if (auto* label = dynamic_cast<juce::Label*> (child))
-            {
-                auto font = label->getFont();
-                if (label->getText().containsChar ('\n'))
-                {
-                    juce::AttributedString as;
-                    as.append (label->getText(), font, label->findColour (juce::Label::textColourId));
-                    as.setJustification (label->getJustificationType());
-                    juce::TextLayout layout;
-                    layout.createLayout (as, (float) juce::jmax (1, innerW));
-                    itemH = juce::jmax (20, (int) std::ceil (layout.getHeight() + font.getDescent()) + 4);
-                }
-                else
-                    itemH = (int) std::ceil (font.getHeight()) + 4;
-            }
-            child->setBounds (0, y, innerW, itemH);
-            y += itemH + kItemGap;
-        }
-        content->setSize (innerW, juce::jmax (contentH, y));
-    }
-
-    styleAlertButtons (*aw, lnf);
-
-    juce::Component::SafePointer<STRETRAudioProcessorEditor> safeThis (this);
-    setPromptOverlayActive (true);
-
-    fitAlertWindowToEditor (*aw, safeThis.getComponent(), [] (juce::AlertWindow& a) { layoutAlertWindowButtons (a); });
-    embedAlertWindowInOverlay (safeThis.getComponent(), aw);
+        if (safeAw == nullptr || safeThis == nullptr) return;
+        bringPromptWindowToFront (*safeAw);
+        safeAw->repaint();
+    });
 
     aw->enterModalState (true,
-        juce::ModalCallbackFunction::create ([safeThis, aw] (int result)
+        juce::ModalCallbackFunction::create ([safeThis, aw] (int result) mutable
         {
             std::unique_ptr<juce::AlertWindow> killer (aw);
-            if (safeThis) safeThis->setPromptOverlayActive (false);
             if (safeThis == nullptr) return;
             if (result == 2)
             {
-                juce::MessageManager::callAsync ([safeThis]()
-                { if (safeThis) safeThis->openGraphicsPopup(); });
+                safeThis->openGraphicsPopup();
+                return;
             }
-        }), false);
+            safeThis->setPromptOverlayActive (false);
+        }));
+}
+
+// ── Graphics popup helper: sync state ────────────────────────────
+static void syncGraphicsPopupState (juce::AlertWindow& aw,
+                                    const std::array<juce::Colour, 2>& defaultPalette,
+                                    const std::array<juce::Colour, 2>& customPalette,
+                                    bool useCustomPalette)
+{
+    using namespace TR;
+    if (auto* t = dynamic_cast<juce::ToggleButton*> (aw.findChildWithID ("paletteDefaultToggle")))
+        t->setToggleState (! useCustomPalette, juce::dontSendNotification);
+    if (auto* t = dynamic_cast<juce::ToggleButton*> (aw.findChildWithID ("paletteCustomToggle")))
+        t->setToggleState (useCustomPalette, juce::dontSendNotification);
+
+    for (int i = 0; i < 2; ++i)
+    {
+        if (auto* dflt = dynamic_cast<juce::TextButton*> (aw.findChildWithID ("defaultSwatch" + juce::String (i))))
+            setPaletteSwatchColour (*dflt, defaultPalette[(size_t) i]);
+        if (auto* custom = dynamic_cast<juce::TextButton*> (aw.findChildWithID ("customSwatch" + juce::String (i))))
+        {
+            setPaletteSwatchColour (*custom, customPalette[(size_t) i]);
+            custom->setTooltip (colourToHexRgb (customPalette[(size_t) i]));
+        }
+    }
+
+    auto applyLabelTextColourTo = [] (juce::Label* lbl, juce::Colour col)
+    { if (lbl != nullptr) lbl->setColour (juce::Label::textColourId, col); };
+
+    const juce::Colour activeText = useCustomPalette ? customPalette[0] : defaultPalette[0];
+    applyLabelTextColourTo (dynamic_cast<juce::Label*> (aw.findChildWithID ("paletteDefaultLabel")), activeText);
+    applyLabelTextColourTo (dynamic_cast<juce::Label*> (aw.findChildWithID ("paletteCustomLabel")), activeText);
+    applyLabelTextColourTo (dynamic_cast<juce::Label*> (aw.findChildWithID ("paletteTitle")), activeText);
+    applyLabelTextColourTo (dynamic_cast<juce::Label*> (aw.findChildWithID ("fxLabel")), activeText);
+}
+
+// ── Graphics popup helper: layout content ────────────────────────
+static void layoutGraphicsPopupContent (juce::AlertWindow& aw)
+{
+    using namespace TR;
+    layoutAlertWindowButtons (aw);
+
+    auto snapEven = [] (int v) { return v & ~1; };
+
+    const int contentLeft = kPromptInnerMargin;
+    const int contentRight = aw.getWidth() - kPromptInnerMargin;
+    const int contentW = juce::jmax (0, contentRight - contentLeft);
+
+    auto* dfltToggle   = dynamic_cast<juce::ToggleButton*> (aw.findChildWithID ("paletteDefaultToggle"));
+    auto* dfltLabel    = dynamic_cast<juce::Label*> (aw.findChildWithID ("paletteDefaultLabel"));
+    auto* customToggle = dynamic_cast<juce::ToggleButton*> (aw.findChildWithID ("paletteCustomToggle"));
+    auto* customLabel  = dynamic_cast<juce::Label*> (aw.findChildWithID ("paletteCustomLabel"));
+    auto* paletteTitle = dynamic_cast<juce::Label*> (aw.findChildWithID ("paletteTitle"));
+    auto* fxToggle     = dynamic_cast<juce::ToggleButton*> (aw.findChildWithID ("fxToggle"));
+    auto* fxLabel      = dynamic_cast<juce::Label*> (aw.findChildWithID ("fxLabel"));
+    auto* okBtn        = aw.getNumButtons() > 0 ? aw.getButton (0) : nullptr;
+
+    constexpr int toggleBox  = GraphicsPromptLayout::toggleBox;
+    constexpr int toggleGap  = 4;
+    constexpr int toggleVisualInsetLeft = 2;
+    constexpr int swatchSize = GraphicsPromptLayout::swatchSize;
+    constexpr int swatchGap  = GraphicsPromptLayout::swatchGap;
+    constexpr int columnGap  = GraphicsPromptLayout::columnGap;
+    constexpr int titleH     = GraphicsPromptLayout::titleHeight;
+
+    const int toggleVisualSide = juce::jlimit (14,
+                                               juce::jmax (14, toggleBox - 2),
+                                               (int) std::lround ((double) toggleBox * 0.65));
+
+    const int swatchW = swatchSize;
+    const int swatchH = (2 * swatchSize) + swatchGap;
+    const int swatchGroupSize = (2 * swatchW) + swatchGap;
+    const int swatchesH = swatchH;
+    const int modeH = toggleBox;
+
+    const int baseGap1 = GraphicsPromptLayout::titleToModeGap;
+    const int baseGap2 = GraphicsPromptLayout::modeToSwatchesGap;
+
+    const int titleY = snapEven (kPromptFooterBottomPad);
+    const int footerY = getAlertButtonsTop (aw);
+
+    const int bodyH = modeH + baseGap2 + swatchesH;
+    const int bodyZoneTop = titleY + titleH + baseGap1;
+    const int bodyZoneBottom = footerY - baseGap1;
+    const int bodyZoneH = juce::jmax (0, bodyZoneBottom - bodyZoneTop);
+    const int bodyY = snapEven (bodyZoneTop + juce::jmax (0, (bodyZoneH - bodyH) / 2));
+
+    const int modeY = bodyY;
+    const int blocksY = snapEven (modeY + modeH + baseGap2);
+
+    const int dfltLabelW   = (dfltLabel   != nullptr) ? juce::jmax (38, stringWidth (dfltLabel->getFont(), "DFLT") + 2) : 40;
+    const int customLabelW = (customLabel != nullptr) ? juce::jmax (38, stringWidth (customLabel->getFont(), "CSTM") + 2) : 40;
+    const int fxLabelW     = (fxLabel != nullptr)
+                           ? juce::jmax (90, stringWidth (fxLabel->getFont(), fxLabel->getText().toUpperCase()) + 2)
+                           : 96;
+
+    const int toggleLabelStartOffset = toggleVisualInsetLeft + toggleVisualSide + toggleGap;
+    const int dfltRowW   = toggleLabelStartOffset + dfltLabelW;
+    const int customRowW = toggleLabelStartOffset + customLabelW;
+    const int fxRowW     = toggleLabelStartOffset + fxLabelW;
+    const int okBtnW     = (okBtn != nullptr) ? okBtn->getWidth() : 96;
+
+    const int leftColumnW  = juce::jmax (swatchGroupSize, juce::jmax (dfltRowW, fxRowW));
+    const int rightColumnW = juce::jmax (swatchGroupSize, juce::jmax (customRowW, okBtnW));
+    const int columnsRowW  = leftColumnW + columnGap + rightColumnW;
+    const int columnsX     = snapEven (contentLeft + juce::jmax (0, (contentW - columnsRowW) / 2));
+    const int col0X = columnsX;
+    const int col1X = columnsX + leftColumnW + columnGap;
+
+    if (paletteTitle != nullptr)
+    {
+        const int paletteW = juce::jmax (100, juce::jmin (leftColumnW, contentRight - col0X));
+        paletteTitle->setBounds (col0X, titleY, paletteW, titleH);
+    }
+
+    if (dfltToggle   != nullptr) dfltToggle->setBounds (col0X, modeY, toggleBox, toggleBox);
+    if (dfltLabel    != nullptr) dfltLabel->setBounds (col0X + toggleLabelStartOffset, modeY, dfltLabelW, toggleBox);
+    if (customToggle != nullptr) customToggle->setBounds (col1X, modeY, toggleBox, toggleBox);
+    if (customLabel  != nullptr) customLabel->setBounds (col1X + toggleLabelStartOffset, modeY, customLabelW, toggleBox);
+
+    auto placeSwatchGroup = [&] (const juce::String& prefix, int startX)
+    {
+        for (int i = 0; i < 2; ++i)
+            if (auto* b = dynamic_cast<juce::TextButton*> (aw.findChildWithID (prefix + juce::String (i))))
+                b->setBounds (startX + i * (swatchW + swatchGap), blocksY, swatchW, swatchH);
+    };
+    placeSwatchGroup ("defaultSwatch", col0X);
+    placeSwatchGroup ("customSwatch", col1X);
+
+    if (okBtn != nullptr)
+    {
+        auto okR = okBtn->getBounds();
+        okR.setX (col1X);
+        okR.setY (footerY);
+        okBtn->setBounds (okR);
+
+        const int fxY = snapEven (footerY + juce::jmax (0, (okR.getHeight() - toggleBox) / 2));
+        if (fxToggle != nullptr) fxToggle->setBounds (col0X, fxY, toggleBox, toggleBox);
+        if (fxLabel  != nullptr) fxLabel->setBounds (col0X + toggleLabelStartOffset, fxY, fxLabelW, toggleBox);
+    }
 }
 
 void STRETRAudioProcessorEditor::openGraphicsPopup()
 {
     lnf.setScheme (activeScheme);
-    const auto scheme = activeScheme;
-
-    auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
-    aw->setLookAndFeel (&lnf);
-
-    // Palette title
-    auto* paletteTitle = new juce::Label ("paletteTitle", "PALETTE");
-    paletteTitle->setComponentID ("paletteTitle");
-    paletteTitle->setFont (juce::Font (juce::FontOptions (16.0f).withStyle ("Bold")));
-    paletteTitle->setColour (juce::Label::textColourId, scheme.text);
-    aw->addAndMakeVisible (paletteTitle);
-
-    // Default / Custom toggles
-    auto* dfltToggle = new juce::ToggleButton();
-    dfltToggle->setComponentID ("paletteDefaultToggle");
-    dfltToggle->setToggleState (! useCustomPalette, juce::dontSendNotification);
-    aw->addAndMakeVisible (dfltToggle);
-
-    auto* dfltLabel = new juce::Label ("dfltLabel", "DFLT");
-    dfltLabel->setComponentID ("paletteDefaultLabel");
-    dfltLabel->setFont (juce::Font (juce::FontOptions (14.0f).withStyle ("Bold")));
-    dfltLabel->setColour (juce::Label::textColourId, scheme.text);
-    aw->addAndMakeVisible (dfltLabel);
-
-    auto* customToggle = new juce::ToggleButton();
-    customToggle->setComponentID ("paletteCustomToggle");
-    customToggle->setToggleState (useCustomPalette, juce::dontSendNotification);
-    aw->addAndMakeVisible (customToggle);
-
-    auto* customLabel = new juce::Label ("customLabel", "CSTM");
-    customLabel->setComponentID ("paletteCustomLabel");
-    customLabel->setFont (juce::Font (juce::FontOptions (14.0f).withStyle ("Bold")));
-    customLabel->setColour (juce::Label::textColourId, scheme.text);
-    aw->addAndMakeVisible (customLabel);
-
-    // Swatch buttons
-    for (int i = 0; i < 2; ++i)
-    {
-        auto* dfltSwatch = new PopupSwatchButton();
-        dfltSwatch->setComponentID ("defaultSwatch" + juce::String (i));
-        setPaletteSwatchColour (*dfltSwatch, defaultPalette[(size_t) i]);
-        aw->addAndMakeVisible (dfltSwatch);
-
-        auto* customSwatch = new PopupSwatchButton();
-        customSwatch->setComponentID ("customSwatch" + juce::String (i));
-        setPaletteSwatchColour (*customSwatch, customPalette[(size_t) i]);
-        customSwatch->setTooltip (colourToHexRgb (customPalette[(size_t) i]));
-        aw->addAndMakeVisible (customSwatch);
-    }
-
-    // FX toggle
-    auto* fxToggle = new juce::ToggleButton();
-    fxToggle->setComponentID ("fxToggle");
-    fxToggle->setToggleState (crtEnabled, juce::dontSendNotification);
-    aw->addAndMakeVisible (fxToggle);
-
-    auto* fxLabel = new juce::Label ("fxLabel", "GRAPHIC FX");
-    fxLabel->setComponentID ("fxLabel");
-    fxLabel->setFont (juce::Font (juce::FontOptions (14.0f).withStyle ("Bold")));
-    fxLabel->setColour (juce::Label::textColourId, scheme.text);
-    aw->addAndMakeVisible (fxLabel);
-
-    aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
-    applyPromptShellSize (*aw);
-    layoutAlertWindowButtons (*aw);
-    styleAlertButtons (*aw, lnf);
-
-    // Wire toggle callbacks
-    juce::Component::SafePointer<STRETRAudioProcessorEditor> safeThis (this);
-    juce::Component::SafePointer<juce::AlertWindow> safeAw (aw);
-
-    dfltToggle->onClick = [safeThis, safeAw]()
-    {
-        if (! safeThis || ! safeAw) return;
-        safeThis->useCustomPalette = false;
-        safeThis->applyActivePalette();
-        safeThis->repaint();
-    };
-    customToggle->onClick = [safeThis, safeAw]()
-    {
-        if (! safeThis || ! safeAw) return;
-        safeThis->useCustomPalette = true;
-        safeThis->applyActivePalette();
-        safeThis->repaint();
-    };
-    fxToggle->onClick = [safeThis]()
-    {
-        if (! safeThis) return;
-        safeThis->applyCrtState (! safeThis->crtEnabled);
-    };
+    useCustomPalette = audioProcessor.getUiUseCustomPalette();
+    crtEnabled = audioProcessor.getUiCrtEnabled();
+    crtEffect.setEnabled (crtEnabled);
+    applyActivePalette();
 
     setPromptOverlayActive (true);
-    fitAlertWindowToEditor (*aw, safeThis.getComponent(), [] (juce::AlertWindow& a) { layoutAlertWindowButtons (a); });
-    embedAlertWindowInOverlay (safeThis.getComponent(), aw);
+
+    auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
+    juce::Component::SafePointer<STRETRAudioProcessorEditor> safeThis (this);
+    juce::Component::SafePointer<juce::AlertWindow> safeAw (aw);
+    aw->setLookAndFeel (&lnf);
+    aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+
+    auto labelFont = lnf.getAlertWindowMessageFont();
+    labelFont.setHeight (labelFont.getHeight() * 1.20f);
+
+    auto addPopupLabel = [this, aw] (const juce::String& id, const juce::String& text, juce::Font font,
+                                     juce::Justification justification = juce::Justification::centredLeft)
+    {
+        auto* label = new PopupClickableLabel (id, text);
+        label->setComponentID (id); label->setJustificationType (justification);
+        applyLabelTextColour (*label, activeScheme.text);
+        label->setBorderSize (juce::BorderSize<int> (0));
+        label->setFont (font); label->setMouseCursor (juce::MouseCursor::PointingHandCursor);
+        aw->addAndMakeVisible (label);
+        return label;
+    };
+
+    auto* defaultToggle = new juce::ToggleButton ("");
+    defaultToggle->setComponentID ("paletteDefaultToggle");
+    aw->addAndMakeVisible (defaultToggle);
+    auto* defaultLabel = addPopupLabel ("paletteDefaultLabel", "DFLT", labelFont);
+
+    auto* customToggle = new juce::ToggleButton ("");
+    customToggle->setComponentID ("paletteCustomToggle");
+    aw->addAndMakeVisible (customToggle);
+    auto* customLabel = addPopupLabel ("paletteCustomLabel", "CSTM", labelFont);
+
+    auto paletteTitleFont = labelFont;
+    paletteTitleFont.setHeight (paletteTitleFont.getHeight() * 1.30f);
+    addPopupLabel ("paletteTitle", "PALETTE", paletteTitleFont, juce::Justification::centredLeft);
+
+    for (int i = 0; i < 2; ++i)
+    {
+        auto* dflt = new juce::TextButton();
+        dflt->setComponentID ("defaultSwatch" + juce::String (i));
+        dflt->setTooltip ("Default palette colour " + juce::String (i + 1));
+        aw->addAndMakeVisible (dflt);
+
+        auto* custom = new PopupSwatchButton();
+        custom->setComponentID ("customSwatch" + juce::String (i));
+        custom->setTooltip (colourToHexRgb (customPalette[(size_t) i]));
+        aw->addAndMakeVisible (custom);
+    }
+
+    auto* fxToggle = new juce::ToggleButton ("");
+    fxToggle->setComponentID ("fxToggle");
+    fxToggle->setToggleState (crtEnabled, juce::dontSendNotification);
+    fxToggle->onClick = [safeThis, fxToggle]()
+    {
+        if (safeThis == nullptr || fxToggle == nullptr) return;
+        safeThis->applyCrtState (fxToggle->getToggleState());
+        safeThis->audioProcessor.setUiCrtEnabled (safeThis->crtEnabled);
+        safeThis->repaint();
+    };
+    aw->addAndMakeVisible (fxToggle);
+
+    auto* fxLabel = addPopupLabel ("fxLabel", "GRAPHIC FX", labelFont);
+
+    auto syncAndRepaintPopup = [safeThis, safeAw]()
+    {
+        if (safeThis == nullptr || safeAw == nullptr) return;
+        syncGraphicsPopupState (*safeAw, safeThis->defaultPalette, safeThis->customPalette, safeThis->useCustomPalette);
+        layoutGraphicsPopupContent (*safeAw);
+        safeAw->repaint();
+    };
+
+    auto applyPaletteAndRepaint = [safeThis]()
+    { if (safeThis == nullptr) return; safeThis->applyActivePalette(); safeThis->repaint(); };
+
+    defaultToggle->onClick = [safeThis, defaultToggle, customToggle, applyPaletteAndRepaint, syncAndRepaintPopup]() mutable
+    {
+        if (safeThis == nullptr || defaultToggle == nullptr || customToggle == nullptr) return;
+        safeThis->useCustomPalette = false;
+        safeThis->audioProcessor.setUiUseCustomPalette (safeThis->useCustomPalette);
+        defaultToggle->setToggleState (true, juce::dontSendNotification);
+        customToggle->setToggleState (false, juce::dontSendNotification);
+        applyPaletteAndRepaint(); syncAndRepaintPopup();
+    };
+
+    customToggle->onClick = [safeThis, defaultToggle, customToggle, applyPaletteAndRepaint, syncAndRepaintPopup]() mutable
+    {
+        if (safeThis == nullptr || defaultToggle == nullptr || customToggle == nullptr) return;
+        safeThis->useCustomPalette = true;
+        safeThis->audioProcessor.setUiUseCustomPalette (safeThis->useCustomPalette);
+        defaultToggle->setToggleState (false, juce::dontSendNotification);
+        customToggle->setToggleState (true, juce::dontSendNotification);
+        applyPaletteAndRepaint(); syncAndRepaintPopup();
+    };
+
+    if (defaultLabel != nullptr && defaultToggle != nullptr)
+        defaultLabel->onClick = [defaultToggle]() { defaultToggle->triggerClick(); };
+    if (customLabel != nullptr && customToggle != nullptr)
+        customLabel->onClick = [customToggle]() { customToggle->triggerClick(); };
+    if (fxLabel != nullptr && fxToggle != nullptr)
+        fxLabel->onClick = [fxToggle]() { fxToggle->triggerClick(); };
+
+    for (int i = 0; i < 2; ++i)
+    {
+        if (auto* customSwatch = dynamic_cast<PopupSwatchButton*> (aw->findChildWithID ("customSwatch" + juce::String (i))))
+        {
+            customSwatch->onLeftClick = [safeThis, safeAw, i]()
+            {
+                if (safeThis == nullptr) return;
+                auto& rng = juce::Random::getSystemRandom();
+                const auto randomColour = juce::Colour::fromRGB ((juce::uint8) rng.nextInt (256),
+                                                                 (juce::uint8) rng.nextInt (256),
+                                                                 (juce::uint8) rng.nextInt (256));
+                safeThis->customPalette[(size_t) i] = randomColour;
+                safeThis->audioProcessor.setUiCustomPaletteColour (i, randomColour);
+                if (safeThis->useCustomPalette) { safeThis->applyActivePalette(); safeThis->repaint(); }
+                if (safeAw != nullptr)
+                { syncGraphicsPopupState (*safeAw, safeThis->defaultPalette, safeThis->customPalette, safeThis->useCustomPalette);
+                  layoutGraphicsPopupContent (*safeAw); safeAw->repaint(); }
+            };
+
+            customSwatch->onRightClick = [safeThis, safeAw, i]()
+            {
+                if (safeThis == nullptr) return;
+                const auto scheme = safeThis->activeScheme;
+                auto* colorAw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
+                colorAw->setLookAndFeel (&safeThis->lnf);
+                colorAw->addTextEditor ("hex", colourToHexRgb (safeThis->customPalette[(size_t) i]), juce::String());
+                if (auto* te = colorAw->getTextEditor ("hex")) te->setInputFilter (new HexInputFilter(), true);
+                colorAw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+                colorAw->addButton ("CANCEL", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+                styleAlertButtons (*colorAw, safeThis->lnf);
+                applyPromptShellSize (*colorAw);
+                layoutAlertWindowButtons (*colorAw);
+                const juce::Font& kHexPromptFont = kBoldFont40();
+                preparePromptTextEditor (*colorAw, "hex", scheme.bg, scheme.text, scheme.fg, kHexPromptFont, true, 6);
+
+                if (safeThis != nullptr)
+                {
+                    fitAlertWindowToEditor (*colorAw, safeThis.getComponent(), [&] (juce::AlertWindow& a)
+                    { layoutAlertWindowButtons (a); preparePromptTextEditor (a, "hex", scheme.bg, scheme.text, scheme.fg, kHexPromptFont, true, 6); });
+                    embedAlertWindowInOverlay (safeThis.getComponent(), colorAw, true);
+                }
+                else
+                {
+                    colorAw->centreAroundComponent (safeThis.getComponent(), colorAw->getWidth(), colorAw->getHeight());
+                    bringPromptWindowToFront (*colorAw); colorAw->repaint();
+                }
+
+                preparePromptTextEditor (*colorAw, "hex", scheme.bg, scheme.text, scheme.fg, kHexPromptFont, true, 6);
+                juce::Component::SafePointer<juce::AlertWindow> safeColorAw (colorAw);
+                juce::MessageManager::callAsync ([safeColorAw]() { if (safeColorAw != nullptr) { bringPromptWindowToFront (*safeColorAw); safeColorAw->repaint(); } });
+
+                colorAw->enterModalState (true,
+                    juce::ModalCallbackFunction::create ([safeThis, safeAw, colorAw, i] (int result) mutable
+                    {
+                        std::unique_ptr<juce::AlertWindow> killer (colorAw);
+                        if (safeThis == nullptr) return;
+                        if (result != 1) return;
+                        juce::Colour parsed;
+                        if (! tryParseHexColour (killer->getTextEditorContents ("hex"), parsed)) return;
+                        safeThis->customPalette[(size_t) i] = parsed;
+                        safeThis->audioProcessor.setUiCustomPaletteColour (i, parsed);
+                        if (safeThis->useCustomPalette) { safeThis->applyActivePalette(); safeThis->repaint(); }
+                        if (safeAw != nullptr)
+                        { syncGraphicsPopupState (*safeAw, safeThis->defaultPalette, safeThis->customPalette, safeThis->useCustomPalette);
+                          layoutGraphicsPopupContent (*safeAw); safeAw->repaint(); }
+                    }));
+            };
+        }
+    }
+
+    applyPromptShellSize (*aw);
+    syncGraphicsPopupState (*aw, defaultPalette, customPalette, useCustomPalette);
+    layoutGraphicsPopupContent (*aw);
+
+    if (safeThis != nullptr)
+    {
+        fitAlertWindowToEditor (*aw, safeThis.getComponent(), [&] (juce::AlertWindow& a)
+        { syncGraphicsPopupState (a, defaultPalette, customPalette, useCustomPalette); layoutGraphicsPopupContent (a); });
+    }
+    if (safeThis != nullptr)
+    {
+        embedAlertWindowInOverlay (safeThis.getComponent(), aw);
+        juce::MessageManager::callAsync ([safeAw, safeThis]()
+        { if (safeAw == nullptr || safeThis == nullptr) return; safeAw->toFront (false); safeAw->repaint(); });
+    }
+    else
+    {
+        aw->centreAroundComponent (this, aw->getWidth(), aw->getHeight());
+        bringPromptWindowToFront (*aw); aw->repaint();
+    }
 
     aw->enterModalState (true,
-        juce::ModalCallbackFunction::create ([safeThis, aw] (int)
-        {
-            std::unique_ptr<juce::AlertWindow> killer (aw);
-            if (safeThis) safeThis->setPromptOverlayActive (false);
-        }), false);
+        juce::ModalCallbackFunction::create ([safeThis, aw] (int) mutable
+        { std::unique_ptr<juce::AlertWindow> killer (aw); if (safeThis != nullptr) safeThis->setPromptOverlayActive (false); }));
 }
