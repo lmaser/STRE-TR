@@ -264,6 +264,7 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	chaosDelayEnabled_  = false;
 	chaosAmtD_ = 0.0f; chaosAmtF_ = 0.0f;
 	chaosParamSmoothCoeff_ = std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.02f));
+	chaosParamSmoothStep_ = 1.0f - chaosParamSmoothCoeff_;
 	chaosDSmoothCoeff_ = std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.005f));
 	chaosGSmoothCoeff_ = chaosDSmoothCoeff_;
 	chaosFSmoothCoeff_ = std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.01f));
@@ -529,9 +530,8 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 				if (analysisHop > 0)
 				{
 					phaseDiff -= expBase * (float) k * (float) analysisHop;
-					phaseDiff  = std::fmod (phaseDiff + pi, twoPi);
-					if (phaseDiff < 0.0f) phaseDiff += twoPi;
-					phaseDiff -= pi;
+					while (phaseDiff >  pi) phaseDiff -= twoPi;
+					while (phaseDiff < -pi) phaseDiff += twoPi;
 					stft_.lastFreq[ch][k] = expBase * (float) k
 					                       + phaseDiff / (float) analysisHop;
 				}
@@ -547,84 +547,91 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 
 		// ── Synthesis ──
 
-		// Step 1: compute per-bin magnitude and accumulate phase
+		// Step 1: compute per-bin magnitude and phase for synthesis
+		const bool passthrough = (analysisHop == synthesisHop)
+		                      && (std::abs (pitchRate - 1.0f) <= 0.001f);
+
 		float synthMag[kMaxFftBins];
-		for (int k = 0; k < numBins; ++k)
+
+		if (passthrough)
 		{
-			float mag, freq;
-
-			if (std::abs (pitchRate - 1.0f) > 0.001f)
-			{
-				const float srcF = (float) k / pitchRate;
-				const int   s0   = (int) srcF;
-				const float fr   = srcF - (float) s0;
-
-				mag  = 0.0f;
-				freq = expBase * (float) k;
-
-				if (s0 >= 0 && s0 < numBins)
-				{
-					mag  += stft_.lastMag[ch][s0] * (1.0f - fr);
-					freq  = stft_.lastFreq[ch][s0] * pitchRate;
-				}
-				if (s0 + 1 < numBins)
-					mag += stft_.lastMag[ch][s0 + 1] * fr;
-			}
-			else
-			{
-				mag  = stft_.lastMag[ch][k];
-				freq = stft_.lastFreq[ch][k];
-			}
-
-			synthMag[k] = mag;
-			stft_.synthPhase[ch][k] += freq * (float) synthesisHop;
-		}
-
-		// Step 2: Phase locking — lock non-peak bin phases to nearest peak
-		{
-			bool isPeak[kMaxFftBins];
-			isPeak[0] = (numBins > 1) ? (synthMag[0] >= synthMag[1]) : true;
-			for (int k = 1; k < numBins - 1; ++k)
-				isPeak[k] = (synthMag[k] >= synthMag[k - 1] && synthMag[k] >= synthMag[k + 1]);
-			if (numBins > 1)
-				isPeak[numBins - 1] = (synthMag[numBins - 1] >= synthMag[numBins - 2]);
-
-			int nearestPk[kMaxFftBins];
-			int lp = 0;
-			for (int k = 0; k < numBins; ++k) { if (isPeak[k]) lp = k; nearestPk[k] = lp; }
-			lp = numBins - 1;
-			for (int k = numBins - 1; k >= 0; --k)
-			{
-				if (isPeak[k]) lp = k;
-				if (std::abs (k - lp) < std::abs (k - nearestPk[k]))
-					nearestPk[k] = lp;
-			}
-
+			// Perfect reconstruction: use analysis mag & phase directly
 			for (int k = 0; k < numBins; ++k)
 			{
-				if (! isPeak[k])
+				synthMag[k] = stft_.lastMag[ch][k];
+				stft_.synthPhase[ch][k] = stft_.prevPhase[ch][k];
+			}
+		}
+		else
+		{
+			for (int k = 0; k < numBins; ++k)
+			{
+				float mag, freq;
+
+				if (std::abs (pitchRate - 1.0f) > 0.001f)
 				{
-					const int pk = nearestPk[k];
-					stft_.synthPhase[ch][k] = stft_.synthPhase[ch][pk]
-					    + (stft_.prevPhase[ch][k] - stft_.prevPhase[ch][pk]);
+					const float srcF = (float) k / pitchRate;
+					const int   s0   = (int) srcF;
+					const float fr   = srcF - (float) s0;
+
+					mag  = 0.0f;
+					freq = expBase * (float) k;
+
+					if (s0 >= 0 && s0 < numBins)
+					{
+						mag  += stft_.lastMag[ch][s0] * (1.0f - fr);
+						freq  = stft_.lastFreq[ch][s0] * pitchRate;
+					}
+					if (s0 + 1 < numBins)
+						mag += stft_.lastMag[ch][s0 + 1] * fr;
+				}
+				else
+				{
+					mag  = stft_.lastMag[ch][k];
+					freq = stft_.lastFreq[ch][k];
+				}
+
+				synthMag[k] = mag;
+				stft_.synthPhase[ch][k] += freq * (float) synthesisHop;
+			}
+
+			// Phase locking (only when not in passthrough)
+			{
+				bool isPeak[kMaxFftBins];
+				isPeak[0] = (numBins > 1) ? (synthMag[0] >= synthMag[1]) : true;
+				for (int k = 1; k < numBins - 1; ++k)
+					isPeak[k] = (synthMag[k] >= synthMag[k - 1] && synthMag[k] >= synthMag[k + 1]);
+				if (numBins > 1)
+					isPeak[numBins - 1] = (synthMag[numBins - 1] >= synthMag[numBins - 2]);
+
+				int nearestPk[kMaxFftBins];
+				int lp = 0;
+				for (int k = 0; k < numBins; ++k) { if (isPeak[k]) lp = k; nearestPk[k] = lp; }
+				lp = numBins - 1;
+				for (int k = numBins - 1; k >= 0; --k)
+				{
+					if (isPeak[k]) lp = k;
+					if (std::abs (k - lp) < std::abs (k - nearestPk[k]))
+						nearestPk[k] = lp;
+				}
+
+				for (int k = 0; k < numBins; ++k)
+				{
+					if (! isPeak[k])
+					{
+						const int pk = nearestPk[k];
+						stft_.synthPhase[ch][k] = stft_.synthPhase[ch][pk]
+						    + (stft_.prevPhase[ch][k] - stft_.prevPhase[ch][pk]);
+					}
 				}
 			}
 		}
 
-		// Step 3: write complex output
-		std::memset (fftWork_, 0, sizeof (float) * (size_t) (fftSize * 2));
-
+		// Step 3: write complex output (only numBins used by performRealOnlyInverseTransform)
 		for (int k = 0; k < numBins; ++k)
 		{
 			fftWork_[k * 2]     = synthMag[k] * std::cos (stft_.synthPhase[ch][k]);
 			fftWork_[k * 2 + 1] = synthMag[k] * std::sin (stft_.synthPhase[ch][k]);
-		}
-
-		// Mirror conjugates for negative frequencies
-		for (int k = 1; k < fftSize / 2; ++k)
-		{
-			fftWork_[(fftSize - k) * 2]     =  fftWork_[k * 2];
-			fftWork_[(fftSize - k) * 2 + 1] = -fftWork_[k * 2 + 1];
 		}
 
 		fft_->performRealOnlyInverseTransform (fftWork_);
@@ -646,6 +653,137 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 		else if (stft_.analysisReadPos < 0.0)
 			stft_.analysisReadPos += (double) inputBufLen_;
 	}
+}
+
+// ── FFT Engine 3: Spectral Hold / Freeze ────────────────────────────────
+void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthesisHop,
+                                                          float holdCoeff, float pitchRate)
+{
+	if (fft_ == nullptr || inputBufLen_ <= 0 || fftSize <= 0) return;
+
+	const int   numBins    = fftSize / 2 + 1;
+	const int   outBufLen  = kStftOutBufLen;
+	const float twoPi      = juce::MathConstants<float>::twoPi;
+	const float pi         = juce::MathConstants<float>::pi;
+	const float expBase    = twoPi / (float) fftSize;
+	const float olaScale   = 2.0f / 3.0f;
+	const float blend      = 1.0f - holdCoeff;  // 1 = transparent, 0 = full freeze
+
+	// Always read the most recent complete frame from the input buffer
+	const int readStart = (inputBufWritePos_ - fftSize + inputBufLen_) & inputBufMask_;
+
+	for (int ch = 0; ch < 2; ++ch)
+	{
+		// ── Analysis ──
+		for (int j = 0; j < fftSize; ++j)
+		{
+			const int idx = (readStart + j) & inputBufMask_;
+			fftWork_[j] = inputBuf_[ch][(size_t) idx] * fftWindow_[j];
+		}
+		for (int j = fftSize; j < fftSize * 2; ++j)
+			fftWork_[j] = 0.0f;
+
+		fft_->performRealOnlyForwardTransform (fftWork_, true);
+
+		for (int k = 0; k < numBins; ++k)
+		{
+			const float re  = fftWork_[k * 2];
+			const float im  = fftWork_[k * 2 + 1];
+			const float mag = std::sqrt (re * re + im * im);
+			const float ph  = std::atan2 (im, re);
+
+			// Instantaneous frequency via phase difference
+			float phaseDiff = ph - stft_.prevPhase[ch][k];
+			stft_.prevPhase[ch][k] = ph;
+
+			phaseDiff -= expBase * (float) k * (float) synthesisHop;
+			while (phaseDiff >  pi) phaseDiff -= twoPi;
+			while (phaseDiff < -pi) phaseDiff += twoPi;
+			const float freq = expBase * (float) k + phaseDiff / (float) synthesisHop;
+
+			// Spectral hold: blend new analysis into retained state
+			stft_.heldMag[ch][k]  = holdCoeff * stft_.heldMag[ch][k]  + blend * mag;
+			stft_.heldFreq[ch][k] = holdCoeff * stft_.heldFreq[ch][k] + blend * freq;
+
+			// Keep lastMag/lastFreq current for clean FFT2→FFT1 transition
+			stft_.lastMag[ch][k]  = mag;
+			stft_.lastFreq[ch][k] = freq;
+		}
+
+		// ── Synthesis: use held magnitudes/frequencies ──
+		const bool passthrough = (holdCoeff < 0.001f)
+		                      && (std::abs (pitchRate - 1.0f) <= 0.001f);
+
+		float synthMag[kMaxFftBins];
+
+		if (passthrough)
+		{
+			// Perfect reconstruction: use analysis phase directly
+			for (int k = 0; k < numBins; ++k)
+			{
+				synthMag[k] = stft_.heldMag[ch][k];
+				stft_.synthPhase[ch][k] = stft_.prevPhase[ch][k];
+			}
+		}
+		else
+		{
+			for (int k = 0; k < numBins; ++k)
+			{
+				float mag, freq;
+
+				if (std::abs (pitchRate - 1.0f) > 0.001f)
+				{
+					const float srcF = (float) k / pitchRate;
+					const int   s0   = (int) srcF;
+					const float fr   = srcF - (float) s0;
+
+					mag  = 0.0f;
+					freq = expBase * (float) k;
+
+					if (s0 >= 0 && s0 < numBins)
+					{
+						mag  += stft_.heldMag[ch][s0] * (1.0f - fr);
+						freq  = stft_.heldFreq[ch][s0] * pitchRate;
+					}
+					if (s0 + 1 < numBins)
+						mag += stft_.heldMag[ch][s0 + 1] * fr;
+				}
+				else
+				{
+					mag  = stft_.heldMag[ch][k];
+					freq = stft_.heldFreq[ch][k];
+				}
+
+				synthMag[k] = mag;
+				stft_.synthPhase[ch][k] += freq * (float) synthesisHop;
+
+				// Blend synthPhase toward analysis phase to prevent
+				// permanent phase offset after high-holdCoeff periods
+				{
+					float phDelta = std::remainder (stft_.prevPhase[ch][k] - stft_.synthPhase[ch][k], twoPi);
+					stft_.synthPhase[ch][k] += blend * phDelta;
+				}
+			}
+		}
+
+		// Write complex output (only numBins used by performRealOnlyInverseTransform)
+		for (int k = 0; k < numBins; ++k)
+		{
+			fftWork_[k * 2]     = synthMag[k] * std::cos (stft_.synthPhase[ch][k]);
+			fftWork_[k * 2 + 1] = synthMag[k] * std::sin (stft_.synthPhase[ch][k]);
+		}
+
+		fft_->performRealOnlyInverseTransform (fftWork_);
+
+		for (int j = 0; j < fftSize; ++j)
+		{
+			const int outIdx = (stft_.outputReadPos + j) & (outBufLen - 1);
+			stft_.outputAccum[ch][outIdx] += fftWork_[j] * fftWindow_[j] * olaScale;
+		}
+	}
+
+	// Keep analysisReadPos current so switching back to engine 2 starts from the right place
+	stft_.analysisReadPos = (double) readStart;
 }
 
 //==============================================================================
@@ -738,7 +876,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	triggerWasOn_ = triggerOn;
 
 	// ── FFT engine setup (auto-active, no trigger needed) ──
-	if (engineVal == 2 && inputBufLen_ > 0)
+	if ((engineVal == 2 || engineVal == 3) && inputBufLen_ > 0)
 	{
 		// FFT requires power-of-2 sizes — snap continuous window value
 		const int fftSize = juce::jlimit (64, kMaxFftSize, nextPowerOf2 (windowSamples));
@@ -754,7 +892,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	{
 		const bool alignOn = loadBoolParamOrDefault (alignParam, false);
 		const bool pdcOn   = loadBoolParamOrDefault (pdcParam, false);
-		const int  fftLat  = (engineVal == 2 && stft_.activeFftSize > 0)
+		const int  fftLat  = ((engineVal == 2 || engineVal == 3) && stft_.activeFftSize > 0)
 		                     ? stft_.activeFftSize : 0;
 		setLatencySamples (pdcOn ? fftLat : 0);
 		dryDelayLen_ = (alignOn && fftLat > 0) ? fftLat : 0;
@@ -830,10 +968,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		float wetR = 0.0f;
 
 		// ── Engine dispatch ──
-		if (engineVal == 2 && inputBufLen_ > 0 && stft_.activeFftSize > 0)
+		if ((engineVal == 2 || engineVal == 3) && inputBufLen_ > 0 && stft_.activeFftSize > 0)
 		{
-			// ── Engine 2: FFT (Spectral Time Stretch / Phase Vocoder) ──
-			// Always active — no trigger needed
+			// ── Engines 2 & 3: FFT-based (phase vocoder / spectral hold) ──
 			const int outBufLen = kStftOutBufLen;
 
 			wetL = stft_.outputAccum[0][stft_.outputReadPos];
@@ -846,9 +983,23 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			{
 				stft_.synthCounter = 0;
 				const int fftSynthHop = stft_.activeFftSize / 4;
-				const int fftAnalysisHop = (int) ((float) fftSynthHop * speed);
-				performStftCycle (stft_.activeFftSize, fftAnalysisHop,
-				                  fftSynthHop, pitchRate, reverseOn);
+
+				if (engineVal == 3)
+				{
+					// Spectral Hold: always analyze at normal rate, blend magnitudes
+					// Power curve (t^0.25) so low amount values already produce audible hold
+					const float t = 1.0f - speed;  // 0..1 = amount normalised
+					const float holdCoeff = std::sqrt (std::sqrt (t));
+					performStftCycleSpectralHold (stft_.activeFftSize, fftSynthHop,
+					                              holdCoeff, pitchRate);
+				}
+				else
+				{
+					// Phase Vocoder: reduce analysis hop for time stretch
+					const int fftAnalysisHop = (int) ((float) fftSynthHop * speed);
+					performStftCycle (stft_.activeFftSize, fftAnalysisHop,
+					                  fftSynthHop, pitchRate, reverseOn);
+				}
 			}
 		}
 		else if (! triggerOn)
@@ -1012,9 +1163,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			// speed=0 (max stretch) → grains uncorrelated → 1/sqrt(sumEnv).
 			if (sumEnv > 1.0f)
 			{
-				const float corrNorm   = 1.0f / sumEnv;
-				const float uncorrNorm = 1.0f / std::sqrt (sumEnv);
-				const float norm = uncorrNorm + speed * (corrNorm - uncorrNorm);
+				const float invSumEnv  = 1.0f / sumEnv;
+				const float uncorrNorm = std::sqrt (invSumEnv);
+				const float norm = uncorrNorm + speed * (invSumEnv - uncorrNorm);
 				sumL *= norm;
 				sumR *= norm;
 			}

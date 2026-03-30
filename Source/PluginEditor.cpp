@@ -1035,7 +1035,8 @@ juce::String STRETRAudioProcessorEditor::getEngineText() const
     {
         case 0: return "STRETCH ENGINE";
         case 1: return "GRAIN ENGINE";
-        case 2: return "FFT ENGINE";
+        case 2: return "FFT1 ENGINE";
+        case 3: return "FFT2 ENGINE";
         default: return "STRETCH ENGINE";
     }
 }
@@ -1046,7 +1047,8 @@ juce::String STRETRAudioProcessorEditor::getEngineTextShort() const
     {
         case 0: return "STRETCH";
         case 1: return "GRAIN";
-        case 2: return "FFT";
+        case 2: return "FFT1";
+        case 3: return "FFT2";
         default: return "STRETCH";
     }
 }

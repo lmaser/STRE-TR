@@ -72,7 +72,7 @@ public:
 	static constexpr float kGrainDefault = 100.0f;
 
 	static constexpr int   kEngineMin     = 0;
-	static constexpr int   kEngineMax     = 2;
+	static constexpr int   kEngineMax     = 3;
 	static constexpr float kEngineDefault = 0.0f;
 
 	static constexpr int   kWindowMin     = 16;
@@ -254,6 +254,8 @@ private:
 		float synthPhase[2][kMaxFftBins]     = {};
 		float lastMag[2][kMaxFftBins]        = {};
 		float lastFreq[2][kMaxFftBins]       = {};
+		float heldMag[2][kMaxFftBins]        = {};
+		float heldFreq[2][kMaxFftBins]       = {};
 		float outputAccum[2][kStftOutBufLen] = {};
 		int   outputReadPos    = 0;
 		int   synthCounter     = 0;
@@ -271,6 +273,8 @@ private:
 	void  ensureFft (int fftSize);
 	void  performStftCycle (int fftSize, int analysisHop, int synthesisHop,
 	                        float pitchRate, bool reverseOn);
+	void  performStftCycleSpectralHold (int fftSize, int synthesisHop,
+	                                    float holdCoeff, float pitchRate);
 
 	// ── Precomputed 1/sqrt(n) for granular normalization ───────────
 	float invSqrtLut_[kMaxGrains + 1] = {};
@@ -286,7 +290,7 @@ private:
 	inline float hannWindow (float phase) const noexcept
 	{
 		const float idx = phase * (float) kHannLutSize;
-		const int i0 = juce::jlimit (0, kHannLutSize - 1, (int) idx);
+		const int i0 = ((int) idx) & (kHannLutSize - 1);
 		const float frac = idx - (float) i0;
 		return hannLut_[i0] + frac * (hannLut_[i0 + 1] - hannLut_[i0]);
 	}
@@ -377,6 +381,7 @@ private:
 	juce::Random chaosFRng_;
 
 	float chaosParamSmoothCoeff_ = 0.999f;
+	float chaosParamSmoothStep_ = 0.001f;  // = 1 - chaosParamSmoothCoeff_
 
 	static constexpr int kChaosDelayBufLen = 1024;
 	float chaosDelayBuf_[2][kChaosDelayBufLen] = {};
@@ -442,9 +447,9 @@ private:
 
 	inline void advanceChaosD() noexcept
 	{
-		smoothedChaosDelayMaxSamples_ += (chaosDelayMaxSamples_ - smoothedChaosDelayMaxSamples_) * (1.0f - chaosParamSmoothCoeff_);
-		smoothedChaosGainMaxDb_       += (chaosGainMaxDb_       - smoothedChaosGainMaxDb_)       * (1.0f - chaosParamSmoothCoeff_);
-		smoothedChaosShPeriodD_       += (chaosShPeriodD_       - smoothedChaosShPeriodD_)       * (1.0f - chaosParamSmoothCoeff_);
+		smoothedChaosDelayMaxSamples_ += (chaosDelayMaxSamples_ - smoothedChaosDelayMaxSamples_) * chaosParamSmoothStep_;
+		smoothedChaosGainMaxDb_       += (chaosGainMaxDb_       - smoothedChaosGainMaxDb_)       * chaosParamSmoothStep_;
+		smoothedChaosShPeriodD_       += (chaosShPeriodD_       - smoothedChaosShPeriodD_)       * chaosParamSmoothStep_;
 		chaosDPhase_ += 1.0f;
 		if (chaosDPhase_ >= smoothedChaosShPeriodD_)
 		{
@@ -465,8 +470,8 @@ private:
 
 	inline void advanceChaosF() noexcept
 	{
-		smoothedChaosFilterMaxOct_ += (chaosFilterMaxOct_ - smoothedChaosFilterMaxOct_) * (1.0f - chaosParamSmoothCoeff_);
-		smoothedChaosShPeriodF_    += (chaosShPeriodF_    - smoothedChaosShPeriodF_)    * (1.0f - chaosParamSmoothCoeff_);
+		smoothedChaosFilterMaxOct_ += (chaosFilterMaxOct_ - smoothedChaosFilterMaxOct_) * chaosParamSmoothStep_;
+		smoothedChaosShPeriodF_    += (chaosShPeriodF_    - smoothedChaosShPeriodF_)    * chaosParamSmoothStep_;
 		chaosFPhase_ += 1.0f;
 		if (chaosFPhase_ >= smoothedChaosShPeriodF_)
 		{
