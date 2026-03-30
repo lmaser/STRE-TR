@@ -213,6 +213,8 @@ private:
 	{
 		double segInputStart   = 0.0;  // input position where current segment starts
 		double readPos         = 0.0;  // current fractional read position in input buf
+		double segInputStartR  = 0.0;  // DUAL: R channel nominal position
+		double readPosR        = 0.0;  // DUAL: R channel read position (pitchRate×0.5)
 		int    segRemaining    = 0;    // samples remaining in current segment
 		int    overlapRemain   = 0;    // samples remaining in overlap/crossfade region
 		int    segLen          = 0;    // current segment length in samples
@@ -232,6 +234,7 @@ private:
 		double rate      = 1.0;   // playback rate (for pitch via mod)
 		int    length    = 0;     // grain length in samples
 		int    elapsed   = 0;     // samples played so far
+		int    dualCh    = -1;    // -1=both, 0=L-only, 1=R-only (DUAL mode)
 		bool   active    = false;
 		bool   reverse   = false;
 	};
@@ -272,9 +275,11 @@ private:
 
 	void  ensureFft (int fftSize);
 	void  performStftCycle (int fftSize, int analysisHop, int synthesisHop,
-	                        float pitchRate, bool reverseOn);
+	                        float pitchRate, bool reverseOn, float pitchRateR = -1.0f,
+	                        bool wideMode = false);
 	void  performStftCycleSpectralHold (int fftSize, int synthesisHop,
-	                                    float holdCoeff, float pitchRate);
+	                                    float holdCoeff, float pitchRate, float pitchRateR = -1.0f,
+	                                    bool wideMode = false);
 
 	// ── Precomputed 1/sqrt(n) for granular normalization ───────────
 	float invSqrtLut_[kMaxGrains + 1] = {};

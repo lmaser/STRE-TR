@@ -491,7 +491,8 @@ void STRETRAudioProcessor::ensureFft (int fftSize)
 }
 
 void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int synthesisHop,
-                                              float pitchRate, bool reverseOn)
+                                              float pitchRate, bool reverseOn, float pitchRateR,
+                                              bool wideMode)
 {
 	if (fft_ == nullptr || inputBufLen_ <= 0 || fftSize <= 0) return;
 
@@ -504,6 +505,9 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 
 	for (int ch = 0; ch < 2; ++ch)
 	{
+		// DUAL: R channel uses pitchRateR if provided
+		const float pr = (ch == 1 && pitchRateR > 0.0f) ? pitchRateR : pitchRate;
+
 		// ── Analysis ──
 		if (analysisHop > 0 || ! stft_.hasFrame)
 		{
@@ -549,7 +553,7 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 
 		// Step 1: compute per-bin magnitude and phase for synthesis
 		const bool passthrough = (analysisHop == synthesisHop)
-		                      && (std::abs (pitchRate - 1.0f) <= 0.001f);
+		                      && (std::abs (pr - 1.0f) <= 0.001f);
 
 		float synthMag[kMaxFftBins];
 
@@ -580,7 +584,7 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 					if (s0 >= 0 && s0 < numBins)
 					{
 						mag  += stft_.lastMag[ch][s0] * (1.0f - fr);
-						freq  = stft_.lastFreq[ch][s0] * pitchRate;
+						freq  = stft_.lastFreq[ch][s0] * pr;
 					}
 					if (s0 + 1 < numBins)
 						mag += stft_.lastMag[ch][s0 + 1] * fr;
@@ -630,8 +634,12 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 		// Step 3: write complex output (only numBins used by performRealOnlyInverseTransform)
 		for (int k = 0; k < numBins; ++k)
 		{
-			fftWork_[k * 2]     = synthMag[k] * std::cos (stft_.synthPhase[ch][k]);
-			fftWork_[k * 2 + 1] = synthMag[k] * std::sin (stft_.synthPhase[ch][k]);
+			// WIDE: add linear phase ramp to R → temporal shift of fftSize/2 samples
+			float ph = stft_.synthPhase[ch][k];
+			if (wideMode && ch == 1)
+				ph += pi * (float) k;  // k × π = half-window linear delay
+			fftWork_[k * 2]     = synthMag[k] * std::cos (ph);
+			fftWork_[k * 2 + 1] = synthMag[k] * std::sin (ph);
 		}
 
 		fft_->performRealOnlyInverseTransform (fftWork_);
@@ -657,7 +665,8 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 
 // ── FFT Engine 3: Spectral Hold / Freeze ────────────────────────────────
 void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthesisHop,
-                                                          float holdCoeff, float pitchRate)
+                                                          float holdCoeff, float pitchRate, float pitchRateR,
+                                                          bool wideMode)
 {
 	if (fft_ == nullptr || inputBufLen_ <= 0 || fftSize <= 0) return;
 
@@ -674,6 +683,9 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 
 	for (int ch = 0; ch < 2; ++ch)
 	{
+		// DUAL: R channel uses pitchRateR if provided
+		const float pr = (ch == 1 && pitchRateR > 0.0f) ? pitchRateR : pitchRate;
+
 		// ── Analysis ──
 		for (int j = 0; j < fftSize; ++j)
 		{
@@ -712,7 +724,7 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 
 		// ── Synthesis: use held magnitudes/frequencies ──
 		const bool passthrough = (holdCoeff < 0.001f)
-		                      && (std::abs (pitchRate - 1.0f) <= 0.001f);
+		                      && (std::abs (pr - 1.0f) <= 0.001f);
 
 		float synthMag[kMaxFftBins];
 
@@ -743,7 +755,7 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 					if (s0 >= 0 && s0 < numBins)
 					{
 						mag  += stft_.heldMag[ch][s0] * (1.0f - fr);
-						freq  = stft_.heldFreq[ch][s0] * pitchRate;
+						freq  = stft_.heldFreq[ch][s0] * pr;
 					}
 					if (s0 + 1 < numBins)
 						mag += stft_.heldMag[ch][s0 + 1] * fr;
@@ -769,8 +781,12 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 		// Write complex output (only numBins used by performRealOnlyInverseTransform)
 		for (int k = 0; k < numBins; ++k)
 		{
-			fftWork_[k * 2]     = synthMag[k] * std::cos (stft_.synthPhase[ch][k]);
-			fftWork_[k * 2 + 1] = synthMag[k] * std::sin (stft_.synthPhase[ch][k]);
+			// WIDE: add linear phase ramp to R → temporal shift of fftSize/2 samples
+			float ph = stft_.synthPhase[ch][k];
+			if (wideMode && ch == 1)
+				ph += pi * (float) k;  // k × π = half-window linear delay
+			fftWork_[k * 2]     = synthMag[k] * std::cos (ph);
+			fftWork_[k * 2 + 1] = synthMag[k] * std::sin (ph);
 		}
 
 		fft_->performRealOnlyInverseTransform (fftWork_);
@@ -968,6 +984,10 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		float wetR = 0.0f;
 
 		// ── Engine dispatch ──
+		const bool isDual = (styleVal == 3 && numChannels >= 2);
+		const bool isWide = (styleVal == 2 && numChannels >= 2);
+		const float pitchRateR = isDual ? (pitchRate * 0.5f) : -1.0f;
+
 		if ((engineVal == 2 || engineVal == 3) && inputBufLen_ > 0 && stft_.activeFftSize > 0)
 		{
 			// ── Engines 2 & 3: FFT-based (phase vocoder / spectral hold) ──
@@ -991,14 +1011,14 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					const float t = 1.0f - speed;  // 0..1 = amount normalised
 					const float holdCoeff = std::sqrt (std::sqrt (t));
 					performStftCycleSpectralHold (stft_.activeFftSize, fftSynthHop,
-					                              holdCoeff, pitchRate);
+					                              holdCoeff, pitchRate, pitchRateR, isWide);
 				}
 				else
 				{
 					// Phase Vocoder: reduce analysis hop for time stretch
 					const int fftAnalysisHop = (int) ((float) fftSynthHop * speed);
 					performStftCycle (stft_.activeFftSize, fftAnalysisHop,
-					                  fftSynthHop, pitchRate, reverseOn);
+					                  fftSynthHop, pitchRate, reverseOn, pitchRateR, isWide);
 				}
 			}
 		}
@@ -1023,11 +1043,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			if (wsola_.segRemaining <= 0)
 			{
 				// Start new segment: advance segInputStart by analysisHop
+				const double direction = reverseOn ? -1.0 : 1.0;
 				if (wsola_.segLen > 0)  // not the very first segment
-				{
-					const double direction = reverseOn ? -1.0 : 1.0;
 					wsola_.segInputStart += analysisHop * direction;
-				}
 
 				wsola_.segLen = segLen;
 				wsola_.overlapLen = overlapLen;
@@ -1039,14 +1057,34 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				// Only readPos gets the offset — segInputStart keeps nominal trajectory
 				wsola_.readPos = (double) (nomInt + bestOff);
 
+				// DUAL: R reads at pitchRate×0.5 → needs separate trajectory
+				if (isDual)
+				{
+					const double analysisHopR = (double) segLen * (double) speed * (double) pitchRate * 0.5;
+					if (wsola_.segLen > 0)
+						wsola_.segInputStartR += analysisHopR * direction;
+					int nomIntR = ((int) wsola_.segInputStartR % inputBufLen_ + inputBufLen_) % inputBufLen_;
+					const int bestOffR = wsolaBestOverlapOffset (nomIntR, overlapLen, 0);
+					wsola_.readPosR = (double) (nomIntR + bestOffR);
+				}
+
+				// WIDE: R reads from offset position for temporal decorrelation
+				if (isWide)
+				{
+					double wideOff = wsola_.readPos + (double) (segLen / 2);
+					if (wideOff >= (double) inputBufLen_)
+						wideOff -= (double) inputBufLen_;
+					wsola_.readPosR = wideOff;
+				}
+
 				wsola_.segRemaining = segLen;
 				wsola_.overlapRemain = overlapLen;
 			}
 
 			// Read from input buffer at current read position
-			const double rp = wsola_.readPos;
-			float sL = readInputBuf (0, rp);
-			float sR = readInputBuf (1, rp);
+			float sL = readInputBuf (0, wsola_.readPos);
+			float sR = (isDual || isWide) ? readInputBuf (1, wsola_.readPosR)
+			                              : readInputBuf (1, wsola_.readPos);
 
 			// Crossfade with previous segment tail at start of new segment
 			const int posInSeg = wsola_.segLen - wsola_.segRemaining;
@@ -1078,12 +1116,22 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			// pitchRate>1 → read faster → higher pitch
 			const double direction = reverseOn ? -1.0 : 1.0;
 			wsola_.readPos += (double) pitchRate * direction;
-
-			// Wrap read position
 			if (wsola_.readPos >= (double) inputBufLen_)
 				wsola_.readPos -= (double) inputBufLen_;
 			else if (wsola_.readPos < 0.0)
 				wsola_.readPos += (double) inputBufLen_;
+
+			// DUAL: advance R at half pitch rate
+			// WIDE: advance R at same pitch rate (decorrelation is in position, not rate)
+			if (isDual || isWide)
+			{
+				const double rRate = isDual ? ((double) pitchRate * 0.5) : (double) pitchRate;
+				wsola_.readPosR += rRate * direction;
+				if (wsola_.readPosR >= (double) inputBufLen_)
+					wsola_.readPosR -= (double) inputBufLen_;
+				else if (wsola_.readPosR < 0.0)
+					wsola_.readPosR += (double) inputBufLen_;
+			}
 
 			wsola_.segRemaining--;
 		}
@@ -1107,29 +1155,89 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				else if (grainReadPos_ < 0.0f)
 					grainReadPos_ += (float) inputBufLen_;
 
-				// Find an inactive slot
-				for (int attempt = 0; attempt < kMaxGrains; ++attempt)
+				if (isDual)
 				{
-					const int slot = (grainNextSlot_ + attempt) % kMaxGrains;
-					if (! grains_[slot].active)
+					// DUAL: spawn L-only grain at pitchRate + R-only grain at pitchRate×0.5
+					for (int dch = 0; dch < 2; ++dch)
 					{
-						auto& g = grains_[slot];
-						g.active  = true;
-						g.length  = grainSamples;
-						g.elapsed = 0;
-						g.rate    = (double) pitchRate;
-						g.reverse = reverseOn;
-						g.readPos = (double) grainReadPos_;
-						g.playPos = g.reverse ? (double) (grainSamples - 1) : 0.0;
-						grainNextSlot_ = (slot + 1) % kMaxGrains;
-						break;
+						for (int attempt = 0; attempt < kMaxGrains; ++attempt)
+						{
+							const int slot = (grainNextSlot_ + attempt) % kMaxGrains;
+							if (! grains_[slot].active)
+							{
+								auto& g = grains_[slot];
+								g.active  = true;
+								g.length  = grainSamples;
+								g.elapsed = 0;
+								g.rate    = (dch == 0) ? (double) pitchRate : (double) (pitchRate * 0.5f);
+								g.reverse = reverseOn;
+								g.readPos = (double) grainReadPos_;
+								g.playPos = g.reverse ? (double) (grainSamples - 1) : 0.0;
+								g.dualCh  = dch;  // 0=L-only, 1=R-only
+								grainNextSlot_ = (slot + 1) % kMaxGrains;
+								break;
+							}
+						}
+					}
+				}
+				else if (isWide)
+				{
+					// WIDE: spawn L-only + R-only grains, R offset by half grain for decorrelation
+					for (int dch = 0; dch < 2; ++dch)
+					{
+						for (int attempt = 0; attempt < kMaxGrains; ++attempt)
+						{
+							const int slot = (grainNextSlot_ + attempt) % kMaxGrains;
+							if (! grains_[slot].active)
+							{
+								auto& g = grains_[slot];
+								g.active  = true;
+								g.length  = grainSamples;
+								g.elapsed = 0;
+								g.rate    = (double) pitchRate;
+								g.reverse = reverseOn;
+								double rp = (double) grainReadPos_;
+								if (dch == 1)
+								{
+									rp += (double) (grainSamples / 2);
+									if (rp >= (double) inputBufLen_) rp -= (double) inputBufLen_;
+								}
+								g.readPos = rp;
+								g.playPos = g.reverse ? (double) (grainSamples - 1) : 0.0;
+								g.dualCh  = dch;  // 0=L-only, 1=R-only
+								grainNextSlot_ = (slot + 1) % kMaxGrains;
+								break;
+							}
+						}
+					}
+				}
+				else
+				{
+					// Normal: spawn one grain for both channels
+					for (int attempt = 0; attempt < kMaxGrains; ++attempt)
+					{
+						const int slot = (grainNextSlot_ + attempt) % kMaxGrains;
+						if (! grains_[slot].active)
+						{
+							auto& g = grains_[slot];
+							g.active  = true;
+							g.length  = grainSamples;
+							g.elapsed = 0;
+							g.rate    = (double) pitchRate;
+							g.reverse = reverseOn;
+							g.readPos = (double) grainReadPos_;
+							g.playPos = g.reverse ? (double) (grainSamples - 1) : 0.0;
+							g.dualCh  = -1;  // both channels
+							grainNextSlot_ = (slot + 1) % kMaxGrains;
+							break;
+						}
 					}
 				}
 			}
 
 			// Mix active grains
 			float sumL = 0.0f, sumR = 0.0f;
-			float sumEnv = 0.0f;
+			float sumEnvL = 0.0f, sumEnvR = 0.0f;
 			for (int g = 0; g < kMaxGrains; ++g)
 			{
 				auto& gr = grains_[g];
@@ -1138,15 +1246,21 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				// Hann window envelope
 				const float phase = (float) gr.elapsed / (float) gr.length;
 				const float env = hannWindow (phase);
-				sumEnv += env;
 
 				// Read position in input buffer
 				const double bufPos = gr.readPos + gr.playPos;
-				const float sL = readInputBuf (0, bufPos);
-				const float sR = readInputBuf (1, bufPos);
 
-				sumL += sL * env;
-				sumR += sR * env;
+				// Accumulate per-channel based on dualCh
+				if (gr.dualCh <= 0)  // both (-1) or L-only (0)
+				{
+					sumL += readInputBuf (0, bufPos) * env;
+					sumEnvL += env;
+				}
+				if (gr.dualCh == -1 || gr.dualCh == 1)  // both (-1) or R-only (1)
+				{
+					sumR += readInputBuf (1, bufPos) * env;
+					sumEnvR += env;
+				}
 
 				// Advance grain playback position
 				if (gr.reverse)
@@ -1161,13 +1275,17 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 			// Normalize: speed=1 (no stretch) → grains correlated → 1/sumEnv;
 			// speed=0 (max stretch) → grains uncorrelated → 1/sqrt(sumEnv).
-			if (sumEnv > 1.0f)
+			if (sumEnvL > 1.0f)
 			{
-				const float invSumEnv  = 1.0f / sumEnv;
-				const float uncorrNorm = std::sqrt (invSumEnv);
-				const float norm = uncorrNorm + speed * (invSumEnv - uncorrNorm);
-				sumL *= norm;
-				sumR *= norm;
+				const float inv  = 1.0f / sumEnvL;
+				const float uncr = std::sqrt (inv);
+				sumL *= uncr + speed * (inv - uncr);
+			}
+			if (sumEnvR > 1.0f)
+			{
+				const float inv  = 1.0f / sumEnvR;
+				const float uncr = std::sqrt (inv);
+				sumR *= uncr + speed * (inv - uncr);
 			}
 
 			wetL = sumL;
@@ -1182,7 +1300,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		// Style processing (WIDE / DUAL)
 		if (numChannels >= 2)
 		{
-			if (styleVal == 2) // WIDE: exaggerate stereo
+			if (styleVal == 2) // WIDE: M/S boost (on top of per-engine decorrelation)
 			{
 				const float mid  = (wetL + wetR) * 0.5f;
 				const float side = (wetL - wetR) * 0.5f;
@@ -1196,7 +1314,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				wetR = mono;
 			}
 			// styleVal == 1 (STEREO) and 3 (DUAL): no change here
-			// DUAL could differ in grain engine (independent L/R read positions) — future
+			// DUAL and WIDE are handled per-engine (separate L/R processing)
 		}
 
 		// Chaos engines
@@ -1348,7 +1466,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 		juce::NormalisableRange<float> (kModMin, kModMax, 0.0f, 1.0f), kModDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamGrain, "Grain",
-		juce::NormalisableRange<float> (kGrainMin, kGrainMax, 0.01f, 0.35f), kGrainDefault));
+		juce::NormalisableRange<float> (kGrainMin, kGrainMax, 0.01f, 0.25f), kGrainDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamEngine, "Engine",
 		juce::NormalisableRange<float> ((float) kEngineMin, (float) kEngineMax, 1.0f, 1.0f), kEngineDefault));
@@ -1426,7 +1544,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiHeight, "UI Height", 240, 1200, 480));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamUiPalette, "UI Palette", false));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamUiCrt, "UI CRT", false));
-	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor0, "UI Color 0", 0, 0xFFFFFF, 0xFFFFFF));
+	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor0, "UI Color 0", 0, 0xFFFFFF, 0x00FF00));
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor1, "UI Color 1", 0, 0xFFFFFF, 0x000000));
 
 	return { params.begin(), params.end() };

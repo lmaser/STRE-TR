@@ -933,6 +933,10 @@ void STRETRAudioProcessorEditor::updateEngineControls()
     grainSlider.setAlpha (grainActive ? 1.0f : 0.35f);
     grainSlider.setEnabled (grainActive);
 
+    const bool reverseActive = (engineVal != 3);  // no reverse in Spectral Hold (FFT2)
+    reverseButton.setAlpha (reverseActive ? 1.0f : 0.35f);
+    reverseButton.setEnabled (reverseActive);
+
     repaint();
 }
 
@@ -1499,7 +1503,7 @@ void STRETRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
         if (infoArea.contains (p)) { openInfoPopup(); return; }
     }
 
-    if (getReverseLabelArea().contains (p))
+    if (getReverseLabelArea().contains (p) && reverseButton.isEnabled())
     { reverseButton.setToggleState (! reverseButton.getToggleState(), juce::sendNotificationSync); return; }
 
     if (getTriggerLabelArea().contains (p))
@@ -1785,17 +1789,22 @@ void STRETRAudioProcessorEditor::paint (juce::Graphics& g)
         const juce::String pdcLabel = chooseToggleLabel (pdcButton, pdcCR, "PDC", "PDC");
 
         auto drawToggleLegend = [&] (const juce::Rectangle<int>& labelArea,
-                                     const juce::String& labelText, int noCollisionRight)
+                                     const juce::String& labelText, int noCollisionRight,
+                                     bool enabled = true)
         {
             const int safeW = juce::jmax (0, noCollisionRight - labelArea.getX());
             auto snapEven = [] (int v) { return v & ~1; };
             const auto drawArea = juce::Rectangle<int> (snapEven (labelArea.getX()), snapEven (labelArea.getY()),
                                                         snapEven (safeW), labelArea.getHeight());
+            if (! enabled)
+                g.setColour (scheme.text.withAlpha (0.35f));
             g.drawText (labelText, drawArea.getX(), drawArea.getY(), drawArea.getWidth(), drawArea.getHeight(),
                         juce::Justification::left, true);
+            if (! enabled)
+                g.setColour (scheme.text);
         };
 
-        drawToggleLegend (getReverseLabelArea(), rvsLabel, rvsCR);
+        drawToggleLegend (getReverseLabelArea(), rvsLabel, rvsCR, reverseButton.isEnabled());
         drawToggleLegend (getTriggerLabelArea(), trgLabel, trgCR);
         drawToggleLegend (getAlignLabelArea(), alnLabel, alnCR);
         drawToggleLegend (getPdcLabelArea(), pdcLabel, pdcCR);
