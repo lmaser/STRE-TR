@@ -185,6 +185,24 @@ Two independent random modulation subsystems applied to the wet signal:
 - **Amount (0–100%)**: Max ±2 octave shift. Default: 50%.
 - **Speed (0.01–100 Hz)**: Random target change rate with 10 ms smoothing. Default: 5 Hz.
 
+### LIM THRESHOLD (−36 to 0 dB)
+
+Peak limiter threshold. Sets the ceiling above which the limiter engages.
+At 0 dB (default) the limiter acts as a transparent safety net. Lower values compress the signal harder.
+
+### LIM MODE
+
+Limiter insertion point:
+- **NONE**: Limiter disabled.
+- **WET**: Limiter applied to the wet signal only (after processing, before dry/wet mix).
+- **GLOBAL**: Limiter applied to the final output (after output gain and dry/wet mix).
+
+The limiter is a dual-stage transparent peak limiter:
+- **Stage 1 (Leveler)**: 2 ms attack, 10 ms release — catches sustained overs.
+- **Stage 2 (Brickwall)**: Instant attack, 100 ms release — catches transient peaks.
+
+Stereo-linked gain reduction ensures consistent imaging.
+
 ## Technical Details
 
 ### DSP Architecture
@@ -231,5 +249,6 @@ Two independent random modulation subsystems applied to the wet signal:
 - ALIGN and PDC enabled by default for phase-coherent dry/wet mixing.
 - RVS (reverse) mode across all three engines.
 - Safety hard-limiter at +48 dBFS.
+- Added dual-stage transparent peak limiter with LIM THRESHOLD (−36 to 0 dB) and LIM MODE (NONE/WET/GLOBAL). Stereo-linked gain reduction with 2 ms/10 ms leveler + instant/100 ms brickwall stages.
 - CRT post-processing overlay with scanlines, chromatic aberration, barrel distortion, noise, and vignette.
 - Resizable UI with persistent window size.

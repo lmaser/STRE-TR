@@ -466,6 +466,10 @@ namespace
     constexpr const char* kMixLegendShort  = "100% MX";
     constexpr const char* kMixLegendInt    = "100%";
 
+    constexpr const char* kLimLegendFull   = "-36.0 dB LIMIT";
+    constexpr const char* kLimLegendShort  = "-36.0 dB LIM";
+    constexpr const char* kLimLegendInt    = "-36dB";
+
     constexpr int kValueAreaHeightPx = 44;
     constexpr int kValueAreaRightMarginPx = 24;
     constexpr int kToggleLabelGapPx = 4;
@@ -555,9 +559,9 @@ namespace
 STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
     : AudioProcessorEditor (&p), audioProcessor (p)
 {
-    const std::array<BarSlider*, 11> barSliders {
+    const std::array<BarSlider*, 12> barSliders {
         &amountSlider, &modSlider, &grainSlider, &engineSlider, &windowSlider, &styleSlider,
-        &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider
+        &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider, &limThresholdSlider
     };
 
     useCustomPalette = audioProcessor.getUiUseCustomPalette();
@@ -616,6 +620,7 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
     tiltSlider.setNumDecimalPlacesToDisplay (1);
     panSlider.setNumDecimalPlacesToDisplay (1);
     mixSlider.setNumDecimalPlacesToDisplay (1);
+    limThresholdSlider.setNumDecimalPlacesToDisplay (1);
 
     // IO sliders start hidden (collapsible section)
     inputSlider.setVisible (false);
@@ -623,6 +628,7 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
     tiltSlider.setVisible (false);
     panSlider.setVisible (false);
     mixSlider.setVisible (false);
+    limThresholdSlider.setVisible (false);
 
     filterBar_.setOwner (this);
     filterBar_.setScheme (activeScheme);
@@ -694,6 +700,7 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
     bindSlider (tiltAttachment,    STRETRAudioProcessor::kParamTilt,    tiltSlider,    kDefaultTilt);
     bindSlider (panAttachment,     STRETRAudioProcessor::kParamPan,     panSlider,     0.5);
     bindSlider (mixAttachment,     STRETRAudioProcessor::kParamMix,     mixSlider,     kDefaultMix);
+    bindSlider (limThresholdAttachment, STRETRAudioProcessor::kParamLimThreshold, limThresholdSlider, kDefaultLimThreshold);
 
     // Mode In / Mode Out / Sum Bus combos
     {
@@ -723,9 +730,22 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
         sumBusAttachment  = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, STRETRAudioProcessor::kParamSumBus,  sumBusCombo);
     }
 
+    // Limiter mode combo
+    {
+        addAndMakeVisible (limModeCombo);
+        limModeCombo.addItem ("NONE",   1);
+        limModeCombo.addItem ("WET",    2);
+        limModeCombo.addItem ("GLOBAL", 3);
+        limModeCombo.setJustificationType (juce::Justification::centred);
+        limModeCombo.setLookAndFeel (&lnf);
+        limModeCombo.setVisible (false);
+        limModeAttachment = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, STRETRAudioProcessor::kParamLimMode, limModeCombo);
+    }
+
     // Disable numeric popup for discrete sliders
     engineSlider.setAllowNumericPopup (false);
     styleSlider.setAllowNumericPopup (false);
+    limThresholdSlider.setAllowNumericPopup (false);
 
     auto bindButton = [&] (std::unique_ptr<ButtonAttachment>& attachment,
                            const char* paramId, juce::Button& button)
@@ -768,9 +788,9 @@ STRETRAudioProcessorEditor::~STRETRAudioProcessorEditor()
     dismissEditorOwnedModalPrompts (lnf);
     setPromptOverlayActive (false);
 
-    const std::array<BarSlider*, 11> barSliders {
+    const std::array<BarSlider*, 12> barSliders {
         &amountSlider, &modSlider, &grainSlider, &engineSlider, &windowSlider, &styleSlider,
-        &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider
+        &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider, &limThresholdSlider
     };
     for (auto* slider : barSliders)
         slider->removeListener (this);
@@ -780,6 +800,7 @@ STRETRAudioProcessorEditor::~STRETRAudioProcessorEditor()
     modeInCombo.setLookAndFeel (nullptr);
     modeOutCombo.setLookAndFeel (nullptr);
     sumBusCombo.setLookAndFeel (nullptr);
+    limModeCombo.setLookAndFeel (nullptr);
 
     setLookAndFeel (nullptr);
 }
@@ -1164,6 +1185,22 @@ juce::String STRETRAudioProcessorEditor::getPanTextShort() const
     return "R" + juce::String (pct);
 }
 
+juce::String STRETRAudioProcessorEditor::getLimThresholdText() const
+{
+    const float db = (float) limThresholdSlider.getValue();
+    if (std::abs (db) < 0.05f)
+        return "0 dB LIMIT";
+    return juce::String (db, 1) + " dB LIMIT";
+}
+
+juce::String STRETRAudioProcessorEditor::getLimThresholdTextShort() const
+{
+    const float db = (float) limThresholdSlider.getValue();
+    if (std::abs (db) < 0.05f)
+        return "0 dB LIM";
+    return juce::String (db, 1) + " dB LIM";
+}
+
 bool STRETRAudioProcessorEditor::refreshLegendTextCache()
 {
     const auto oldAmountFull  = cachedAmountTextFull;
@@ -1177,6 +1214,7 @@ bool STRETRAudioProcessorEditor::refreshLegendTextCache()
     const auto oldMixFull     = cachedMixTextFull;
     const auto oldTiltFull    = cachedTiltTextFull;
     const auto oldPanFull     = cachedPanTextFull;
+    const auto oldLimFull     = cachedLimThresholdTextFull;
 
     cachedAmountTextFull  = getAmountText();    cachedAmountTextShort  = getAmountTextShort();
     cachedModTextFull     = getModText();        cachedModTextShort     = getModTextShort();
@@ -1214,6 +1252,17 @@ bool STRETRAudioProcessorEditor::refreshLegendTextCache()
 
     cachedPanTextFull  = getPanText();
     cachedPanTextShort = getPanTextShort();
+
+    cachedLimThresholdTextFull  = getLimThresholdText();
+    cachedLimThresholdTextShort = getLimThresholdTextShort();
+    {
+        const float limVal = (float) limThresholdSlider.getValue();
+        if (std::abs (limVal) < 0.05f)
+            cachedLimThresholdIntOnly = "0dB";
+        else
+            cachedLimThresholdIntOnly = juce::String ((int) limVal) + "dB";
+    }
+
     {
         const float panVal = (float) panSlider.getValue();
         const int panPct = juce::roundToInt ((panVal - 0.5f) * 200.0f);
@@ -1227,7 +1276,8 @@ bool STRETRAudioProcessorEditor::refreshLegendTextCache()
         || oldWindowFull != cachedWindowTextFull  || oldStyleFull != cachedStyleTextFull
         || oldInputFull != cachedInputTextFull    || oldOutputFull != cachedOutputTextFull
         || oldMixFull != cachedMixTextFull        || oldTiltFull != cachedTiltTextFull
-        || oldPanFull != cachedPanTextFull;
+        || oldPanFull != cachedPanTextFull
+        || oldLimFull != cachedLimThresholdTextFull;
 }
 
 juce::Rectangle<int> STRETRAudioProcessorEditor::getRowRepaintBounds (const juce::Slider& s) const
@@ -1269,19 +1319,20 @@ STRETRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY, bool io
     m.box = juce::jlimit (40, kToggleBoxPx, (int) std::round (editorH * 0.085));
     m.btnRowGap = juce::jlimit (4, 14, (int) std::round (editorH * 0.008));
 
-    // Only 2 button rows for STRE-TR (RVS+TRG, ALIGN+PDC)
+    // Only 2 button rows for STRE-TR (ALIGN+PDC, RVS+TRG)
     m.btnRow2Y = editorH - m.bottomMargin - m.box;
     m.btnRow1Y = m.btnRow2Y - m.btnRowGap - m.box;
 
-    m.chaosRowY = ioExpanded ? (m.btnRow1Y - m.btnRowGap - m.box) : 0;
+    // When IO is expanded, buttons are hidden and chaos sits at the bottom
+    m.chaosRowY = ioExpanded ? (editorH - m.bottomMargin - m.box) : 0;
 
     const int sliderBottomRef = ioExpanded ? m.chaosRowY : m.btnRow1Y;
     m.availableForSliders = juce::jmax (40, sliderBottomRef - m.betweenSlidersAndButtons - m.topMargin);
 
     // 6 collapsed sliders (AMOUNT/MOD/GRAIN/ENGINE/WINDOW/STYLE)
-    // 7 expanded IO items (IN/OUT/TILT/FILTER/PAN/MIX/MODE_ROW)
-    const int numSliders = ioExpanded ? 7 : 6;
-    const int numGaps    = ioExpanded ? 7 : 6;
+    // 8 expanded IO items (IN/OUT/TILT/FILTER/PAN/MIX/LIM/MODE_ROW)
+    const int numSliders = ioExpanded ? 8 : 6;
+    const int numGaps    = ioExpanded ? 8 : 6;
 
     m.toggleBarH = 20;
     const int spaceForScale = juce::jmax (40, m.availableForSliders - m.toggleBarH);
@@ -1351,6 +1402,17 @@ void STRETRAudioProcessorEditor::updateCachedLayout()
     }
     else cachedPanValueArea_ = {};
 
+    if (limThresholdSlider.isVisible())
+    {
+        const auto& bb = limThresholdSlider.getBounds();
+        const int valueX = bb.getRight() + cachedHLayout_.valuePad;
+        const int maxW = juce::jmax (0, getWidth() - valueX - kValueAreaRightMarginPx);
+        const int vw = juce::jmin (cachedHLayout_.valueW, maxW);
+        const int y = bb.getCentreY() - (kValueAreaHeightPx / 2);
+        cachedLimThresholdValueArea_ = { valueX, y, juce::jmax (0, vw), kValueAreaHeightPx };
+    }
+    else cachedLimThresholdValueArea_ = {};
+
     if (chaosFilterButton.isVisible())
         cachedChaosArea_ = chaosFilterButton.getBounds().getUnion (chaosDelayButton.getBounds());
     else cachedChaosArea_ = {};
@@ -1379,6 +1441,7 @@ int STRETRAudioProcessorEditor::getTargetValueColumnWidth() const
     maxW = juce::jmax (maxW, maxSW (kInputLegendFull,  kInputLegendShort,  kInputLegendInt));
     maxW = juce::jmax (maxW, maxSW (kOutputLegendFull, kOutputLegendShort, kOutputLegendInt));
     maxW = juce::jmax (maxW, maxSW (kMixLegendFull,    kMixLegendShort,    kMixLegendInt));
+    maxW = juce::jmax (maxW, maxSW (kLimLegendFull,    kLimLegendShort,    kLimLegendInt));
 
     const int desired = maxW + 16;
     const int minW = 90;
@@ -1734,7 +1797,10 @@ void STRETRAudioProcessorEditor::paint (juce::Graphics& g)
         if (panSlider.isVisible() && cachedPanValueArea_.getWidth() > 0)
             drawLegendForMode (cachedPanValueArea_, cachedPanTextFull, cachedPanTextShort, cachedPanTextShort);
 
-        // Mode In / Mode Out / Sum Bus labels
+        if (limThresholdSlider.isVisible() && cachedLimThresholdValueArea_.getWidth() > 0)
+            drawLegendForMode (cachedLimThresholdValueArea_, cachedLimThresholdTextFull, cachedLimThresholdTextShort, cachedLimThresholdIntOnly);
+
+        // Mode In / Mode Out / Sum Bus / Limiter Mode labels
         if (modeInCombo.isVisible())
         {
             const auto font = juce::Font (juce::FontOptions (11.0f).withStyle ("Bold"));
@@ -1751,6 +1817,7 @@ void STRETRAudioProcessorEditor::paint (juce::Graphics& g)
             drawComboLabel (modeInCombo,  "MODE IN",  "IN");
             drawComboLabel (modeOutCombo, "MODE OUT", "OUT");
             drawComboLabel (sumBusCombo,  "SUM BUS",  "SUM");
+            drawComboLabel (limModeCombo, "LIMIT",    "LIM");
         }
 
         // CHSF/CHSD labels
@@ -1776,6 +1843,8 @@ void STRETRAudioProcessorEditor::paint (juce::Graphics& g)
         const auto& labelFont = kBoldFont40();
         g.setFont (labelFont);
 
+        if (reverseButton.isVisible())
+        {
         // Row 1: RVS + TRG
         const int rvsCR = triggerButton.getX() - kToggleLegendCollisionPadPx;
         const int trgCR = getWidth() - kToggleLegendCollisionPadPx;
@@ -1808,6 +1877,7 @@ void STRETRAudioProcessorEditor::paint (juce::Graphics& g)
         drawToggleLegend (getTriggerLabelArea(), trgLabel, trgCR);
         drawToggleLegend (getAlignLabelArea(), alnLabel, alnCR);
         drawToggleLegend (getPdcLabelArea(), pdcLabel, pdcCR);
+        }
     }
 
     // ── Info gear icon ──
@@ -1870,17 +1940,19 @@ void STRETRAudioProcessorEditor::resized()
         filterBar_.setBounds   (horizontalLayout.leftX, mainTop + 3 * step, horizontalLayout.barW, verticalLayout.barH);
         panSlider.setBounds    (horizontalLayout.leftX, mainTop + 4 * step, horizontalLayout.barW, verticalLayout.barH);
         mixSlider.setBounds    (horizontalLayout.leftX, mainTop + 5 * step, horizontalLayout.barW, verticalLayout.barH);
+        limThresholdSlider.setBounds (horizontalLayout.leftX, mainTop + 6 * step, horizontalLayout.barW, verticalLayout.barH);
 
         const int modeRowPad = 10;
         {
-            const int modeY = mainTop + 6 * step + modeRowPad;
+            const int modeY = mainTop + 7 * step + modeRowPad;
             const int comboGap = 4;
             const int totalW = horizontalLayout.barW + horizontalLayout.valuePad + horizontalLayout.valueW;
-            const int comboW = (totalW - comboGap * 2) / 3;
+            const int comboW = (totalW - comboGap * 3) / 4;
             const int comboH = juce::jmax (24, verticalLayout.barH);
             modeInCombo.setBounds  (horizontalLayout.leftX,                           modeY, comboW, comboH);
-            modeOutCombo.setBounds (horizontalLayout.leftX + comboW + comboGap,        modeY, comboW, comboH);
+            modeOutCombo.setBounds (horizontalLayout.leftX + (comboW + comboGap),      modeY, comboW, comboH);
             sumBusCombo.setBounds  (horizontalLayout.leftX + (comboW + comboGap) * 2,  modeY, comboW, comboH);
+            limModeCombo.setBounds (horizontalLayout.leftX + (comboW + comboGap) * 3,  modeY, comboW, comboH);
         }
 
         const int chaosY = verticalLayout.chaosRowY;
@@ -1896,10 +1968,16 @@ void STRETRAudioProcessorEditor::resized()
         inputSlider.setVisible (true);   outputSlider.setVisible (true);
         tiltSlider.setVisible (true);    filterBar_.setVisible (true);
         panSlider.setVisible (true);     mixSlider.setVisible (true);
+        limThresholdSlider.setVisible (true);
         modeInCombo.setVisible (true);   modeOutCombo.setVisible (true);
-        sumBusCombo.setVisible (true);
+        sumBusCombo.setVisible (true);   limModeCombo.setVisible (true);
         chaosFilterButton.setVisible (true);  chaosFilterDisplay.setVisible (true);
         chaosDelayButton.setVisible (true);   chaosDelayDisplay.setVisible (true);
+
+        reverseButton.setVisible (false);
+        triggerButton.setVisible (false);
+        alignButton.setVisible (false);
+        pdcButton.setVisible (false);
 
         amountSlider.setBounds (0, 0, 0, 0); modSlider.setBounds (0, 0, 0, 0);
         grainSlider.setBounds (0, 0, 0, 0);  engineSlider.setBounds (0, 0, 0, 0);
@@ -1924,14 +2002,21 @@ void STRETRAudioProcessorEditor::resized()
         inputSlider.setBounds (0, 0, 0, 0);  outputSlider.setBounds (0, 0, 0, 0);
         tiltSlider.setBounds (0, 0, 0, 0);   mixSlider.setBounds (0, 0, 0, 0);
         panSlider.setBounds (0, 0, 0, 0);    filterBar_.setBounds (0, 0, 0, 0);
+        limThresholdSlider.setBounds (0, 0, 0, 0);
 
         inputSlider.setVisible (false);  outputSlider.setVisible (false);
         tiltSlider.setVisible (false);   mixSlider.setVisible (false);
         panSlider.setVisible (false);    filterBar_.setVisible (false);
+        limThresholdSlider.setVisible (false);
         chaosFilterButton.setVisible (false);  chaosFilterDisplay.setVisible (false);
         chaosDelayButton.setVisible (false);   chaosDelayDisplay.setVisible (false);
         modeInCombo.setVisible (false);  modeOutCombo.setVisible (false);
-        sumBusCombo.setVisible (false);
+        sumBusCombo.setVisible (false);  limModeCombo.setVisible (false);
+
+        reverseButton.setVisible (true);
+        triggerButton.setVisible (true);
+        alignButton.setVisible (true);
+        pdcButton.setVisible (true);
     }
 
     // Button rows
@@ -1945,10 +2030,10 @@ void STRETRAudioProcessorEditor::resized()
     const int btnRow1Y = verticalLayout.btnRow1Y;
     const int btnRow2Y = verticalLayout.btnRow2Y;
 
-    reverseButton.setBounds  (leftBlockX,  btnRow1Y, toggleHitW, verticalLayout.box);
-    triggerButton.setBounds  (rightBlockX, btnRow1Y, toggleHitW, verticalLayout.box);
-    alignButton.setBounds    (leftBlockX,  btnRow2Y, toggleHitW, verticalLayout.box);
-    pdcButton.setBounds      (rightBlockX, btnRow2Y, toggleHitW, verticalLayout.box);
+    alignButton.setBounds    (leftBlockX,  btnRow1Y, toggleHitW, verticalLayout.box);
+    pdcButton.setBounds      (rightBlockX, btnRow1Y, toggleHitW, verticalLayout.box);
+    reverseButton.setBounds  (leftBlockX,  btnRow2Y, toggleHitW, verticalLayout.box);
+    triggerButton.setBounds  (rightBlockX, btnRow2Y, toggleHitW, verticalLayout.box);
 
     if (resizerCorner)
         resizerCorner->setBounds (W - kResizerCornerPx, H - kResizerCornerPx, kResizerCornerPx, kResizerCornerPx);

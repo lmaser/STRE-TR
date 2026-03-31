@@ -108,6 +108,8 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 	modeInParam  = apvts.getRawParameterValue (kParamModeIn);
 	modeOutParam = apvts.getRawParameterValue (kParamModeOut);
 	sumBusParam  = apvts.getRawParameterValue (kParamSumBus);
+	limThresholdParam = apvts.getRawParameterValue (kParamLimThreshold);
+	limModeParam      = apvts.getRawParameterValue (kParamLimMode);
 	alignParam   = apvts.getRawParameterValue (kParamAlign);
 	pdcParam     = apvts.getRawParameterValue (kParamPdc);
 	triggerParam = apvts.getRawParameterValue (kParamTrigger);
@@ -282,6 +284,16 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	lastPan_ = 0.5f;
 	lastPanLeft_  = 0.70710678f;
 	lastPanRight_ = 0.70710678f;
+
+	// Limiter state reset
+	limEnv1_[0] = limEnv1_[1] = kLimFloor;
+	limEnv2_[0] = limEnv2_[1] = kLimFloor;
+	{
+		const float sr = static_cast<float> (currentSampleRate);
+		limAtt1_ = std::exp (-1.0f / (sr * 0.002f));   // 2 ms attack
+		limRel1_ = std::exp (-1.0f / (sr * 0.010f));   // 10 ms release
+		limRel2_ = std::exp (-1.0f / (sr * 0.100f));   // 100 ms release
+	}
 
 	// Engine crossfade
 	prevEngineVal_ = -1;
@@ -826,6 +838,12 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 	const float targetInputGain  = fastDecibelsToGain (inputGainDb);
 	const float targetOutputGain = fastDecibelsToGain (outputGainDb);
+
+	// ── Limiter ──
+	const int limMode = loadIntParamOrDefault (limModeParam, kLimModeDefault);
+	const float limThreshLin = (limMode != 0)
+		? fastDecibelsToGain (loadAtomicOrDefault (limThresholdParam, kLimThresholdDefault))
+		: 1.0f;
 
 	const float panValue = loadAtomicOrDefault (panParam, kPanDefault);
 	tiltDb_ = loadAtomicOrDefault (tiltParam, kTiltDefault);
@@ -1377,8 +1395,12 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		// Mix dry/wet with Sum Bus routing
 		const float dL = dryOrigL * (1.0f - smoothedMix);
 		const float dR = dryOrigR * (1.0f - smoothedMix);
-		const float wL = wetL * smoothedMix * smoothedOutputGain;
-		const float wR = wetR * smoothedMix * smoothedOutputGain;
+		float wL = wetL * smoothedOutputGain;
+		float wR = wetR * smoothedOutputGain;
+		if (limMode == 1)
+			applyLimiterSample (wL, wR, limThreshLin);
+		wL *= smoothedMix;
+		wR *= smoothedMix;
 
 		if (sumBusVal == 0) // ST
 		{
@@ -1414,6 +1436,29 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			}
 		}
 		lastPan_ = panValue;
+	}
+
+	// ── Transparent Peak Limiter (GLOBAL: after pan, before safety) ──
+	if (limMode == 2)
+	{
+		float* left  = buffer.getWritePointer (0);
+		float* right = numChannels >= 2 ? buffer.getWritePointer (1) : nullptr;
+		if (right != nullptr)
+			applyLimiter (left, right, numSamples, limThreshLin);
+		else
+		{
+			float dummy[2048];
+			int remaining = numSamples;
+			int offset = 0;
+			while (remaining > 0)
+			{
+				const int chunk = juce::jmin (remaining, 2048);
+				std::memset (dummy, 0, sizeof (float) * (size_t) chunk);
+				applyLimiter (left + offset, dummy, chunk, limThreshLin);
+				remaining -= chunk;
+				offset += chunk;
+			}
+		}
 	}
 
 	// Safety hard-limiter (+48 dBFS runway protection)
@@ -1538,6 +1583,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamChaosSpdFilter, "Chaos Filter Speed",
 		juce::NormalisableRange<float> (kChaosSpdMin, kChaosSpdMax, 0.01f, 0.3f), kChaosSpdDefault));
+
+	// Limiter
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamLimThreshold, "Lim Threshold",
+		juce::NormalisableRange<float> (kLimThresholdMin, kLimThresholdMax, 0.1f), kLimThresholdDefault));
+	params.push_back (std::make_unique<juce::AudioParameterChoice> (
+		kParamLimMode, "Lim Mode", juce::StringArray { "NONE", "WET", "GLOBAL" }, kLimModeDefault));
 
 	// UI state
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiWidth, "UI Width", 360, 1600, 360));
