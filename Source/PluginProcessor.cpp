@@ -110,6 +110,8 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 	sumBusParam  = apvts.getRawParameterValue (kParamSumBus);
 	limThresholdParam = apvts.getRawParameterValue (kParamLimThreshold);
 	limModeParam      = apvts.getRawParameterValue (kParamLimMode);
+	invPolParam       = apvts.getRawParameterValue (kParamInvPol);
+	invStrParam       = apvts.getRawParameterValue (kParamInvStr);
 	alignParam   = apvts.getRawParameterValue (kParamAlign);
 	pdcParam     = apvts.getRawParameterValue (kParamPdc);
 	triggerParam = apvts.getRawParameterValue (kParamTrigger);
@@ -835,6 +837,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const int modeInVal  = loadIntParamOrDefault (modeInParam,  kModeInOutDefault);
 	const int modeOutVal = loadIntParamOrDefault (modeOutParam, kModeInOutDefault);
 	const int sumBusVal  = loadIntParamOrDefault (sumBusParam,  kSumBusDefault);
+	const int invPol     = loadIntParamOrDefault (invPolParam,  kInvPolDefault);
+	const int invStr     = loadIntParamOrDefault (invStrParam,  kInvStrDefault);
 
 	const float targetInputGain  = fastDecibelsToGain (inputGainDb);
 	const float targetOutputGain = fastDecibelsToGain (outputGainDb);
@@ -909,7 +913,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	}
 	triggerWasOn_ = triggerOn;
 
-	// ── FFT engine setup (auto-active, no trigger needed) ──
+	// ── FFT engine setup ──
 	if ((engineVal == 2 || engineVal == 3) && inputBufLen_ > 0)
 	{
 		// FFT requires power-of-2 sizes — snap continuous window value
@@ -1006,7 +1010,13 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const bool isWide = (styleVal == 2 && numChannels >= 2);
 		const float pitchRateR = isDual ? (pitchRate * 0.5f) : -1.0f;
 
-		if ((engineVal == 2 || engineVal == 3) && inputBufLen_ > 0 && stft_.activeFftSize > 0)
+		if (! triggerOn)
+		{
+			// Trigger OFF → passthrough (all engines)
+			wetL = inL;
+			wetR = inR;
+		}
+		else if ((engineVal == 2 || engineVal == 3) && inputBufLen_ > 0 && stft_.activeFftSize > 0)
 		{
 			// ── Engines 2 & 3: FFT-based (phase vocoder / spectral hold) ──
 			const int outBufLen = kStftOutBufLen;
@@ -1039,12 +1049,6 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					                  fftSynthHop, pitchRate, reverseOn, pitchRateR, isWide);
 				}
 			}
-		}
-		else if (! triggerOn)
-		{
-			// Trigger OFF → passthrough (engines 0 & 1)
-			wetL = inL;
-			wetR = inR;
 		}
 		else if (engineVal == 0 && inputBufLen_ > 0)
 		{
@@ -1399,6 +1403,11 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		float wR = wetR * smoothedOutputGain;
 		if (limMode == 1)
 			applyLimiterSample (wL, wR, limThreshLin);
+
+		// Invert Polarity / Stereo (WET mode: after Limiter WET)
+		if (invPol == 1) { wL = -wL; wR = -wR; }
+		if (invStr == 1 && numChannels >= 2) std::swap (wL, wR);
+
 		wL *= smoothedMix;
 		wR *= smoothedMix;
 
@@ -1459,6 +1468,18 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				offset += chunk;
 			}
 		}
+	}
+
+	// ── Invert Polarity / Stereo (GLOBAL mode: after Limiter GLOBAL, before safety) ──
+	if (invPol == 2)
+		for (int ch = 0; ch < numChannels; ++ch)
+			juce::FloatVectorOperations::multiply (buffer.getWritePointer (ch), -1.0f, numSamples);
+	if (invStr == 2 && numChannels >= 2)
+	{
+		float* sL = buffer.getWritePointer (0);
+		float* sR = buffer.getWritePointer (1);
+		for (int n = 0; n < numSamples; ++n)
+			std::swap (sL[n], sR[n]);
 	}
 
 	// Safety hard-limiter (+48 dBFS runway protection)
@@ -1538,6 +1559,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 		kParamModeOut, "Mode Out", juce::StringArray { "L+R", "MID", "SIDE" }, kModeInOutDefault));
 	params.push_back (std::make_unique<juce::AudioParameterChoice> (
 		kParamSumBus, "Sum Bus", juce::StringArray { "ST", u8"\u2192M", u8"\u2192S" }, kSumBusDefault));
+
+	// Invert Polarity / Invert Stereo
+	params.push_back (std::make_unique<juce::AudioParameterChoice> (
+		kParamInvPol, "Invert Polarity",
+		juce::StringArray { "NONE", "WET", "GLOBAL" }, kInvPolDefault));
+	params.push_back (std::make_unique<juce::AudioParameterChoice> (
+		kParamInvStr, "Invert Stereo",
+		juce::StringArray { "NONE", "WET", "GLOBAL" }, kInvStrDefault));
 
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamAlign, "Align", true));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamPdc, "PDC", true));

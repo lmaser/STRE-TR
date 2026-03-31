@@ -27,6 +27,8 @@ public:
 	static constexpr const char* kParamSumBus    = "sum_bus";
 	static constexpr const char* kParamLimThreshold = "lim_threshold";
 	static constexpr const char* kParamLimMode      = "lim_mode";
+	static constexpr const char* kParamInvPol       = "inv_pol";
+	static constexpr const char* kParamInvStr       = "inv_str";
 	static constexpr const char* kParamAlign     = "align";
 	static constexpr const char* kParamPdc       = "pdc";
 	static constexpr const char* kParamReverse   = "reverse";
@@ -105,6 +107,8 @@ public:
 
 	static constexpr int   kModeInOutDefault = 0;
 	static constexpr int   kSumBusDefault    = 0;
+	static constexpr int   kInvPolDefault    = 0;   // 0=NONE  1=WET  2=GLOBAL
+	static constexpr int   kInvStrDefault    = 0;   // 0=NONE  1=WET  2=GLOBAL
 	static constexpr float kSqrt2Over2       = 0.707106781f;
 
 	static constexpr float kFilterFreqMin       = 20.0f;
@@ -432,7 +436,8 @@ private:
 	std::atomic<float>* modeInParam  = nullptr;
 	std::atomic<float>* modeOutParam = nullptr;
 	std::atomic<float>* sumBusParam  = nullptr;	std::atomic<float>* limThresholdParam = nullptr;
-	std::atomic<float>* limModeParam     = nullptr;	std::atomic<float>* alignParam   = nullptr;
+	std::atomic<float>* limModeParam     = nullptr;	std::atomic<float>* invPolParam      = nullptr;
+	std::atomic<float>* invStrParam      = nullptr;	std::atomic<float>* alignParam   = nullptr;
 	std::atomic<float>* pdcParam     = nullptr;
 	std::atomic<float>* triggerParam = nullptr;
 	std::atomic<float>* reverseParam = nullptr;

@@ -169,6 +169,8 @@ private:
     juce::ComboBox modeOutCombo;
     juce::ComboBox sumBusCombo;
     juce::ComboBox limModeCombo;
+    juce::ComboBox invPolCombo;
+    juce::ComboBox invStrCombo;
 
     juce::ToggleButton alignButton;
     juce::ToggleButton pdcButton;
@@ -201,6 +203,8 @@ private:
     std::unique_ptr<ComboBoxAttachment> modeOutAttachment;
     std::unique_ptr<ComboBoxAttachment> sumBusAttachment;
     std::unique_ptr<ComboBoxAttachment> limModeAttachment;
+    std::unique_ptr<ComboBoxAttachment> invPolAttachment;
+    std::unique_ptr<ComboBoxAttachment> invStrAttachment;
 
     std::unique_ptr<ButtonAttachment> alignAttachment;
     std::unique_ptr<ButtonAttachment> pdcAttachment;

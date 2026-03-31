@@ -742,6 +742,24 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
         limModeAttachment = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, STRETRAudioProcessor::kParamLimMode, limModeCombo);
     }
 
+    // Invert Polarity / Invert Stereo combos
+    {
+        auto setupInvCombo = [this] (juce::ComboBox& combo)
+        {
+            addAndMakeVisible (combo);
+            combo.addItem ("NONE",   1);
+            combo.addItem ("WET",    2);
+            combo.addItem ("GLOBAL", 3);
+            combo.setJustificationType (juce::Justification::centred);
+            combo.setLookAndFeel (&lnf);
+            combo.setVisible (false);
+        };
+        setupInvCombo (invPolCombo);
+        setupInvCombo (invStrCombo);
+        invPolAttachment = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, STRETRAudioProcessor::kParamInvPol, invPolCombo);
+        invStrAttachment = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, STRETRAudioProcessor::kParamInvStr, invStrCombo);
+    }
+
     // Disable numeric popup for discrete sliders
     engineSlider.setAllowNumericPopup (false);
     styleSlider.setAllowNumericPopup (false);
@@ -801,6 +819,8 @@ STRETRAudioProcessorEditor::~STRETRAudioProcessorEditor()
     modeOutCombo.setLookAndFeel (nullptr);
     sumBusCombo.setLookAndFeel (nullptr);
     limModeCombo.setLookAndFeel (nullptr);
+    invPolCombo.setLookAndFeel (nullptr);
+    invStrCombo.setLookAndFeel (nullptr);
 
     setLookAndFeel (nullptr);
 }
@@ -815,6 +835,13 @@ void STRETRAudioProcessorEditor::applyActivePalette()
     activeScheme = s;
     lnf.setScheme (activeScheme);
     filterBar_.setScheme (activeScheme);
+
+    for (auto* combo : { &modeInCombo, &modeOutCombo, &sumBusCombo, &limModeCombo, &invPolCombo, &invStrCombo })
+    {
+        combo->setColour (juce::ComboBox::textColourId,       s.text);
+        combo->setColour (juce::ComboBox::backgroundColourId, s.bg);
+        combo->setColour (juce::ComboBox::outlineColourId,    s.outline);
+    }
 }
 
 void STRETRAudioProcessorEditor::applyCrtState (bool enabled)
@@ -1330,9 +1357,9 @@ STRETRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY, bool io
     m.availableForSliders = juce::jmax (40, sliderBottomRef - m.betweenSlidersAndButtons - m.topMargin);
 
     // 6 collapsed sliders (AMOUNT/MOD/GRAIN/ENGINE/WINDOW/STYLE)
-    // 8 expanded IO items (IN/OUT/TILT/FILTER/PAN/MIX/LIM/MODE_ROW)
-    const int numSliders = ioExpanded ? 8 : 6;
-    const int numGaps    = ioExpanded ? 8 : 6;
+    // 9 expanded IO items (IN/OUT/TILT/FILTER/PAN/MIX/LIM/MODE_ROW/INV_ROW)
+    const int numSliders = ioExpanded ? 9 : 6;
+    const int numGaps    = ioExpanded ? 9 : 6;
 
     m.toggleBarH = 20;
     const int spaceForScale = juce::jmax (40, m.availableForSliders - m.toggleBarH);
@@ -1804,6 +1831,7 @@ void STRETRAudioProcessorEditor::paint (juce::Graphics& g)
         if (modeInCombo.isVisible())
         {
             const auto font = juce::Font (juce::FontOptions (11.0f).withStyle ("Bold"));
+            g.setColour (scheme.text);
             g.setFont (font);
             auto drawComboLabel = [&] (const juce::ComboBox& combo, const juce::String& full, const juce::String& shortTxt)
             {
@@ -1818,6 +1846,25 @@ void STRETRAudioProcessorEditor::paint (juce::Graphics& g)
             drawComboLabel (modeOutCombo, "MODE OUT", "OUT");
             drawComboLabel (sumBusCombo,  "SUM BUS",  "SUM");
             drawComboLabel (limModeCombo, "LIMIT",    "LIM");
+        }
+
+        // Invert Polarity / Invert Stereo labels above combos
+        if (invPolCombo.isVisible())
+        {
+            const auto font = juce::Font (juce::FontOptions (11.0f).withStyle ("Bold"));
+            g.setColour (scheme.text);
+            g.setFont (font);
+            auto drawComboLabel = [&] (const juce::ComboBox& combo, const juce::String& full, const juce::String& shortTxt)
+            {
+                const auto area = combo.getBounds().withHeight (14).translated (0, -15);
+                const float comboW = (float) combo.getWidth();
+                juce::GlyphArrangement ga;
+                ga.addLineOfText (font, full, 0.0f, 0.0f);
+                const bool useShort = ga.getBoundingBox (0, -1, false).getWidth() > comboW;
+                g.drawText (useShort ? shortTxt : full, area, juce::Justification::centred);
+            };
+            drawComboLabel (invPolCombo, "INV POL", "POL");
+            drawComboLabel (invStrCombo, "INV STR", "STR");
         }
 
         // CHSF/CHSD labels
@@ -1955,6 +2002,17 @@ void STRETRAudioProcessorEditor::resized()
             limModeCombo.setBounds (horizontalLayout.leftX + (comboW + comboGap) * 3,  modeY, comboW, comboH);
         }
 
+        // Invert Polarity / Invert Stereo — 2 combos on row 8
+        {
+            const int invY = mainTop + 7 * step + modeRowPad + juce::jmax (24, verticalLayout.barH) + 18;
+            const int comboGap = 4;
+            const int totalW = horizontalLayout.barW + horizontalLayout.valuePad + horizontalLayout.valueW;
+            const int comboW = (totalW - comboGap) / 2;
+            const int comboH = juce::jmax (24, verticalLayout.barH);
+            invPolCombo.setBounds (horizontalLayout.leftX,                          invY, comboW, comboH);
+            invStrCombo.setBounds (horizontalLayout.leftX + (comboW + comboGap),    invY, comboW, comboH);
+        }
+
         const int chaosY = verticalLayout.chaosRowY;
         const int chaosH = verticalLayout.box;
         const int chaosRightX = horizontalLayout.leftX + horizontalLayout.barW + horizontalLayout.valuePad;
@@ -1971,6 +2029,7 @@ void STRETRAudioProcessorEditor::resized()
         limThresholdSlider.setVisible (true);
         modeInCombo.setVisible (true);   modeOutCombo.setVisible (true);
         sumBusCombo.setVisible (true);   limModeCombo.setVisible (true);
+        invPolCombo.setVisible (true);   invStrCombo.setVisible (true);
         chaosFilterButton.setVisible (true);  chaosFilterDisplay.setVisible (true);
         chaosDelayButton.setVisible (true);   chaosDelayDisplay.setVisible (true);
 
@@ -2012,6 +2071,7 @@ void STRETRAudioProcessorEditor::resized()
         chaosDelayButton.setVisible (false);   chaosDelayDisplay.setVisible (false);
         modeInCombo.setVisible (false);  modeOutCombo.setVisible (false);
         sumBusCombo.setVisible (false);  limModeCombo.setVisible (false);
+        invPolCombo.setVisible (false);  invStrCombo.setVisible (false);
 
         reverseButton.setVisible (true);
         triggerButton.setVisible (true);
