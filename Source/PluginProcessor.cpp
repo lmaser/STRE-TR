@@ -112,6 +112,10 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 	limModeParam      = apvts.getRawParameterValue (kParamLimMode);
 	invPolParam       = apvts.getRawParameterValue (kParamInvPol);
 	invStrParam       = apvts.getRawParameterValue (kParamInvStr);
+	mixModeParam   = apvts.getRawParameterValue (kParamMixMode);
+	dryLevelParam  = apvts.getRawParameterValue (kParamDryLevel);
+	wetLevelParam  = apvts.getRawParameterValue (kParamWetLevel);
+	filterPosParam = apvts.getRawParameterValue (kParamFilterPos);
 	alignParam   = apvts.getRawParameterValue (kParamAlign);
 	pdcParam     = apvts.getRawParameterValue (kParamPdc);
 	triggerParam = apvts.getRawParameterValue (kParamTrigger);
@@ -266,20 +270,25 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 
 	chaosFilterEnabled_ = false;
 	chaosDelayEnabled_  = false;
-	chaosAmtD_ = 0.0f; chaosAmtF_ = 0.0f;
-	chaosParamSmoothCoeff_ = std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.02f));
-	chaosParamSmoothStep_ = 1.0f - chaosParamSmoothCoeff_;
-	chaosDSmoothCoeff_ = std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.005f));
-	chaosGSmoothCoeff_ = chaosDSmoothCoeff_;
-	chaosFSmoothCoeff_ = std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.01f));
+	chaosStereo_ = false;
+	chaosAmtD_ = 0.0f; chaosAmtNormD_ = 0.0f; chaosAmtF_ = 0.0f;
+	chaosParamSmoothCoeff_ = std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.010f));
+	cachedChaosParamSmoothCoeff_ = chaosParamSmoothCoeff_;
 	chaosShPeriodD_ = 8820.0f; smoothedChaosShPeriodD_ = 8820.0f;
 	chaosShPeriodF_ = 8820.0f; smoothedChaosShPeriodF_ = 8820.0f;
 	chaosDelayMaxSamples_ = 0.0f; smoothedChaosDelayMaxSamples_ = 0.0f;
 	chaosGainMaxDb_ = 0.0f; smoothedChaosGainMaxDb_ = 0.0f;
 	chaosFilterMaxOct_ = 0.0f; smoothedChaosFilterMaxOct_ = 0.0f;
-	chaosDPhase_ = 0.0f; chaosDTarget_ = 0.0f; chaosDSmoothed_ = 0.0f;
-	chaosGPhase_ = 0.0f; chaosGTarget_ = 0.0f; chaosGSmoothed_ = 0.0f;
-	chaosFPhase_ = 0.0f; chaosFTarget_ = 0.0f; chaosFSmoothed_ = 0.0f;
+	for (int c = 0; c < 2; ++c)
+	{
+		chaosDPrev_[c] = chaosDCurr_[c] = chaosDNext_[c] = 0.0f;
+		chaosDPhase_[c] = 0.0f; chaosDDriftPhase_[c] = 0.0f; chaosDDriftFreqHz_[c] = 0.0f; chaosDOut_[c] = 0.0f;
+		chaosGPrev_[c] = chaosGCurr_[c] = chaosGNext_[c] = 0.0f;
+		chaosGPhase_[c] = 0.0f; chaosGDriftPhase_[c] = 0.0f; chaosGDriftFreqHz_[c] = 0.0f; chaosGOut_[c] = 0.0f;
+	}
+	chaosFPrev_ = chaosFCurr_ = chaosFNext_ = 0.0f;
+	chaosFPhase_ = 0.0f; chaosFDriftPhase_ = 0.0f; chaosFDriftFreqHz_ = 0.0f;
+	chaosFOut_[0] = chaosFOut_[1] = 0.0f;
 	std::memset (chaosDelayBuf_, 0, sizeof (chaosDelayBuf_));
 	chaosDelayWritePos_ = 0;
 
@@ -366,23 +375,60 @@ void STRETRAudioProcessor::filterWetSample (float& wetL, float& wetR)
 	float hpTarget = wetFilterTargetHpFreq_;
 	float lpTarget = wetFilterTargetLpFreq_;
 
-	if (chaosFilterEnabled_ && chaosAmtF_ > 0.01f)
-	{
-		const float octaveShift = chaosFSmoothed_ * smoothedChaosFilterMaxOct_;
-		const float freqMult = std::exp2 (octaveShift);
-		const float hpBase = wetFilterHpOn_ ? hpTarget : kFilterFreqMin;
-		const float lpBase = wetFilterLpOn_ ? lpTarget : kFilterFreqMax;
-		hpTarget = juce::jlimit (kFilterFreqMin, kFilterFreqMax, hpBase * freqMult);
-		lpTarget = juce::jlimit (kFilterFreqMin, kFilterFreqMax, lpBase * freqMult);
-	}
-
+	// EMA frequency smoothing (base, no chaos)
 	smoothedFilterHpFreq_ += (hpTarget - smoothedFilterHpFreq_) * kGainSmoothStep;
 	smoothedFilterLpFreq_ += (lpTarget - smoothedFilterLpFreq_) * kGainSmoothStep;
 
+	// Batched coefficient update (with per-channel chaos overlay)
 	if (--filterCoeffCountdown_ <= 0)
 	{
 		filterCoeffCountdown_ = kFilterCoeffUpdateInterval;
-		updateFilterCoeffs (false, false);
+		const bool chaosFilterActive = chaosFilterEnabled_ && chaosAmtF_ > 0.01f;
+		if (chaosFilterActive)
+		{
+			const float sHp = smoothedFilterHpFreq_;
+			const float sLp = smoothedFilterLpFreq_;
+
+			// L channel coefficients
+			const float octL = chaosFOut_[0] * smoothedChaosFilterMaxOct_;
+			const float freqMultL = std::exp2 (octL);
+			const float hpBaseL = wetFilterHpOn_ ? sHp : kFilterFreqMin;
+			const float lpBaseL = wetFilterLpOn_ ? sLp : kFilterFreqMax;
+			smoothedFilterHpFreq_ = juce::jlimit (kFilterFreqMin, kFilterFreqMax, hpBaseL * freqMultL);
+			smoothedFilterLpFreq_ = juce::jlimit (kFilterFreqMin, kFilterFreqMax, lpBaseL * freqMultL);
+			updateFilterCoeffs (true, true);
+
+			if (chaosStereo_)
+			{
+				auto hpL0 = hpCoeffs_[0]; auto hpL1 = hpCoeffs_[1];
+				auto lpL0 = lpCoeffs_[0]; auto lpL1 = lpCoeffs_[1];
+
+				const float octR = chaosFOut_[1] * smoothedChaosFilterMaxOct_;
+				const float freqMultR = std::exp2 (octR);
+				smoothedFilterHpFreq_ = juce::jlimit (kFilterFreqMin, kFilterFreqMax, hpBaseL * freqMultR);
+				smoothedFilterLpFreq_ = juce::jlimit (kFilterFreqMin, kFilterFreqMax, lpBaseL * freqMultR);
+				updateFilterCoeffs (true, true);
+
+				hpCoeffsR_[0] = hpCoeffs_[0]; hpCoeffsR_[1] = hpCoeffs_[1];
+				lpCoeffsR_[0] = lpCoeffs_[0]; lpCoeffsR_[1] = lpCoeffs_[1];
+				hpCoeffs_[0] = hpL0; hpCoeffs_[1] = hpL1;
+				lpCoeffs_[0] = lpL0; lpCoeffs_[1] = lpL1;
+			}
+			else
+			{
+				hpCoeffsR_[0] = hpCoeffs_[0]; hpCoeffsR_[1] = hpCoeffs_[1];
+				lpCoeffsR_[0] = lpCoeffs_[0]; lpCoeffsR_[1] = lpCoeffs_[1];
+			}
+
+			smoothedFilterHpFreq_ = sHp;
+			smoothedFilterLpFreq_ = sLp;
+		}
+		else
+		{
+			updateFilterCoeffs (false, false);
+			hpCoeffsR_[0] = hpCoeffs_[0]; hpCoeffsR_[1] = hpCoeffs_[1];
+			lpCoeffsR_[0] = lpCoeffs_[0]; lpCoeffsR_[1] = lpCoeffs_[1];
+		}
 	}
 
 	const bool chaosFilterActive = chaosFilterEnabled_ && chaosAmtF_ > 0.01f;
@@ -391,7 +437,7 @@ void STRETRAudioProcessor::filterWetSample (float& wetL, float& wetR)
 		for (int s = 0; s < wetFilterNumSectionsHp_; ++s)
 		{
 			wetL = processBiquad (wetL, hpCoeffs_[s], wetFilterState_[0].hp[s]);
-			wetR = processBiquad (wetR, hpCoeffs_[s], wetFilterState_[1].hp[s]);
+			wetR = processBiquad (wetR, hpCoeffsR_[s], wetFilterState_[1].hp[s]);
 		}
 	}
 
@@ -400,11 +446,15 @@ void STRETRAudioProcessor::filterWetSample (float& wetL, float& wetR)
 		for (int s = 0; s < wetFilterNumSectionsLp_; ++s)
 		{
 			wetL = processBiquad (wetL, lpCoeffs_[s], wetFilterState_[0].lp[s]);
-			wetR = processBiquad (wetR, lpCoeffs_[s], wetFilterState_[1].lp[s]);
+			wetR = processBiquad (wetR, lpCoeffsR_[s], wetFilterState_[1].lp[s]);
 		}
 	}
 
-	// Tilt filter
+	// ── TILT filter — now handled by tiltWetSample() ──
+}
+
+void STRETRAudioProcessor::tiltWetSample (float& wetL, float& wetR)
+{
 	if (std::abs (tiltDb_) > 0.05f)
 	{
 		if (std::abs (tiltDb_ - lastTiltDb_) > 0.02f)
@@ -833,6 +883,17 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const float inputGainDb  = loadAtomicOrDefault (inputParam, kInputDefault);
 	const float outputGainDb = loadAtomicOrDefault (outputParam, kOutputDefault);
 	const float mixValue     = loadAtomicOrDefault (mixParam, kMixDefault);
+	const int   mixMode  = loadIntParamOrDefault (mixModeParam, kMixModeDefault);
+	const float dryLevel = (mixMode == 1) ? loadAtomicOrDefault (dryLevelParam, kDryLevelDefault) : 0.0f;
+	const float wetLevel = (mixMode == 1) ? loadAtomicOrDefault (wetLevelParam, kWetLevelDefault) : 0.0f;
+
+	// Filter / Tilt position
+	{
+		const int fltPos = loadIntParamOrDefault (filterPosParam, kFilterPosDefault);
+		// 0=F▼T▼  1=F▲T▲  2=F▲T▼  3=F▼T▲
+		filterPre_ = (fltPos == 1 || fltPos == 2);
+		tiltPre_   = (fltPos == 1 || fltPos == 3);
+	}
 
 	const int modeInVal  = loadIntParamOrDefault (modeInParam,  kModeInOutDefault);
 	const int modeOutVal = loadIntParamOrDefault (modeOutParam, kModeInOutDefault);
@@ -946,11 +1007,16 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	if (chaosDelayEnabled_)
 	{
 		chaosAmtD_       = loadAtomicOrDefault (chaosAmtParam, kChaosAmtDefault);
+		chaosAmtNormD_   = chaosAmtD_ * 0.01f;
 		const float spd  = loadAtomicOrDefault (chaosSpdParam, kChaosSpdDefault);
 		chaosShPeriodD_  = (float) currentSampleRate / juce::jmax (0.01f, spd);
-		chaosDelayMaxSamples_ = chaosAmtD_ * 0.01f * (float) kChaosDelayBufLen * 0.5f;
-		chaosGainMaxDb_       = chaosAmtD_ * 0.06f;
+		chaosDelayMaxSamples_ = chaosAmtNormD_ * 0.005f * static_cast<float> (currentSampleRate);
+		chaosGainMaxDb_       = chaosAmtNormD_;
 	}
+	if (chaosFilterEnabled_ || chaosDelayEnabled_)
+		chaosParamSmoothCoeff_ = cachedChaosParamSmoothCoeff_;
+
+	chaosStereo_ = (styleVal >= 1);
 
 	// ── Per-sample processing ──
 	for (int i = 0; i < numSamples; ++i)
@@ -993,6 +1059,10 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			if (modeInVal == 1)      { const float mid  = (l + r) * kSqrt2Over2; inL = inR = mid; }
 			else /* modeInVal==2 */   { const float side = (l - r) * kSqrt2Over2; inL = inR = side; }
 		}
+
+		// PRE filter/tilt: apply before circular buffer
+		if (filterPre_) filterWetSample (inL, inR);
+		if (tiltPre_)   tiltWetSample   (inL, inR);
 
 		// ── Write input to circular buffer ──
 		if (inputBufLen_ > 0)
@@ -1344,30 +1414,12 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		if (chaosDelayEnabled_)  advanceChaosD();
 
 		// Wet-signal filter + tilt
-		filterWetSample (wetL, wetR);
+		if (!tiltPre_)   tiltWetSample   (wetL, wetR);
+		if (!filterPre_) filterWetSample (wetL, wetR);
 
-		// Chaos delay
+		// Chaos delay (per-channel Hermite+Drift micro-delay + gain modulation)
 		if (chaosDelayEnabled_ && chaosAmtD_ > 0.01f)
-		{
-			chaosDelayBuf_[0][chaosDelayWritePos_] = wetL;
-			chaosDelayBuf_[1][chaosDelayWritePos_] = wetR;
-
-			const float delaySamples = juce::jlimit (0.0f, (float)(kChaosDelayBufLen - 1),
-			                                         chaosDSmoothed_ * smoothedChaosDelayMaxSamples_);
-			const int delayInt = (int) delaySamples;
-			const float delayFrac = delaySamples - (float) delayInt;
-			const int readPos0 = (chaosDelayWritePos_ - delayInt + kChaosDelayBufLen) & (kChaosDelayBufLen - 1);
-			const int readPos1 = (readPos0 - 1 + kChaosDelayBufLen) & (kChaosDelayBufLen - 1);
-			wetL = chaosDelayBuf_[0][readPos0] + delayFrac * (chaosDelayBuf_[0][readPos1] - chaosDelayBuf_[0][readPos0]);
-			wetR = chaosDelayBuf_[1][readPos0] + delayFrac * (chaosDelayBuf_[1][readPos1] - chaosDelayBuf_[1][readPos0]);
-
-			const float chaosGainDb = chaosGSmoothed_ * smoothedChaosGainMaxDb_;
-			const float chaosGain = fastDecibelsToGain (chaosGainDb);
-			wetL *= chaosGain;
-			wetR *= chaosGain;
-
-			chaosDelayWritePos_ = (chaosDelayWritePos_ + 1) & (kChaosDelayBufLen - 1);
-		}
+			applyChaosDelay (wetL, wetR);
 
 		// Mode Out: M/S encode wet output
 		if (numChannels >= 2 && modeOutVal != 0)
@@ -1397,8 +1449,11 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		}
 
 		// Mix dry/wet with Sum Bus routing
-		const float dL = dryOrigL * (1.0f - smoothedMix);
-		const float dR = dryOrigR * (1.0f - smoothedMix);
+		float dG, wG;
+		if (mixMode == 0) { dG = 1.0f - smoothedMix; wG = smoothedMix; }
+		else              { dG = dryLevel; wG = wetLevel; }
+		const float dL = dryOrigL * dG;
+		const float dR = dryOrigR * dG;
 		float wL = wetL * smoothedOutputGain;
 		float wR = wetR * smoothedOutputGain;
 		if (limMode == 1)
@@ -1408,8 +1463,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		if (invPol == 1) { wL = -wL; wR = -wR; }
 		if (invStr == 1 && numChannels >= 2) std::swap (wL, wR);
 
-		wL *= smoothedMix;
-		wR *= smoothedMix;
+		wL *= wG;
+		wR *= wG;
 
 		if (sumBusVal == 0) // ST
 		{
@@ -1567,6 +1622,25 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 	params.push_back (std::make_unique<juce::AudioParameterChoice> (
 		kParamInvStr, "Invert Stereo",
 		juce::StringArray { "NONE", "WET", "GLOBAL" }, kInvStrDefault));
+
+	// Mix Mode + Dry/Wet levels (SEND mode) + Filter position
+	params.push_back (std::make_unique<juce::AudioParameterChoice> (
+		kParamMixMode, "Mix Mode",
+		juce::StringArray { "INSERT", "SEND" }, kMixModeDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamDryLevel, "Dry Level",
+		juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f), kDryLevelDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamWetLevel, "Wet Level",
+		juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f), kWetLevelDefault));
+	// Filter / Tilt position (PRE / POST)
+	params.push_back (std::make_unique<juce::AudioParameterChoice> (
+		kParamFilterPos, "Filter Position",
+		juce::StringArray { juce::String::fromUTF8 (u8"F\u25bc T\u25bc"),
+		                    juce::String::fromUTF8 (u8"F\u25b2 T\u25b2"),
+		                    juce::String::fromUTF8 (u8"F\u25b2 T\u25bc"),
+		                    juce::String::fromUTF8 (u8"F\u25bc T\u25b2") },
+		kFilterPosDefault));
 
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamAlign, "Align", true));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamPdc, "PDC", true));

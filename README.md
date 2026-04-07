@@ -178,12 +178,12 @@ Two independent random modulation subsystems applied to the wet signal:
 **CHAOS D (Delay)**: Modulates delay time and gain via smooth random LFO. Creates tape-like wobble and detuning.
 - **Enable**: Toggle (default: OFF).
 - **Amount (0–100%)**: Max delay ≈ 50 ms, gain swing up to ±3 dB. Default: 50%.
-- **Speed (0.01–100 Hz)**: Random target change rate with 5 ms smoothing. Default: 5 Hz.
+- **Speed (0.01–100 Hz)**: Random target rate with Hermite cubic interpolation and drift LFO. Default: 5 Hz.
 
 **CHAOS F (Filter)**: Modulates HP/LP filter cutoff frequencies via smooth random LFO. Creates evolving tonal movement.
 - **Enable**: Toggle (default: OFF).
 - **Amount (0–100%)**: Max ±2 octave shift. Default: 50%.
-- **Speed (0.01–100 Hz)**: Random target change rate with 10 ms smoothing. Default: 5 Hz.
+- **Speed (0.01–100 Hz)**: Random target rate with Hermite cubic interpolation and drift LFO. Default: 5 Hz.
 
 ### LIM THRESHOLD (−36 to 0 dB)
 
@@ -213,7 +213,7 @@ Stereo-linked gain reduction ensures consistent imaging.
 - **Smoothing**: One-pole EMA per sample for gain, mix, pan, and delay parameters. Snap-to-target when within ε.
 - **Wet filter**: Biquad HP/LP (Transposed Direct Form II). Coefficients updated every 32 samples.
 - **Tilt EQ**: First-order symmetric shelf at 1 kHz. Tolerance-based coefficient update.
-- **Chaos**: Sample-and-hold random modulation with exponential smoothing. Per-block precomputation.
+- **Chaos**: Hermite cubic interpolation between random targets with per-channel quadrature drift LFO. Per-block precomputation.
 - **Safety limiter**: Hard clip at +48 dBFS (±251.19) on all output. Catches NaN/Inf runaways without engaging during normal operation.
 
 ### State Persistence
