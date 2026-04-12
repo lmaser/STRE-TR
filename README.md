@@ -1,254 +1,313 @@
 # STRE-TR v1.4
 
-<br/><br/>
+STRE-TR is a real-time time-stretch and freeze effect with four engines:
+- `STRETCH` (WSOLA)
+- `GRAIN`
+- `FFT1`
+- `FFT2`
 
-STRE-TR is a real-time time-stretching audio effect with three selectable DSP engines — WSOLA, Granular, and FFT Phase Vocoder.  
-It combines elastic time-stretch, pitch shifting, and spectral freezing with filter shaping, chaos modulation, and a minimal CRT-inspired interface.
+It combines stretch intensity, independent pitch-rate control, reverse playback, wet-only filtering, chaos modulation, stereo routing, and a dual-stage limiter inside the same compact UI language as the rest of the series.
 
 ## Concept
 
-STRE-TR treats time-stretching as a playable instrument. The AMOUNT control maps a continuous 1×–4× stretch ratio across all engines, while MOD independently scales pitch from ×0.0625 to ×16 without affecting stretch rate.
+STRE-TR is designed as a playable stretch instrument rather than a clinical offline stretcher.
 
-Three engines offer different trade-offs:
-- **STRETCH (WSOLA)** — time-domain overlap-add with cross-correlation search. Transparent, elastic stretching with preserved transients. Trigger-gated.
-- **GRAIN** — polyphonic granular synthesis with up to 64 simultaneous Hann-windowed grains. Textural, stochastic stretching. Trigger-gated.
-- **FFT** — STFT phase vocoder with Laroche & Dolson phase correction. Spectral time-freezing. Always active — at 100% the signal freezes on the last analysis frame.
+- `AMOUNT` controls engine advance or hold intensity. It is not a fixed "1x to 4x" ratio.
+- `MOD` controls pitch-rate independently of `AMOUNT`.
+- `TRG` arms the engine. With `TRG` off, the wet path is dry passthrough.
+- `ALIGN` and `PDC` are only meaningful when an FFT engine is active, because that is where latency exists.
 
-Trigger mode gates STRETCH and GRAIN engines: when TRG is OFF, the engine advances through the input buffer; when ON, it freezes at the current position and resets on each rising edge.
+## Engines
+
+### STRETCH
+
+WSOLA-based elastic time stretching with overlap search and crossfade between segments.
+
+- Best for more direct, time-domain stretching.
+- Supports reverse.
+- `AMOUNT` reduces analysis advance toward freeze.
+
+### GRAIN
+
+Granular stretcher with up to 64 active grains and Hann envelopes.
+
+- Best for textural and broken-up results.
+- Supports reverse.
+- `GRAIN` controls grain length in milliseconds.
+- `AMOUNT` reduces read advance toward freeze.
+
+### FFT1
+
+Phase-vocoder engine with overlap-add reconstruction and pitch-rate control.
+
+- Best for spectral stretching and pitched material.
+- Supports reverse.
+- `AMOUNT` reduces FFT analysis hop toward freeze.
+
+### FFT2
+
+Spectral-hold engine built on the same FFT framework.
+
+- Best for frozen or semi-frozen spectral textures.
+- `RVS` is intentionally disabled here.
+- `AMOUNT` increases hold intensity rather than moving an analysis hop toward zero.
 
 ## Interface
 
-STRE-TR uses a text-based UI with horizontal bar sliders. All controls are visible at once — no pages, tabs, or hidden menus.
+STRE-TR uses the same text-first horizontal bar language as the rest of the series.
 
-- **Bar sliders**: Click and drag horizontally. Right-click for numeric entry.
-- **Toggle buttons**: TRG, RVS, ALIGN, PDC. Click to enable/disable.
-- **Collapsible INPUT/OUTPUT/MIX section**: Click the toggle bar (triangle) to swap between main parameters and the INPUT, OUTPUT, MIX controls. State persists across sessions.
-- **Filter bar**: Visible in the INPUT/OUTPUT/MIX section. Click to open the HP/LP filter configuration prompt with frequency, slope, and enable/disable controls for each filter.
-- **Gear icon** (top-right): Opens the info popup with version, credits, and a link to Graphics settings.
-- **Graphics popup**: Toggle CRT post-processing effect and switch between default/custom colour palettes.
-- **Resize**: Drag the bottom-right corner. Size persists across sessions.
+- Left view: `AMOUNT`, `MOD`, `GRAIN`, `ENGINE`, `WINDOW`, `STYLE`
+- Expanded IO view: `INPUT`, `OUTPUT`, `TILT`, `PAN`, `MIX`, `LIM`
+- Bottom controls: routing, limiter mode, invert modes, mix mode, filter/tilt position
+- Toggle rows: `ALIGN`, `PDC`, `RVS`, `TRG`
+- Chaos row in the expanded view: `CHSF`, `CHSD`
+- Right-click numeric prompt on bars and supported controls
+- Gear icon for the info/graphics popup
+- Resizable editor with persisted size and graphics state
 
-The value column to the right of each slider shows the current state in context:
-- AMOUNT shows percentage.
-- MOD shows the pitch multiplier.
-- GRAIN shows milliseconds (dimmed when engine ≠ GRAIN).
-- ENGINE shows STRETCH/GRAIN/FFT.
-- WINDOW shows sample count.
-- STYLE shows MONO/STEREO/WIDE/DUAL.
-- INPUT/OUTPUT show dB values.
-- MIX shows percentage.
+## Signal Flow
+
+The wet path is processed in this order:
+
+1. Input gain
+2. `MODE IN`
+3. PRE filter and/or PRE tilt if selected
+4. Circular input buffer write
+5. Selected engine
+6. `STYLE`
+7. POST filter and/or POST tilt if selected
+8. `CHAOS D`
+9. `MODE OUT`
+10. Engine crossfade
+11. DC blocker
+12. Output gain
+13. `LIMIT` in `WET` mode if enabled
+14. `INV POL` / `INV STR` in `WET` mode if enabled
+15. Dry/wet mix plus `SUM BUS`
+16. `PAN`
+17. `LIMIT` in `GLOBAL` mode if enabled
+18. `INV POL` / `INV STR` in `GLOBAL` mode if enabled
+19. Safety hard clip
+
+`CHAOS F` does not sit as a separate audio stage; it modulates the wet filter cutoff targets.
 
 ## Parameters
 
-### AMOUNT (0–100%)
+### AMOUNT (0-100%)
 
-Time-stretch ratio. Maps linearly: 0% = 1× (no stretch), 50% = 2×, 100% = 4×.
+Controls how far the active engine moves away from normal read/analysis advance and toward freeze or hold.
 
-For the FFT engine, Amount controls the analysis hop: `analysisHop = synthesisHop × (1 − Amount/100)`. At 100%, no new analysis frames are read — the output freezes on the last spectral frame.
+- `STRETCH`, `GRAIN`, `FFT1`: `0%` = normal advance, `100%` = freeze
+- `FFT2`: `0%` = minimal hold, `100%` = strongest hold
 
-For WSOLA and Granular, higher values increase the stretch ratio applied to segment/grain playback.
+### MOD (0.0625x to 16x)
 
-### MOD (×0.0625–×16.0)
+Pitch-rate control centered at `1.0x`.
 
-Pitch multiplier applied independently of time-stretch.  
-Stored as 0–1 internally: 0 = ×0.0625 (−4 octaves), 0.5 = ×1.0 (no shift), 1.0 = ×16 (barrel shift).  
-Smoothed per-sample for glitch-free sweeps.
+- `0.5` internal = `1.0x`
+- `0.0` internal = `0.0625x`
+- `1.0` internal = `16x`
 
-### GRAIN (1–500 ms)
+It is smoothed per sample.
 
-Grain size for the Granular engine. Controls the length of individual grains in milliseconds.  
-Larger values produce smoother stretching; smaller values produce more granular, glitchy textures.  
-This slider is dimmed and disabled when ENGINE is not set to GRAIN.
+### GRAIN (1-500 ms)
 
-Default: 100 ms. Skew: 0.35 (lower range has finer resolution).
+Grain length for the `GRAIN` engine.
+
+- Only active for `ENGINE = GRAIN`
+- Display is dimmed and disabled in other engines
 
 ### ENGINE
 
-Selects the active DSP engine:
-- **STRETCH** (0): WSOLA — time-domain cross-correlation overlap. Best for transparent stretching.
-- **GRAIN** (1): Granular synthesis — polyphonic Hann-windowed grains. Best for textural effects.
-- **FFT** (2): Phase vocoder — STFT spectral processing. Best for spectral freeze and pitched content.
+Selects the active engine:
 
-Default: STRETCH.
+- `0` = `STRETCH`
+- `1` = `GRAIN`
+- `2` = `FFT1`
+- `3` = `FFT2`
 
-### WINDOW
+### WINDOW (16-8192)
 
-Segment/FFT size shared by all engines:
+Shared window/segment size control.
 
-| Index | Samples |
-|-------|---------|
-| 0     | 128     |
-| 1     | 256     |
-| 2     | 512     |
-| 3     | 1024    |
-| 4     | 2048    |
-| 5     | 4096    |
-| 6     | 8192    |
-
-Larger windows give better frequency resolution (smoother FFT, less noise) but higher latency and slower transient response. Smaller windows track transients better but introduce more spectral artifacts.
-
-Default: 1024 (index 3).
+- `STRETCH` and `GRAIN` use the smoothed value directly
+- `FFT1` and `FFT2` snap it to the next power of two, with a minimum effective FFT size of `64`
 
 ### STYLE
 
-Stereo shaping mode applied to the processed signal:
-- **MONO** (0): Collapse L+R to mono: `out = (L + R) × 0.5`.
-- **STEREO** (1): Pass through unchanged.
-- **WIDE** (2): Exaggerate stereo width: mid unchanged, side × 1.5.
-- **DUAL** (3): Independent left/right processing.
+Stereo behavior of the wet signal:
 
-Default: STEREO.
+- `MONO`: collapses wet output to mono
+- `STEREO`: normal stereo behavior
+- `WIDE`: per-engine decorrelation plus extra side boost
+- `DUAL`: independent left/right trajectories where supported
 
-### INPUT (−100 to 0 dB)
+### INPUT (-100 to 0 dB)
 
-Pre-effect gain. Displays "−INF" at −80 dB or below.  
-Skew: 2.5 (finer resolution near 0 dB).
+Pre-engine gain.
 
-### OUTPUT (−100 to +24 dB)
+### OUTPUT (-100 to +24 dB)
 
-Post-effect gain applied to the wet signal.  
-Skew: 3.23.
+Wet output gain before mix routing.
 
-### MIX (0–100%)
+### MIX (0-100%)
 
-Dry/wet balance. 0% = fully dry, 100% = fully wet.  
-Default: 100%.
+Insert dry/wet crossfade.
 
-### HP/LP FILTER
+### MIX MODE
 
-High-pass and low-pass filters applied to the wet signal, accessible via the filter bar in the IO section.
+- `INSERT`: uses the main `MIX` slider
+- `SEND`: uses independent `DRY LEVEL` and `WET LEVEL`
 
-- **HP FREQ (20–20 000 Hz)**: High-pass cutoff frequency. Default: 250 Hz.
-- **LP FREQ (20–20 000 Hz)**: Low-pass cutoff frequency. Default: 2000 Hz.
-- **HP SLOPE / LP SLOPE**: 6 dB/oct (one-pole), 12 dB/oct (second-order Butterworth), or 24 dB/oct (two cascaded second-order Butterworth stages). Default: 12 dB/oct.
-- **HP / LP toggles**: Enable or disable each filter independently.
+`SEND` dry/wet levels are now smoothed like the rest of the series.
 
-### TILT (−6 to +6 dB)
+### FILTER POS
 
-Spectral tilt applied to the wet signal. A first-order symmetric shelf filter pivoted at 1 kHz.  
-Positive values boost highs and cut lows; negative values cut highs and boost lows.  
-Default: 0 dB.
+Independent PRE/POST placement of the wet filter and wet tilt stages:
 
-### PAN (L–C–R)
+- `F post / T post`
+- `F pre / T pre`
+- `F pre / T post`
+- `F post / T pre`
 
-Equal-power stereo panning. 0 = hard left, 0.5 = center, 1.0 = hard right.  
-Default: center.
+### HP / LP FILTER
 
-### TRG (Trigger)
+Wet-only filter block.
 
-Gate mode for STRETCH and GRAIN engines.  
-- OFF: Engine advances through the input buffer continuously.
-- ON: Freezes at the current buffer position. Edge-triggered — resets read position on each OFF→ON transition.
+- Frequency range: `20 Hz - 20000 Hz`
+- Slope options: `6`, `12`, `24 dB/oct`
+- Independent enable for HP and LP
 
-The FFT engine is always active and does not use the trigger.
+### TILT (-6 to +6 dB)
 
-### RVS (Reverse)
+Wet-only first-order tilt around `1 kHz`.
 
-Reverses the read direction in the input buffer:
-- **WSOLA**: Analysis hop direction reversed.
-- **Granular**: Grains spawn and play backward.
-- **FFT**: Analysis read position decrements.
+### PAN
 
-### ALIGN (default: ON)
+Stereo pan applied after dry/wet summing.
 
-Dry/wet phase alignment. When ON, the dry signal is delayed by the FFT engine's processing latency (equal to the FFT window size) so dry and wet are time-coherent. When OFF, the dry signal is undelayed — useful as a creative effect at intermediate MIX values.
+- Center remains unity
+- Pan motion is smoothed sample by sample
 
-### PDC (default: ON)
+### TRG
 
-Plugin Delay Compensation. When ON, reports the FFT engine's latency (equal to the FFT window size in samples) to the DAW, which compensates by shifting the plugin's output forward in time. When OFF, no latency is reported.
+Engine arm/trigger behavior.
+
+- `OFF`: wet path is passthrough
+- `ON`: selected engine is active
+- Rising edge resets the engine read state
+
+### RVS
+
+Reverse playback/read direction.
+
+- Active in `STRETCH`, `GRAIN`, and `FFT1`
+- Disabled in `FFT2`
+
+### ALIGN
+
+Delays the dry path by the active FFT latency so dry and wet remain time-aligned when an FFT engine is running.
+
+### PDC
+
+Reports FFT latency to the host.
+
+- `ON`: host latency compensation follows the active FFT size
+- `OFF`: no latency is reported
 
 ### MODE IN / MODE OUT
 
-Signal encoding applied before (Mode In) and after (Mode Out) the stretch engine:
-- **L+R** (0): Stereo pass-through.
-- **MID** (1): Extract mid: `(L + R) × 0.707`.
-- **SIDE** (2): Extract side: `(L − R) × 0.707`.
+Wet-path encoding before and after the engine:
+
+- `L+R`
+- `MID`
+- `SIDE`
 
 ### SUM BUS
 
-Output routing after Mode Out:
-- **ST** (0): Normal stereo output.
-- **→M** (1): Sum to mid, output mid to both channels.
-- **→S** (2): Difference to side, output side to both channels.
+How the wet contribution is injected after dry/wet mix:
 
-### CHAOS
+- `ST`
+- `->M`
+- `->S`
 
-Two independent random modulation subsystems applied to the wet signal:
+### CHAOS D
 
-**CHAOS D (Delay)**: Modulates delay time and gain via smooth random LFO. Creates tape-like wobble and detuning.
-- **Enable**: Toggle (default: OFF).
-- **Amount (0–100%)**: Max delay ≈ 50 ms, gain swing up to ±3 dB. Default: 50%.
-- **Speed (0.01–100 Hz)**: Random target rate with Hermite cubic interpolation and drift LFO. Default: 5 Hz.
+Hermite-interpolated random micro-delay plus gain wobble on the wet path.
 
-**CHAOS F (Filter)**: Modulates HP/LP filter cutoff frequencies via smooth random LFO. Creates evolving tonal movement.
-- **Enable**: Toggle (default: OFF).
-- **Amount (0–100%)**: Max ±2 octave shift. Default: 50%.
-- **Speed (0.01–100 Hz)**: Random target rate with Hermite cubic interpolation and drift LFO. Default: 5 Hz.
+- `Amount`: up to about `50 ms` delay span and moderate gain drift
+- `Speed`: `0.01-100 Hz`
 
-### LIM THRESHOLD (−36 to 0 dB)
+### CHAOS F
 
-Peak limiter threshold. Sets the ceiling above which the limiter engages.
-At 0 dB (default) the limiter acts as a transparent safety net. Lower values compress the signal harder.
+Hermite-interpolated random modulation of HP/LP filter cutoffs.
+
+- `Amount`: up to about `+/-2 octaves`
+- `Speed`: `0.01-100 Hz`
+
+### LIM THRESHOLD (-36 to 0 dB)
+
+Threshold for the transparent peak limiter.
 
 ### LIM MODE
 
-Limiter insertion point:
-- **NONE**: Limiter disabled.
-- **WET**: Limiter applied to the wet signal only (after processing, before dry/wet mix).
-- **GLOBAL**: Limiter applied to the final output (after output gain and dry/wet mix).
+- `NONE`
+- `WET`
+- `GLOBAL`
 
-The limiter is a dual-stage transparent peak limiter:
-- **Stage 1 (Leveler)**: 2 ms attack, 10 ms release — catches sustained overs.
-- **Stage 2 (Brickwall)**: Instant attack, 100 ms release — catches transient peaks.
+Limiter threshold is now smoothed in both insertion modes.
 
-Stereo-linked gain reduction ensures consistent imaging.
+### INV POL / INV STR
 
-## Technical Details
+Independent inversion modes for polarity and stereo:
 
-### DSP Architecture
-- **Input buffer**: 262 144-sample circular buffer (~5.9 s at 44.1 kHz) with bitwise AND wrapping.
-- **WSOLA**: Cross-correlation overlap search with Hann-windowed crossfade at 25% overlap. Analysis hop scaled by stretch ratio and pitch rate.
-- **Granular**: Up to 64 simultaneous grains. Hann envelope per grain. Spawn interval = grain size / density. Polyphonic normalization by 1/√(active count).
-- **FFT Phase Vocoder**: Hann window, 75% overlap (synthesis hop = FFT size / 4). Laroche & Dolson 1999 phase correction with instantaneous frequency estimation. Pitch shift via linear bin interpolation. OLA reconstruction with 2/3 normalization.
-- **Smoothing**: One-pole EMA per sample for gain, mix, pan, and delay parameters. Snap-to-target when within ε.
-- **Wet filter**: Biquad HP/LP (Transposed Direct Form II). Coefficients updated every 32 samples.
-- **Tilt EQ**: First-order symmetric shelf at 1 kHz. Tolerance-based coefficient update.
-- **Chaos**: Hermite cubic interpolation between random targets with per-channel quadrature drift LFO. Per-block precomputation.
-- **Safety limiter**: Hard clip at +48 dBFS (±251.19) on all output. Catches NaN/Inf runaways without engaging during normal operation.
+- `NONE`
+- `WET`
+- `GLOBAL`
 
-### State Persistence
-- All parameters saved via JUCE AudioProcessorValueTreeState.
-- UI state (window size, palette, CRT toggle, IO section expanded/collapsed) persisted in the plugin state.
-- Parameter IDs are stable across versions for preset compatibility.
+## Technical Notes
 
-### Performance
-- Zero-allocation audio thread. All buffers pre-allocated in `prepareToPlay`.
-- Lock-free atomic parameter reads.
-- Gain/mix smoothing snaps to target within ε to avoid unnecessary EMA in steady state.
-- Filter coefficient update uses per-block interval (every 32 samples).
+- Input buffer: up to `262144` samples
+- `STRETCH`: WSOLA with overlap search and crossfade
+- `GRAIN`: up to `64` grains with Hann envelopes
+- `FFT1`: phase vocoder
+- `FFT2`: spectral hold built on the FFT engine
+- Wet filter: HP/LP biquads with periodic coefficient updates
+- Tilt: first-order wet tilt
+- Chaos: Hermite-interpolated random targets with drift
+- Limiter: dual-stage, stereo-linked
+  - Stage 1: `2 ms` attack / `10 ms` release
+  - Stage 2: instant attack / `100 ms` release
+- Safety stage: hard clip at about `+48 dBFS`
 
-### Build
-- JUCE Framework, C++17, VST3 format.
-- Visual Studio 2022 (MSBuild, x64 Release).
-- Dependencies: JUCE modules only (no third-party libraries). Uses `juce::dsp::FFT` for the phase vocoder engine.
+## Smoothing
+
+STRE-TR currently smooths the user-facing continuous controls that matter for fast GUI movement:
+
+- `INPUT`
+- `OUTPUT`
+- `MIX`
+- `SEND DRY LEVEL`
+- `SEND WET LEVEL`
+- `LIM THRESHOLD`
+- `WINDOW`
+- `AMOUNT` -> engine speed/hold behavior
+- `MOD` -> pitch rate
+- `PAN`
+
+Filter, tilt, and chaos subsystems also have their own internal smoothing/update logic.
+
+## Notes
+
+- `ALIGN` and `PDC` matter only for the FFT engines
+- `TRG` is central to the creative workflow of this plugin; with `TRG` off the wet path stays clean
+- `FFT2` is the only engine that disables `RVS`
 
 ## Changelog
 
 ### v1.4
-- Initial release with three DSP engines: WSOLA (STRETCH), Granular (GRAIN), FFT Phase Vocoder (FFT).
-- AMOUNT (0–100%) maps 1×–4× stretch ratio. MOD independently shifts pitch ×0.0625–×16.
-- FFT engine is always active; STRETCH and GRAIN are trigger-gated.
-- ENGINE selector with automatic UI dimming (GRAIN slider disabled when engine ≠ GRAIN).
-- WINDOW selector: 128–8192 samples shared across all engines.
-- STYLE modes: MONO, STEREO, WIDE, DUAL.
-- HP/LP biquad filters with 6/12/24 dB/oct slopes.
-- TILT EQ (−6 to +6 dB) — first-order spectral tilt on wet signal.
-- PAN with equal-power law.
-- CHAOS engine with two independent targets: CHAOS D (delay/gain modulation) and CHAOS F (filter modulation).
-- Mode In / Mode Out / Sum Bus signal routing (L+R, MID, SIDE).
-- ALIGN and PDC enabled by default for phase-coherent dry/wet mixing.
-- RVS (reverse) mode across all three engines.
-- Safety hard-limiter at +48 dBFS.
-- Added dual-stage transparent peak limiter with LIM THRESHOLD (−36 to 0 dB) and LIM MODE (NONE/WET/GLOBAL). Stereo-linked gain reduction with 2 ms/10 ms leveler + instant/100 ms brickwall stages.
-- CRT post-processing overlay with scanlines, chromatic aberration, barrel distortion, noise, and vignette.
-- Resizable UI with persistent window size.
+
+- Added the current limiter, routing, chaos, and UI workflow
+- Kept `STRETCH`, `GRAIN`, `FFT1`, and `FFT2` under the same editor
+- Smoothed `SEND DRY/WET` and `LIM THRESHOLD` to match the rest of the series
+- Cleaned documentation and removed stale or incorrect legacy descriptions

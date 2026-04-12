@@ -12,11 +12,11 @@ public:
 	STRETRAudioProcessor();
 	~STRETRAudioProcessor() override;
 
-	// ── Parameter IDs ──────────────────────────────────────────────
+    // Parameter IDs
 	static constexpr const char* kParamAmount    = "amount";
 	static constexpr const char* kParamMod       = "mod";
 	static constexpr const char* kParamGrain     = "grain";
-	static constexpr const char* kParamEngine    = "engine";     // 0=STRETCH 1=GRAIN 2=FFT
+    static constexpr const char* kParamEngine    = "engine";     // 0=STRETCH 1=GRAIN 2=FFT1 3=FFT2
 	static constexpr const char* kParamWindow    = "window";     // 21..8192 continuous
 	static constexpr const char* kParamStyle     = "style";      // 0=MONO 1=STEREO 2=WIDE 3=DUAL
 	static constexpr const char* kParamInput     = "input";
@@ -80,7 +80,7 @@ public:
 	static constexpr const char* kParamUiColor0   = "ui_color0";
 	static constexpr const char* kParamUiColor1   = "ui_color1";
 
-	// ── Parameter ranges and defaults ──────────────────────────────
+    // Parameter ranges and defaults
 	static constexpr float kAmountMin     = 0.0f;
 	static constexpr float kAmountMax     = 100.0f;
 	static constexpr float kAmountDefault = 0.0f;
@@ -154,7 +154,7 @@ public:
 		return p;
 	}
 
-	// ── AudioProcessor overrides ──────────────────────────────────
+    // AudioProcessor overrides
 	void prepareToPlay (double sampleRate, int samplesPerBlock) override;
 	void releaseResources() override;
 
@@ -223,7 +223,7 @@ private:
 
 	double currentSampleRate = 44100.0;
 
-	// ── Circular input buffer (shared by both engines) ─────────────
+    // Circular input buffer (shared by all engines)
 	static constexpr int kInputBufMaxLen = 262144;  // 2^18, ~5.9s @ 44100
 	std::vector<float> inputBuf_[2];    // L, R
 	int inputBufWritePos_ = 0;
@@ -232,13 +232,13 @@ private:
 
 	bool  triggerWasOn_ = false;  // tracks previous trigger state for edge detection
 
-	// ── WSOLA engine state ─────────────────────────────────────────
+    // WSOLA engine state
 	struct WsolaState
 	{
 		double segInputStart   = 0.0;  // input position where current segment starts
 		double readPos         = 0.0;  // current fractional read position in input buf
 		double segInputStartR  = 0.0;  // DUAL: R channel nominal position
-		double readPosR        = 0.0;  // DUAL: R channel read position (pitchRate×0.5)
+        double readPosR        = 0.0;  // DUAL: R channel read position (pitchRate x 0.5)
 		int    segRemaining    = 0;    // samples remaining in current segment
 		int    overlapRemain   = 0;    // samples remaining in overlap/crossfade region
 		int    segLen          = 0;    // current segment length in samples
@@ -250,7 +250,7 @@ private:
 
 	int wsolaBestOverlapOffset (int nominalPos, int overlapLen, int ch0Weight) const;
 
-	// ── Granular engine state ──────────────────────────────────────
+    // Granular engine state
 	struct Grain
 	{
 		double readPos   = 0.0;   // start position in input buffer
@@ -270,7 +270,7 @@ private:
 	float grainPrevOutL_       = 0.0f;  // DC-block state
 	float grainPrevOutR_       = 0.0f;
 
-	// ── FFT / Phase Vocoder engine state ───────────────────────────
+    // FFT / phase vocoder engine state
 	static constexpr int kMaxFftSize    = 8192;
 	static constexpr int kMaxFftBins    = kMaxFftSize / 2 + 1;
 	static constexpr int kStftOutBufLen = kMaxFftSize * 2;
@@ -305,10 +305,10 @@ private:
 	                                    float holdCoeff, float pitchRate, float pitchRateR = -1.0f,
 	                                    bool wideMode = false);
 
-	// ── Precomputed 1/sqrt(n) for granular normalization ───────────
+    // Precomputed 1/sqrt(n) for granular normalization
 	float invSqrtLut_[kMaxGrains + 1] = {};
 
-	// ── Dry delay buffer for PDC Align ─────────────────────────────
+    // Dry delay buffer for ALIGN when FFT latency is active
 	float dryDelayBuf_[2][kMaxFftSize] = {};
 	int   dryDelayWritePos_ = 0;
 	int   dryDelayLen_       = 0;
@@ -344,6 +344,9 @@ private:
 	float smoothedInputGain  = 1.0f;
 	float smoothedOutputGain = 1.0f;
 	float smoothedMix        = 0.5f;
+	float smoothedDryLevel   = kDryLevelDefault;
+	float smoothedWetLevel   = kWetLevelDefault;
+	float smoothedLimThreshold = 1.0f;
 	bool  filterPre_  = false;
 	bool  tiltPre_    = false;
 	float smoothedWindow_    = (float) kWindowDefault;  // smoothed window size in samples
@@ -385,7 +388,7 @@ private:
 	float lastTiltDb_   = 0.0f;
 	float tiltSmoothSc_ = 0.0f;
 
-	// ── Chaos state (Hermite + Drift, per-channel D/G, quadrature F) ──
+    // Chaos state (Hermite + drift, per-channel D/G, quadrature F)
 	bool  chaosFilterEnabled_ = false;
 	bool  chaosDelayEnabled_  = false;
 	bool  chaosStereo_        = false;   // true when style >= 1 (per-channel D/G)
@@ -432,7 +435,7 @@ private:
 	float chaosFCurr_            = 0.0f;
 	float chaosFNext_            = 0.0f;
 	float chaosFPhase_           = 0.0f;
-	float chaosFDriftPhase_      = 0.0f;   // single phase; R = +90° offset
+    float chaosFDriftPhase_      = 0.0f;   // single phase; R = +90 deg offset
 	float chaosFDriftFreqHz_     = 0.0f;
 	float chaosFOut_[2]          = {};     // [0]=L, [1]=R (quadrature when stereo)
 	juce::Random chaosFRng_;
@@ -666,7 +669,7 @@ private:
 		}
 	}
 
-	// ── Limiter state ─────────────────────────────────────────────
+    // Limiter state
 	static constexpr float kLimFloor = 1.0e-12f;
 	float limEnv1_[2] = { kLimFloor, kLimFloor };
 	float limEnv2_[2] = { kLimFloor, kLimFloor };
@@ -677,12 +680,23 @@ private:
 	inline void applyLimiter (float* leftData, float* rightData, int numSamples,
 	                         float thresholdGain) noexcept
 	{
+		applyLimiter (leftData, rightData, numSamples, thresholdGain, thresholdGain);
+	}
+
+	inline void applyLimiter (float* leftData, float* rightData, int numSamples,
+	                         float thresholdGainStart, float thresholdGainEnd) noexcept
+	{
+		const float thresholdStep = (numSamples > 1)
+			? (thresholdGainEnd - thresholdGainStart) / (float) (numSamples - 1)
+			: 0.0f;
+		float thresholdGain = thresholdGainStart;
+
 		for (int i = 0; i < numSamples; ++i)
 		{
 			const float peakL = std::abs (leftData[i]);
 			const float peakR = std::abs (rightData[i]);
 
-			// Stage 1 — leveler (2 ms attack, 10 ms release)
+            // Stage 1 - leveler (2 ms attack, 10 ms release)
 			for (int ch = 0; ch < 2; ++ch)
 			{
 				const float p = (ch == 0) ? peakL : peakR;
@@ -693,7 +707,7 @@ private:
 				if (limEnv1_[ch] < kLimFloor) limEnv1_[ch] = kLimFloor;
 			}
 
-			// Stage 2 — brickwall (instant attack, 100 ms release)
+            // Stage 2 - brickwall (instant attack, 100 ms release)
 			for (int ch = 0; ch < 2; ++ch)
 			{
 				const float p = (ch == 0) ? peakL : peakR;
@@ -715,6 +729,7 @@ private:
 
 			leftData[i]  *= gr;
 			rightData[i] *= gr;
+			thresholdGain += thresholdStep;
 		}
 	}
 
