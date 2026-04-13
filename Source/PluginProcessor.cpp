@@ -149,6 +149,7 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 	uiEditorHeight.store (h, std::memory_order_relaxed);
 
 	perfTrace.enableDesktopAutoDump();
+	stretchDebugTrace_.enableDesktopAutoDump();
 }
 
 STRETRAudioProcessor::~STRETRAudioProcessor() {}
@@ -230,11 +231,13 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	}
 	inputBufWritePos_ = 0;
 
-    // Initialize WSOLA state
-	wsola_ = {};
-	wsola_.readPos = 0.0;
-	wsola_.segInputStart = 0.0;
-	wsola_.segRemaining = 0;
+	// Initialize WSOLA state
+	resetWsolaAtPos (0.0);
+	wsolaUnityBypassActive_ = false;
+	stretchBootstrapSegments_ = 0;
+	stretchTransitionRemaining_ = 0;
+	stretchTransitionTotal_ = 0;
+	stretchTransitionToUnity_ = false;
 	triggerWasOn_ = false;
 
     // Initialize Granular state
@@ -495,44 +498,170 @@ void STRETRAudioProcessor::tiltWetSample (float& wetL, float& wetR)
 }
 
 //==============================================================================
-// WSOLA cross-correlation overlap search
+// WSOLA helpers
 
-int STRETRAudioProcessor::wsolaBestOverlapOffset (int nominalPos, int overlapLen, int ch0Weight) const
+namespace
 {
-	if (overlapLen <= 0 || inputBufLen_ <= 0) return 0;
+static inline float wsolaFadeInWeight (int idx, int overlapLen) noexcept
+{
+	if (overlapLen <= 0)
+		return 1.0f;
+
+	const float phase = ((float) idx + 0.5f) / (float) overlapLen;
+	const float s = std::sin (phase * juce::MathConstants<float>::halfPi);
+	return s * s;
+}
+
+static inline float wsolaFadeOutWeight (int idx, int overlapLen) noexcept
+{
+	if (overlapLen <= 0)
+		return 1.0f;
+
+	const float phase = ((float) idx + 0.5f) / (float) overlapLen;
+	const float c = std::cos (phase * juce::MathConstants<float>::halfPi);
+	return c * c;
+}
+
+static inline float wsolaSegmentWeight (int sampleIndex, int segLen, int overlapLen,
+                                        bool hasPrevSegment) noexcept
+{
+	if (segLen <= 0 || overlapLen <= 0)
+		return 1.0f;
+
+	const int tailStart = juce::jmax (0, segLen - overlapLen);
+	float weight = 1.0f;
+
+	if (hasPrevSegment && sampleIndex < overlapLen)
+		weight *= wsolaFadeInWeight (sampleIndex, overlapLen);
+
+	if (sampleIndex >= tailStart)
+		weight *= wsolaFadeOutWeight (sampleIndex - tailStart, overlapLen);
+
+	return weight;
+}
+
+static inline int wsolaRecommendedOverlapLen (int segLen, double sampleRate) noexcept
+{
+	const int timeCap = juce::jlimit (32, 256, (int) std::round (sampleRate * 0.005)); // ~5 ms
+	const int ratioTarget = juce::jmax (16, segLen / 4);
+	return juce::jlimit (16, juce::jmax (16, segLen - 1), juce::jmin (ratioTarget, timeCap));
+}
+}
+
+void STRETRAudioProcessor::resetWsolaAtPos (double capturePos) noexcept
+{
+	wsola_ = {};
+	wsola_.segInputStart = capturePos;
+	wsola_.segInputStartR = capturePos;
+	wsola_.samplesUntilNextSeg = 0;
+	wsola_.outputReadPos = 0;
+	wsola_.nextSynthPos = 0;
+	wsola_.lastBestOffset = 0;
+	wsola_.lastBestOffsetR = 0;
+	wsola_.lastAnalysisHop = 0.0;
+	wsola_.hasPrevTail = false;
+}
+
+STRETRAudioProcessor::WsolaMatchResult
+STRETRAudioProcessor::wsolaBestOverlapOffset (int channel, double nominalPos, int overlapLen,
+                                              int prevBestOffset, bool nearUnity,
+                                              float readRate, int synthPos) const
+{
+	WsolaMatchResult result {};
+	if (overlapLen <= 0 || inputBufLen_ <= 0 || ! wsola_.hasPrevTail)
+		return result;
 
 	const int len = inputBufLen_;
-        // Limit seek range to half the overlap - sufficient for good matches,
-        // avoids O(overlapLen^2) blowup with large windows.
-	const int seekWindow = juce::jmin (overlapLen / 2, len / 4);
-        // Coarser inner step for large windows (8192 -> step 8 vs 4)
-	const int step = (overlapLen >= 2048) ? 8 : 4;
-	float bestCorr = -1e30f;
-	int bestOffset = 0;
+	const int outMask = kWsolaOutBufLen - 1;
+	const int nomWrapped = ((int) std::floor (nominalPos) % len + len) % len;
+	const int seekCap = juce::jlimit (24, 128, (int) std::round (currentSampleRate * 0.0025)); // ~2.5 ms
+	const int baseSeek = juce::jmin (juce::jmax (8, overlapLen / 3), len / 4);
+	const int seekRadius = nearUnity
+		? juce::jmin (baseSeek, juce::jmax (8, seekCap / 2))
+		: juce::jmin (baseSeek, seekCap);
+	const int step = (overlapLen >= 2048) ? 8
+		: (overlapLen >= 1024) ? 4
+		: (overlapLen >= 256)  ? 2
+		: 1;
+	const int continuityAnchor = juce::jlimit (-seekRadius, seekRadius, prevBestOffset);
+	const int minOff = -seekRadius;
+	const int maxOff = seekRadius;
 
-	// Pre-wrap nominalPos once
-	const int nomWrapped = ((nominalPos % len) + len) % len;
-
-	for (int off = -seekWindow; off <= seekWindow; ++off)
+	float refEnergy = 1.0e-12f;
+	for (int j = 0; j < overlapLen; j += step)
 	{
-		float corr = 0.0f;
-        // Compute start indices once per offset - avoid modulo in inner loop
-		int idxA = ((nomWrapped + off) % len + len) % len;
-		int idxB = nomWrapped;
+		const float refL = (channel == 0)
+			? wsola_.outputAccumL[(synthPos + j) & outMask]
+			: wsola_.outputAccumR[(synthPos + j) & outMask];
+		refEnergy += refL * refL;
+	}
+
+	float bestScore = -1.0e30f;
+	int bestOffset = 0;
+	float bestNormCorr = 0.0f;
+	float bestCenterPenalty = 0.0f;
+	float bestDriftPenalty = 0.0f;
+	float bestStartDeltaL = 0.0f;
+	float bestStartDeltaR = 0.0f;
+	float bestRmseL = 0.0f;
+	float bestRmseR = 0.0f;
+
+	for (int off = minOff; off <= maxOff; ++off)
+	{
+		float dot = 0.0f;
+		float candEnergy = 1.0e-12f;
+		float diffEnergyL = 0.0f;
+		double candPos = (double) nomWrapped + (double) off;
+		float startDeltaL = 0.0f;
+		float startDeltaR = 0.0f;
 
 		for (int j = 0; j < overlapLen; j += step)
 		{
-			corr += inputBuf_[0][(size_t) idxA] * inputBuf_[0][(size_t) idxB];
-			if (ch0Weight < 2)
-				corr += inputBuf_[1][(size_t) idxA] * inputBuf_[1][(size_t) idxB];
-
-            // Advance with conditional wrap - much cheaper than modulo
-			idxA += step; if (idxA >= len) idxA -= len;
-			idxB += step; if (idxB >= len) idxB -= len;
+			const float candL = readInputBuf (channel, candPos);
+			const float refL = (channel == 0)
+				? wsola_.outputAccumL[(synthPos + j) & outMask]
+				: wsola_.outputAccumR[(synthPos + j) & outMask];
+			dot += candL * refL;
+			candEnergy += candL * candL;
+			const float diffL = candL - refL;
+			diffEnergyL += diffL * diffL;
+			if (j == 0)
+				startDeltaL = diffL;
+			candPos += (double) readRate * (double) step;
 		}
-		if (corr > bestCorr) { bestCorr = corr; bestOffset = off; }
+
+		const float normCorr = dot / std::sqrt (candEnergy * refEnergy);
+		const float centerPenalty = (seekRadius > 0)
+			? (nearUnity ? 0.030f : 0.012f) * (float) std::abs (off) / (float) seekRadius
+			: 0.0f;
+		const float driftPenalty = (seekRadius > 0)
+			? (nearUnity ? 0.018f : 0.006f) * (float) std::abs (off - continuityAnchor) / (float) seekRadius
+			: 0.0f;
+		const float score = normCorr - centerPenalty - driftPenalty;
+		if (score > bestScore)
+		{
+			bestScore = score;
+			bestOffset = off;
+			bestNormCorr = normCorr;
+			bestCenterPenalty = centerPenalty;
+			bestDriftPenalty = driftPenalty;
+			bestStartDeltaL = startDeltaL;
+			bestStartDeltaR = startDeltaR;
+			bestRmseL = std::sqrt (diffEnergyL / (float) juce::jmax (1, (overlapLen + step - 1) / step));
+			bestRmseR = bestRmseL;
+		}
 	}
-	return bestOffset;
+
+	result.bestOffset = bestOffset;
+	result.bestScore = bestScore;
+	result.bestNormCorr = bestNormCorr;
+	result.centerPenalty = bestCenterPenalty;
+	result.driftPenalty = bestDriftPenalty;
+	result.startDeltaL = bestStartDeltaL;
+	result.startDeltaR = bestStartDeltaR;
+	result.overlapRmseL = bestRmseL;
+	result.overlapRmseR = bestRmseR;
+	return result;
 }
 
 //==============================================================================
@@ -881,6 +1010,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 	float* channelL = buffer.getWritePointer (0);
 	float* channelR = numChannels >= 2 ? buffer.getWritePointer (1) : nullptr;
+	const int debugBlockIndex = stretchDebugBlockCounter_++;
 
     // Read parameters
 	const float inputGainDb  = loadAtomicOrDefault (inputParam, kInputDefault);
@@ -968,10 +1098,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	{
         // Trigger just pressed - capture current write position as starting read point
 		const double capturePos = (double) ((inputBufWritePos_ - 1 + inputBufLen_) & inputBufMask_);
-		wsola_ = {};
-		wsola_.readPos = capturePos;
-		wsola_.segInputStart = capturePos;
-		wsola_.segRemaining = 0;
+		resetWsolaAtPos (capturePos);
+		wsolaUnityBypassActive_ = false;
 
 		for (int g = 0; g < kMaxGrains; ++g)
 			grains_[g].active = false;
@@ -990,9 +1118,17 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		ensureFft (fftSize);
 	}
 
-    // Engine crossfade: trigger fade-in on engine change
+	// Engine crossfade: trigger fade-in on engine change
 	if (prevEngineVal_ >= 0 && engineVal != prevEngineVal_)
+	{
 		engineFadePos_ = kEngineFadeLen;
+		if (engineVal == 0 && inputBufLen_ > 0)
+		{
+			const double capturePos = (double) ((inputBufWritePos_ - 1 + inputBufLen_) & inputBufMask_);
+			resetWsolaAtPos (capturePos);
+			wsolaUnityBypassActive_ = false;
+		}
+	}
 	prevEngineVal_ = engineVal;
 
     // PDC and Align
@@ -1090,6 +1226,14 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const bool isDual = (styleVal == 3 && numChannels >= 2);
 		const bool isWide = (styleVal == 2 && numChannels >= 2);
 		const float pitchRateR = isDual ? (pitchRate * 0.5f) : -1.0f;
+		if (! triggerOn || engineVal != 0)
+		{
+			wsolaUnityBypassActive_ = false;
+			stretchBootstrapSegments_ = 0;
+			stretchTransitionRemaining_ = 0;
+			stretchTransitionTotal_ = 0;
+			stretchTransitionToUnity_ = false;
+		}
 
 		if (! triggerOn)
 		{
@@ -1133,110 +1277,303 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		}
 		else if (engineVal == 0 && inputBufLen_ > 0)
 		{
-            // Engine 0: WSOLA (elastic time stretch)
-			// Within each segment: read at pitchRate (1.0 = no pitch change)
-			// Between segments: analysis hop controls time stretch ratio
-			const int segLen = juce::jmax (64, windowSamples);
-			const int overlapLen = juce::jmax (16, segLen / 4);
-			// analysisHop: how far to jump in input per segment
-			// = segLen * speed * pitchRate
-            // speed=1 -> 1:1, speed=0 -> freeze (analysisHop=0, reads same position)
-			const double analysisHop = (double) segLen * (double) speed * (double) pitchRate;
-
-			if (wsola_.segRemaining <= 0)
+            // Engine 0: WSOLA-style time-domain stretch with true overlap-add.
+			const bool stretchUnity = ! reverseOn
+				&& ! isDual
+				&& ! isWide
+				&& std::abs (speed - 1.0f) <= 0.0005f
+				&& std::abs (pitchRate - 1.0f) <= 0.0005f;
+			if (stretchUnity)
 			{
-				// Start new segment: advance segInputStart by analysisHop
+				const double capturePos = (double) ((inputBufWritePos_ - 1 + inputBufLen_) & inputBufMask_);
+				const bool enteringUnityBypass = ! wsolaUnityBypassActive_ && ! stretchTransitionToUnity_;
+				if (enteringUnityBypass)
+				{
+					if (wsola_.hasPrevTail)
+					{
+						stretchTransitionToUnity_ = true;
+						stretchTransitionTotal_ = juce::jlimit (32,
+						                                        (int) std::round (currentSampleRate * 0.08),
+						                                        juce::jmax ((int) std::round (currentSampleRate * 0.02),
+						                                                    juce::jmax (wsola_.overlapLen * 2,
+						                                                                juce::jmax (1, wsola_.synthesisHop / 2))));
+						stretchTransitionRemaining_ = stretchTransitionTotal_;
+					}
+					else
+					{
+						resetWsolaAtPos (capturePos);
+						wsola_.segInputStart = capturePos;
+						wsola_.segInputStartR = capturePos;
+						wsola_.samplesUntilNextSeg = 0;
+						wsolaUnityBypassActive_ = true;
+						stretchBootstrapSegments_ = 0;
+						stretchTransitionRemaining_ = 0;
+						stretchTransitionTotal_ = 0;
+						stretchTransitionToUnity_ = false;
+					}
+
+					StretchDebugEntry dbg {};
+					dbg.blockIndex = debugBlockIndex;
+					dbg.sampleIndex = i;
+					dbg.eventType = 1;
+					dbg.amount = amountVal;
+					dbg.mod = modVal;
+					dbg.speed = speed;
+					dbg.pitchRate = pitchRate;
+					dbg.windowSamples = windowSamples;
+					dbg.style = styleVal;
+					dbg.reverseOn = reverseOn ? 1 : 0;
+					dbg.triggerOn = triggerOn ? 1 : 0;
+					dbg.hasPrevTail = wsola_.hasPrevTail ? 1 : 0;
+					dbg.nearUnity = 1;
+					dbg.segInputStart = wsola_.segInputStart;
+					stretchDebugTrace_.record (dbg);
+				}
+
+				if (stretchTransitionToUnity_ && stretchTransitionRemaining_ > 0)
+				{
+					const int outMask = kWsolaOutBufLen - 1;
+					const float stretchOutL = wsola_.outputAccumL[wsola_.outputReadPos];
+					const float stretchOutR = wsola_.outputAccumR[wsola_.outputReadPos];
+					wsola_.outputAccumL[wsola_.outputReadPos] = 0.0f;
+					wsola_.outputAccumR[wsola_.outputReadPos] = 0.0f;
+					wsola_.outputReadPos = (wsola_.outputReadPos + 1) & outMask;
+					if (wsola_.samplesUntilNextSeg > 0)
+						--wsola_.samplesUntilNextSeg;
+
+					const float progress = 1.0f
+						- ((float) stretchTransitionRemaining_ / (float) stretchTransitionTotal_);
+					const float dryMix = std::sin (progress * juce::MathConstants<float>::halfPi);
+					const float wetMix = std::cos (progress * juce::MathConstants<float>::halfPi);
+					wetL = stretchOutL * wetMix + inL * dryMix;
+					wetR = stretchOutR * wetMix + inR * dryMix;
+					--stretchTransitionRemaining_;
+
+					if (stretchTransitionRemaining_ <= 0)
+					{
+						resetWsolaAtPos (capturePos);
+						wsola_.segInputStart = capturePos;
+						wsola_.segInputStartR = capturePos;
+						wsola_.samplesUntilNextSeg = 0;
+						wsolaUnityBypassActive_ = true;
+						stretchBootstrapSegments_ = 0;
+						stretchTransitionRemaining_ = 0;
+						stretchTransitionTotal_ = 0;
+						stretchTransitionToUnity_ = false;
+					}
+				}
+				else
+				{
+					wsola_.segInputStart = capturePos;
+					wsola_.segInputStartR = capturePos;
+					wsola_.samplesUntilNextSeg = 0;
+					wsolaUnityBypassActive_ = true;
+					stretchBootstrapSegments_ = 0;
+					stretchTransitionRemaining_ = 0;
+					stretchTransitionTotal_ = 0;
+					stretchTransitionToUnity_ = false;
+					wetL = inL;
+					wetR = inR;
+				}
+			}
+			else
+			{
+				const bool leavingUnityBypass = wsolaUnityBypassActive_;
+				wsolaUnityBypassActive_ = false;
+				stretchTransitionToUnity_ = false;
+				const int stretchWindowSamples = juce::jlimit (kWindowMin, kWindowMax,
+					(int) std::round (smoothedWindow_));
+				const int segLen = juce::jmax (64, stretchWindowSamples);
+				const int overlapLen = wsolaRecommendedOverlapLen (segLen, currentSampleRate);
+				const int synthesisHop = juce::jmax (1, segLen - overlapLen);
+				const int outMask = kWsolaOutBufLen - 1;
 				const double direction = reverseOn ? -1.0 : 1.0;
-				if (wsola_.segLen > 0)  // not the very first segment
-					wsola_.segInputStart += analysisHop * direction;
-
-				wsola_.segLen = segLen;
-				wsola_.overlapLen = overlapLen;
-
-				// Find best overlap offset via cross-correlation
-				int nomInt = ((int) wsola_.segInputStart % inputBufLen_ + inputBufLen_) % inputBufLen_;
-				const int bestOff = wsolaBestOverlapOffset (nomInt, overlapLen,
-				                                           (styleVal == 0) ? 2 : 0);
-                // Only readPos gets the offset - segInputStart keeps nominal trajectory
-				wsola_.readPos = (double) (nomInt + bestOff);
-
-                // DUAL: R reads at pitchRate x 0.5 -> needs separate trajectory
-				if (isDual)
+				const double targetAnalysisHop = (double) synthesisHop * (double) speed * (double) pitchRate;
+				const bool nearUnity = std::abs (speed - 1.0f) <= 0.05f
+					&& std::abs (pitchRate - 1.0f) <= 0.05f;
+				const int seekCap = juce::jlimit (24, 128, (int) std::round (currentSampleRate * 0.0025));
+				const int baseSeek = juce::jmin (juce::jmax (8, overlapLen / 3), inputBufLen_ / 4);
+				const int seekRadius = nearUnity
+					? juce::jmin (baseSeek, juce::jmax (8, seekCap / 2))
+					: juce::jmin (baseSeek, seekCap);
+				const double capturePos = (double) ((inputBufWritePos_ - 1 + inputBufLen_) & inputBufMask_);
+				const auto computeLookBehind = [&](float readRateAbs, bool wideMode) noexcept
 				{
-					const double analysisHopR = (double) segLen * (double) speed * (double) pitchRate * 0.5;
-					if (wsola_.segLen > 0)
-						wsola_.segInputStartR += analysisHopR * direction;
-					int nomIntR = ((int) wsola_.segInputStartR % inputBufLen_ + inputBufLen_) % inputBufLen_;
-					const int bestOffR = wsolaBestOverlapOffset (nomIntR, overlapLen, 0);
-					wsola_.readPosR = (double) (nomIntR + bestOffR);
+					const double wideExtra = wideMode ? (double) (segLen / 2) : 0.0;
+					return (double) seekRadius
+						+ wideExtra
+						+ ((double) (segLen - 1) * (double) readRateAbs)
+						+ 8.0;
+				};
+				if (leavingUnityBypass)
+				{
+					double seedPos = capturePos;
+					if (! reverseOn)
+						seedPos -= computeLookBehind (pitchRate, isWide);
+					resetWsolaAtPos (seedPos);
+					stretchBootstrapSegments_ = juce::jlimit (2, 4, 1 + segLen / 768);
+					stretchTransitionTotal_ = juce::jlimit (64,
+					                                        (int) std::round (currentSampleRate * 0.12),
+					                                        juce::jmax ((int) std::round (currentSampleRate * 0.06),
+					                                                    synthesisHop * 2));
+					stretchTransitionRemaining_ = stretchTransitionTotal_;
 				}
 
-				// WIDE: R reads from offset position for temporal decorrelation
-				if (isWide)
+				const auto scheduleStretchSegment = [&]()
 				{
-					double wideOff = wsola_.readPos + (double) (segLen / 2);
-					if (wideOff >= (double) inputBufLen_)
-						wideOff -= (double) inputBufLen_;
-					wsola_.readPosR = wideOff;
+					double analysisHop = targetAnalysisHop;
+					if (wsola_.hasPrevTail && nearUnity)
+					{
+						if (wsola_.lastAnalysisHop <= 0.0)
+							wsola_.lastAnalysisHop = targetAnalysisHop;
+
+						const double maxDelta = juce::jmax (1.0, (double) synthesisHop * 0.12);
+						const double limitedTarget = juce::jlimit (wsola_.lastAnalysisHop - maxDelta,
+						                                           wsola_.lastAnalysisHop + maxDelta,
+						                                           targetAnalysisHop);
+						analysisHop = wsola_.lastAnalysisHop + (limitedTarget - wsola_.lastAnalysisHop) * 0.35;
+					}
+
+					if (wsola_.hasPrevTail)
+						wsola_.segInputStart += analysisHop * direction;
+
+					if (! reverseOn)
+					{
+						const double maxStartL = capturePos - computeLookBehind (pitchRate, isWide);
+						if (wsola_.segInputStart > maxStartL)
+							wsola_.segInputStart = maxStartL;
+					}
+
+					wsola_.lastAnalysisHop = analysisHop;
+
+					wsola_.segLen = segLen;
+					wsola_.overlapLen = overlapLen;
+					wsola_.synthesisHop = synthesisHop;
+
+					const int synthPos = wsola_.nextSynthPos & outMask;
+					const int prevBestOffset = wsola_.lastBestOffset;
+					const auto match = wsola_.hasPrevTail
+						? wsolaBestOverlapOffset (0, wsola_.segInputStart, overlapLen,
+						                          prevBestOffset, nearUnity,
+						                          pitchRate * (float) direction, synthPos)
+						: WsolaMatchResult {};
+					const int bestOff = match.bestOffset;
+					wsola_.lastBestOffset = bestOff;
+
+					double readPosL = wsola_.segInputStart + (double) bestOff;
+					double readPosR = readPosL;
+					if (isDual)
+					{
+						const double analysisHopR = (double) synthesisHop * (double) speed * (double) pitchRate * 0.5;
+						if (wsola_.hasPrevTail)
+							wsola_.segInputStartR += analysisHopR * direction;
+
+						if (! reverseOn)
+						{
+							const double maxStartR = capturePos - computeLookBehind (pitchRate * 0.5f, false);
+							if (wsola_.segInputStartR > maxStartR)
+								wsola_.segInputStartR = maxStartR;
+						}
+
+						const int prevBestOffsetR = wsola_.lastBestOffsetR;
+						const auto matchR = wsola_.hasPrevTail
+							? wsolaBestOverlapOffset (1, wsola_.segInputStartR, overlapLen,
+							                          prevBestOffsetR, nearUnity,
+							                          pitchRate * 0.5f * (float) direction, synthPos)
+							: WsolaMatchResult {};
+						wsola_.lastBestOffsetR = matchR.bestOffset;
+						readPosR = wsola_.segInputStartR + (double) matchR.bestOffset;
+					}
+					else if (isWide)
+					{
+						readPosR = readPosL + (double) (segLen / 2);
+					}
+
+					const bool hasPrevSegment = wsola_.hasPrevTail;
+					const float readRateL = pitchRate * (float) direction;
+					const float readRateR = (isDual ? (pitchRate * 0.5f) : pitchRate) * (float) direction;
+					for (int n = 0; n < segLen; ++n)
+					{
+						const float sL = readInputBuf (0, readPosL);
+						const float sR = (isDual || isWide) ? readInputBuf (1, readPosR)
+						                                    : readInputBuf (1, readPosL);
+						const float window = wsolaSegmentWeight (n, segLen, overlapLen, hasPrevSegment);
+						const int outIdx = (synthPos + n) & outMask;
+						wsola_.outputAccumL[outIdx] += sL * window;
+						wsola_.outputAccumR[outIdx] += sR * window;
+						readPosL += (double) readRateL;
+						if (isDual || isWide)
+							readPosR += (double) readRateR;
+					}
+
+					StretchDebugEntry dbg {};
+					dbg.blockIndex = debugBlockIndex;
+					dbg.sampleIndex = i;
+					dbg.eventType = 0;
+					dbg.amount = amountVal;
+					dbg.mod = modVal;
+					dbg.speed = speed;
+					dbg.pitchRate = pitchRate;
+					dbg.windowSamples = stretchWindowSamples;
+					dbg.segLen = segLen;
+					dbg.overlapLen = overlapLen;
+					dbg.analysisHop = analysisHop;
+					dbg.segInputStart = wsola_.segInputStart;
+					dbg.nominalPos = ((int) std::floor (wsola_.segInputStart) % inputBufLen_ + inputBufLen_) % inputBufLen_;
+					dbg.prevBestOffset = prevBestOffset;
+					dbg.bestOffset = bestOff;
+					dbg.style = styleVal;
+					dbg.reverseOn = reverseOn ? 1 : 0;
+					dbg.triggerOn = triggerOn ? 1 : 0;
+					dbg.hasPrevTail = hasPrevSegment ? 1 : 0;
+					dbg.nearUnity = nearUnity ? 1 : 0;
+					dbg.bestScore = match.bestScore;
+					dbg.bestNormCorr = match.bestNormCorr;
+					dbg.centerPenalty = match.centerPenalty;
+					dbg.driftPenalty = match.driftPenalty;
+					dbg.startDeltaL = match.startDeltaL;
+					dbg.startDeltaR = match.startDeltaR;
+					dbg.overlapRmseL = match.overlapRmseL;
+					dbg.overlapRmseR = match.overlapRmseR;
+					stretchDebugTrace_.record (dbg);
+
+					wsola_.nextSynthPos = (wsola_.nextSynthPos + synthesisHop) & outMask;
+					wsola_.samplesUntilNextSeg = synthesisHop;
+					wsola_.hasPrevTail = true;
+				};
+
+				if (wsola_.samplesUntilNextSeg <= 0)
+				{
+					scheduleStretchSegment();
+					if (stretchBootstrapSegments_ > 0)
+						--stretchBootstrapSegments_;
 				}
 
-				wsola_.segRemaining = segLen;
-				wsola_.overlapRemain = overlapLen;
-			}
-
-			// Read from input buffer at current read position
-			float sL = readInputBuf (0, wsola_.readPos);
-			float sR = (isDual || isWide) ? readInputBuf (1, wsola_.readPosR)
-			                              : readInputBuf (1, wsola_.readPos);
-
-			// Crossfade with previous segment tail at start of new segment
-			const int posInSeg = wsola_.segLen - wsola_.segRemaining;
-			if (posInSeg < wsola_.overlapLen && wsola_.overlapLen > 0)
-			{
-				const float fadeIn = (float) posInSeg / (float) wsola_.overlapLen;
-				const float fadeOut = 1.0f - fadeIn;
-				sL = sL * fadeIn + wsola_.prevTailL[posInSeg] * fadeOut;
-				sR = sR * fadeIn + wsola_.prevTailR[posInSeg] * fadeOut;
-			}
-
-			// Save tail for next crossfade (last overlapLen samples of segment)
-			const int tailStart = wsola_.segLen - wsola_.overlapLen;
-			if (posInSeg >= tailStart && posInSeg < wsola_.segLen)
-			{
-				const int tailIdx = posInSeg - tailStart;
-				if (tailIdx < 8192)
+				while (stretchBootstrapSegments_ > 0)
 				{
-					wsola_.prevTailL[tailIdx] = sL;
-					wsola_.prevTailR[tailIdx] = sR;
+					scheduleStretchSegment();
+					--stretchBootstrapSegments_;
+				}
+
+				wetL = wsola_.outputAccumL[wsola_.outputReadPos];
+				wetR = wsola_.outputAccumR[wsola_.outputReadPos];
+				wsola_.outputAccumL[wsola_.outputReadPos] = 0.0f;
+				wsola_.outputAccumR[wsola_.outputReadPos] = 0.0f;
+				wsola_.outputReadPos = (wsola_.outputReadPos + 1) & outMask;
+				if (wsola_.samplesUntilNextSeg > 0)
+					--wsola_.samplesUntilNextSeg;
+
+				if (stretchTransitionRemaining_ > 0 && stretchTransitionTotal_ > 0)
+				{
+					const float progress = 1.0f
+						- ((float) stretchTransitionRemaining_ / (float) stretchTransitionTotal_);
+					const float wetMix = std::sin (progress * juce::MathConstants<float>::halfPi);
+					const float dryMix = std::cos (progress * juce::MathConstants<float>::halfPi);
+					wetL = inL * dryMix + wetL * wetMix;
+					wetR = inR * dryMix + wetR * wetMix;
+					--stretchTransitionRemaining_;
 				}
 			}
-
-			wetL = sL;
-			wetR = sR;
-
-			// Advance read position within segment at pitchRate
-            // pitchRate=1.0 -> read 1:1 -> no pitch change (elastic)
-            // pitchRate>1 -> read faster -> higher pitch
-			const double direction = reverseOn ? -1.0 : 1.0;
-			wsola_.readPos += (double) pitchRate * direction;
-			if (wsola_.readPos >= (double) inputBufLen_)
-				wsola_.readPos -= (double) inputBufLen_;
-			else if (wsola_.readPos < 0.0)
-				wsola_.readPos += (double) inputBufLen_;
-
-			// DUAL: advance R at half pitch rate
-			// WIDE: advance R at same pitch rate (decorrelation is in position, not rate)
-			if (isDual || isWide)
-			{
-				const double rRate = isDual ? ((double) pitchRate * 0.5) : (double) pitchRate;
-				wsola_.readPosR += rRate * direction;
-				if (wsola_.readPosR >= (double) inputBufLen_)
-					wsola_.readPosR -= (double) inputBufLen_;
-				else if (wsola_.readPosR < 0.0)
-					wsola_.readPosR += (double) inputBufLen_;
-			}
-
-			wsola_.segRemaining--;
 		}
 		else if (engineVal == 1 && inputBufLen_ > 0)
 		{

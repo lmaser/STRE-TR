@@ -232,23 +232,172 @@ private:
 
 	bool  triggerWasOn_ = false;  // tracks previous trigger state for edge detection
 
+	static constexpr int kWsolaOutBufLen = 32768; // 2^15, enough for max segment + overlap scheduling
+
     // WSOLA engine state
 	struct WsolaState
 	{
-		double segInputStart   = 0.0;  // input position where current segment starts
-		double readPos         = 0.0;  // current fractional read position in input buf
-		double segInputStartR  = 0.0;  // DUAL: R channel nominal position
-        double readPosR        = 0.0;  // DUAL: R channel read position (pitchRate x 0.5)
-		int    segRemaining    = 0;    // samples remaining in current segment
-		int    overlapRemain   = 0;    // samples remaining in overlap/crossfade region
-		int    segLen          = 0;    // current segment length in samples
-		int    overlapLen      = 0;    // overlap length
-		float  prevTailL[8192] = {};   // tail of previous segment for crossfading
-		float  prevTailR[8192] = {};
+		double segInputStart        = 0.0;  // nominal input position for next L segment
+		double segInputStartR       = 0.0;  // DUAL: nominal input position for next R segment
+		int    segLen               = 0;
+		int    overlapLen           = 0;
+		int    synthesisHop         = 0;
+		int    samplesUntilNextSeg  = 0;
+		int    outputReadPos        = 0;
+		int    nextSynthPos         = 0;
+		int    lastBestOffset       = 0;
+		int    lastBestOffsetR      = 0;
+		double lastAnalysisHop      = 0.0;
+		bool   hasPrevTail          = false; // true once at least one segment has been scheduled
+		float  outputAccumL[kWsolaOutBufLen] = {};
+		float  outputAccumR[kWsolaOutBufLen] = {};
 	};
 	WsolaState wsola_;
+	bool wsolaUnityBypassActive_ = false;
+	int  stretchBootstrapSegments_ = 0;
+	int  stretchTransitionRemaining_ = 0;
+	int  stretchTransitionTotal_ = 0;
+	bool stretchTransitionToUnity_ = false;
 
-	int wsolaBestOverlapOffset (int nominalPos, int overlapLen, int ch0Weight) const;
+	struct WsolaMatchResult
+	{
+		int   bestOffset    = 0;
+		float bestScore     = 0.0f;
+		float bestNormCorr  = 0.0f;
+		float centerPenalty = 0.0f;
+		float driftPenalty  = 0.0f;
+		float startDeltaL   = 0.0f;
+		float startDeltaR   = 0.0f;
+		float overlapRmseL  = 0.0f;
+		float overlapRmseR  = 0.0f;
+	};
+
+	struct StretchDebugEntry
+	{
+		int    blockIndex      = 0;
+		int    sampleIndex     = 0;
+		float  amount          = 0.0f;
+		float  mod             = 0.0f;
+		float  speed           = 0.0f;
+		float  pitchRate       = 0.0f;
+		int    windowSamples   = 0;
+		int    segLen          = 0;
+		int    overlapLen      = 0;
+		double analysisHop     = 0.0;
+		double segInputStart   = 0.0;
+		int    nominalPos      = 0;
+		int    prevBestOffset  = 0;
+		int    bestOffset      = 0;
+		int    style           = 0;
+		int    eventType       = 0; // 0=segment, 1=unity_bypass
+		int    reverseOn       = 0;
+		int    triggerOn       = 0;
+		int    hasPrevTail     = 0;
+		int    nearUnity       = 0;
+		float  bestScore       = 0.0f;
+		float  bestNormCorr    = 0.0f;
+		float  centerPenalty   = 0.0f;
+		float  driftPenalty    = 0.0f;
+		float  startDeltaL     = 0.0f;
+		float  startDeltaR     = 0.0f;
+		float  overlapRmseL    = 0.0f;
+		float  overlapRmseR    = 0.0f;
+	};
+
+	class StretchDebugTrace
+	{
+	public:
+		static constexpr int kRingSize = 32768;
+
+		void record (const StretchDebugEntry& entry) noexcept
+		{
+			const int idx = writeIndex.fetch_add (1, std::memory_order_relaxed) & (kRingSize - 1);
+			ring[idx] = entry;
+		}
+
+		void setAutoDumpPath (const juce::String& path) { autoDumpPath = path; }
+
+		void enableDesktopAutoDump (const juce::String& filename = "stretr_stretch_dump.csv")
+		{
+			auto desktop = juce::File::getSpecialLocation (juce::File::userDesktopDirectory);
+			setAutoDumpPath (desktop.getChildFile (filename).getFullPathName());
+		}
+
+		bool dumpToFile (const juce::String& filePath) const
+		{
+			juce::File f (filePath);
+			if (auto stream = f.createOutputStream())
+			{
+				stream->writeText (
+					"block_index,sample_index,event,amount,mod,speed,pitch_rate,window_samples,seg_len,overlap_len,"
+					"analysis_hop,seg_input_start,nominal_pos,prev_best_offset,best_offset,style,reverse_on,trigger_on,"
+					"has_prev_tail,near_unity,best_score,best_norm_corr,center_penalty,drift_penalty,start_delta_l,"
+					"start_delta_r,overlap_rmse_l,overlap_rmse_r\n",
+					false, false, nullptr);
+
+				const int total = juce::jmin (writeIndex.load (std::memory_order_relaxed), kRingSize);
+				const int startIdx = writeIndex.load (std::memory_order_relaxed) - total;
+				for (int i = 0; i < total; ++i)
+				{
+					const auto& e = ring[(startIdx + i) & (kRingSize - 1)];
+					const juce::String eventName = (e.eventType == 1) ? "unity_bypass" : "segment";
+					juce::String line;
+					line << e.blockIndex << ","
+					     << e.sampleIndex << ","
+					     << eventName << ","
+					     << juce::String (e.amount, 4) << ","
+					     << juce::String (e.mod, 4) << ","
+					     << juce::String (e.speed, 6) << ","
+					     << juce::String (e.pitchRate, 6) << ","
+					     << e.windowSamples << ","
+					     << e.segLen << ","
+					     << e.overlapLen << ","
+					     << juce::String (e.analysisHop, 6) << ","
+					     << juce::String (e.segInputStart, 6) << ","
+					     << e.nominalPos << ","
+					     << e.prevBestOffset << ","
+					     << e.bestOffset << ","
+					     << e.style << ","
+					     << e.reverseOn << ","
+					     << e.triggerOn << ","
+					     << e.hasPrevTail << ","
+					     << e.nearUnity << ","
+					     << juce::String (e.bestScore, 6) << ","
+					     << juce::String (e.bestNormCorr, 6) << ","
+					     << juce::String (e.centerPenalty, 6) << ","
+					     << juce::String (e.driftPenalty, 6) << ","
+					     << juce::String (e.startDeltaL, 6) << ","
+					     << juce::String (e.startDeltaR, 6) << ","
+					     << juce::String (e.overlapRmseL, 6) << ","
+					     << juce::String (e.overlapRmseR, 6) << "\n";
+					stream->writeText (line, false, false, nullptr);
+				}
+
+				stream->flush();
+				return true;
+			}
+			return false;
+		}
+
+		~StretchDebugTrace()
+		{
+			if (autoDumpPath.isNotEmpty() && writeIndex.load (std::memory_order_relaxed) > 0)
+				dumpToFile (autoDumpPath);
+		}
+
+	private:
+		StretchDebugEntry ring[kRingSize] {};
+		std::atomic<int> writeIndex { 0 };
+		juce::String autoDumpPath;
+	};
+
+	StretchDebugTrace stretchDebugTrace_;
+	int stretchDebugBlockCounter_ = 0;
+
+	void resetWsolaAtPos (double capturePos) noexcept;
+	WsolaMatchResult wsolaBestOverlapOffset (int channel, double nominalPos, int overlapLen,
+	                                         int prevBestOffset, bool nearUnity,
+	                                         float readRate, int synthPos) const;
 
     // Granular engine state
 	struct Grain
