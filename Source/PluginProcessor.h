@@ -229,6 +229,7 @@ private:
 	int inputBufWritePos_ = 0;
 	int inputBufLen_ = 0;
 	int inputBufMask_ = 0;  // power-of-2 bitmask for fast wrapping
+	double inputBufWriteAbsPos_ = 0.0;
 
 	bool  triggerWasOn_ = false;  // tracks previous trigger state for edge detection
 
@@ -398,6 +399,122 @@ private:
 	WsolaMatchResult wsolaBestOverlapOffset (int channel, double nominalPos, int overlapLen,
 	                                         int prevBestOffset, bool nearUnity,
 	                                         float readRate, int synthPos) const;
+	double currentCaptureAbsPos() const noexcept;
+	double computeGrainLookBehind (int grainSamples, float pitchRate,
+	                               bool reverseOn, bool wideMode) const noexcept;
+	double clampGrainSpawnPos (double desiredPos, double capturePos,
+	                           double lookBehind) const noexcept;
+	void resetGrainAtCapturePos (double capturePos, int grainSamples, float pitchRate,
+	                             bool reverseOn, bool wideMode) noexcept;
+	int countActiveGrains() const noexcept;
+
+	struct GrainDebugEntry
+	{
+		int    blockIndex     = 0;
+		int    sampleIndex    = 0;
+		int    eventType      = 0; // 0=spawn, 1=trigger_reset, 2=engine_reset
+		float  amount         = 0.0f;
+		float  mod            = 0.0f;
+		float  speed          = 0.0f;
+		float  pitchRate      = 0.0f;
+		int    windowSamples  = 0;
+		int    grainSamples   = 0;
+		int    density        = 0;
+		int    spawnInterval  = 0;
+		int    style          = 0;
+		int    reverseOn      = 0;
+		int    triggerOn      = 0;
+		int    activeGrains   = 0;
+		double capturePos     = 0.0;
+		double readPosBefore  = 0.0;
+		double spawnPos       = 0.0;
+		double readPosAfter   = 0.0;
+		double lookBehind     = 0.0;
+		double futureMargin   = 0.0;
+	};
+
+	class GrainDebugTrace
+	{
+	public:
+		static constexpr int kRingSize = 32768;
+
+		void record (const GrainDebugEntry& entry) noexcept
+		{
+			const int idx = writeIndex.fetch_add (1, std::memory_order_relaxed) & (kRingSize - 1);
+			ring[idx] = entry;
+		}
+
+		void setAutoDumpPath (const juce::String& path) { autoDumpPath = path; }
+
+		void enableDesktopAutoDump (const juce::String& filename = "stretr_grain_dump.csv")
+		{
+			auto desktop = juce::File::getSpecialLocation (juce::File::userDesktopDirectory);
+			setAutoDumpPath (desktop.getChildFile (filename).getFullPathName());
+		}
+
+		bool dumpToFile (const juce::String& filePath) const
+		{
+			juce::File f (filePath);
+			if (auto stream = f.createOutputStream())
+			{
+				stream->writeText (
+					"block_index,sample_index,event,amount,mod,speed,pitch_rate,window_samples,grain_samples,"
+					"density,spawn_interval,style,reverse_on,trigger_on,active_grains,capture_pos,"
+					"read_pos_before,spawn_pos,read_pos_after,look_behind,future_margin\n",
+					false, false, nullptr);
+
+				const int total = juce::jmin (writeIndex.load (std::memory_order_relaxed), kRingSize);
+				const int startIdx = writeIndex.load (std::memory_order_relaxed) - total;
+				for (int i = 0; i < total; ++i)
+				{
+					const auto& e = ring[(startIdx + i) & (kRingSize - 1)];
+					const juce::String eventName = (e.eventType == 1) ? "trigger_reset"
+						: (e.eventType == 2) ? "engine_reset"
+						: "spawn";
+					juce::String line;
+					line << e.blockIndex << ","
+					     << e.sampleIndex << ","
+					     << eventName << ","
+					     << juce::String (e.amount, 4) << ","
+					     << juce::String (e.mod, 4) << ","
+					     << juce::String (e.speed, 6) << ","
+					     << juce::String (e.pitchRate, 6) << ","
+					     << e.windowSamples << ","
+					     << e.grainSamples << ","
+					     << e.density << ","
+					     << e.spawnInterval << ","
+					     << e.style << ","
+					     << e.reverseOn << ","
+					     << e.triggerOn << ","
+					     << e.activeGrains << ","
+					     << juce::String (e.capturePos, 6) << ","
+					     << juce::String (e.readPosBefore, 6) << ","
+					     << juce::String (e.spawnPos, 6) << ","
+					     << juce::String (e.readPosAfter, 6) << ","
+					     << juce::String (e.lookBehind, 6) << ","
+					     << juce::String (e.futureMargin, 6) << "\n";
+					stream->writeText (line, false, false, nullptr);
+				}
+
+				stream->flush();
+				return true;
+			}
+			return false;
+		}
+
+		~GrainDebugTrace()
+		{
+			if (autoDumpPath.isNotEmpty() && writeIndex.load (std::memory_order_relaxed) > 0)
+				dumpToFile (autoDumpPath);
+		}
+
+	private:
+		GrainDebugEntry ring[kRingSize] {};
+		std::atomic<int> writeIndex { 0 };
+		juce::String autoDumpPath;
+	};
+
+	GrainDebugTrace grainDebugTrace_;
 
     // Granular engine state
 	struct Grain
@@ -415,9 +532,13 @@ private:
 	Grain grains_[kMaxGrains];
 	int   grainNextSlot_       = 0;
 	int   grainSpawnCountdown_ = 0;
-	float grainReadPos_        = 0.0f;  // current read position for spawning grains
+	double grainReadPos_       = 0.0;   // current absolute read position for spawning grains
 	float grainPrevOutL_       = 0.0f;  // DC-block state
 	float grainPrevOutR_       = 0.0f;
+	bool  grainUnityBypassActive_ = false;
+	int   grainTransitionRemaining_ = 0;
+	int   grainTransitionTotal_ = 0;
+	bool  grainTransitionToUnity_ = false;
 
     // FFT / phase vocoder engine state
 	static constexpr int kMaxFftSize    = 8192;

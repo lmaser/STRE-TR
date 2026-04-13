@@ -150,6 +150,7 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 
 	perfTrace.enableDesktopAutoDump();
 	stretchDebugTrace_.enableDesktopAutoDump();
+	grainDebugTrace_.enableDesktopAutoDump();
 }
 
 STRETRAudioProcessor::~STRETRAudioProcessor() {}
@@ -230,6 +231,7 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 		std::fill (inputBuf_[ch].begin(), inputBuf_[ch].end(), 0.0f);
 	}
 	inputBufWritePos_ = 0;
+	inputBufWriteAbsPos_ = 0.0;
 
 	// Initialize WSOLA state
 	resetWsolaAtPos (0.0);
@@ -245,9 +247,13 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 		grains_[g] = {};
 	grainNextSlot_ = 0;
 	grainSpawnCountdown_ = 0;
-	grainReadPos_ = 0.0f;
+	grainReadPos_ = 0.0;
 	grainPrevOutL_ = 0.0f;
 	grainPrevOutR_ = 0.0f;
+	grainUnityBypassActive_ = false;
+	grainTransitionRemaining_ = 0;
+	grainTransitionTotal_ = 0;
+	grainTransitionToUnity_ = false;
 
     // Initialize STFT state
 	std::memset (&stft_, 0, sizeof (stft_));
@@ -560,6 +566,56 @@ void STRETRAudioProcessor::resetWsolaAtPos (double capturePos) noexcept
 	wsola_.lastBestOffsetR = 0;
 	wsola_.lastAnalysisHop = 0.0;
 	wsola_.hasPrevTail = false;
+}
+
+double STRETRAudioProcessor::currentCaptureAbsPos() const noexcept
+{
+	return inputBufWriteAbsPos_ - 1.0;
+}
+
+double STRETRAudioProcessor::computeGrainLookBehind (int grainSamples, float pitchRate,
+                                                     bool reverseOn, bool wideMode) const noexcept
+{
+	const double baseSpan = reverseOn
+		? (double) juce::jmax (0, grainSamples - 1)
+		: (double) juce::jmax (0.0f, pitchRate) * (double) juce::jmax (0, grainSamples - 1);
+	const double wideOffset = wideMode ? (double) grainSamples * 0.5 : 0.0;
+	return juce::jmax (4.0, baseSpan + wideOffset + 2.0);
+}
+
+double STRETRAudioProcessor::clampGrainSpawnPos (double desiredPos, double capturePos,
+                                                 double lookBehind) const noexcept
+{
+	if (inputBufLen_ <= 8)
+		return desiredPos;
+
+	const double maxPos = capturePos - lookBehind;
+	const double minPos = capturePos - (double) (inputBufLen_ - 4);
+	return juce::jlimit (minPos, maxPos, desiredPos);
+}
+
+void STRETRAudioProcessor::resetGrainAtCapturePos (double capturePos, int grainSamples, float pitchRate,
+                                                   bool reverseOn, bool wideMode) noexcept
+{
+	for (int g = 0; g < kMaxGrains; ++g)
+		grains_[g].active = false;
+
+	grainNextSlot_ = 0;
+	grainSpawnCountdown_ = 0;
+	grainPrevOutL_ = 0.0f;
+	grainPrevOutR_ = 0.0f;
+
+	const double lookBehind = computeGrainLookBehind (grainSamples, pitchRate, reverseOn, wideMode);
+	grainReadPos_ = clampGrainSpawnPos (capturePos - lookBehind, capturePos, lookBehind);
+}
+
+int STRETRAudioProcessor::countActiveGrains() const noexcept
+{
+	int active = 0;
+	for (int g = 0; g < kMaxGrains; ++g)
+		if (grains_[g].active)
+			++active;
+	return active;
 }
 
 STRETRAudioProcessor::WsolaMatchResult
@@ -1100,13 +1156,30 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const double capturePos = (double) ((inputBufWritePos_ - 1 + inputBufLen_) & inputBufMask_);
 		resetWsolaAtPos (capturePos);
 		wsolaUnityBypassActive_ = false;
+		const double captureAbsPos = currentCaptureAbsPos();
+		resetGrainAtCapturePos (captureAbsPos, grainSamples, targetPitchRate, reverseOn, styleVal == 2 && numChannels >= 2);
 
-		for (int g = 0; g < kMaxGrains; ++g)
-			grains_[g].active = false;
-		grainReadPos_ = (float) capturePos;
-		grainSpawnCountdown_ = 0;
-		grainPrevOutL_ = 0.0f;
-		grainPrevOutR_ = 0.0f;
+		GrainDebugEntry dbg {};
+		dbg.blockIndex = debugBlockIndex;
+		dbg.sampleIndex = 0;
+		dbg.eventType = 1;
+		dbg.amount = amountVal;
+		dbg.mod = modVal;
+		dbg.speed = targetSpeed;
+		dbg.pitchRate = targetPitchRate;
+		dbg.windowSamples = windowSamples;
+		dbg.grainSamples = grainSamples;
+		dbg.style = styleVal;
+		dbg.reverseOn = reverseOn ? 1 : 0;
+		dbg.triggerOn = 1;
+		dbg.activeGrains = 0;
+		dbg.capturePos = captureAbsPos;
+		dbg.readPosBefore = captureAbsPos;
+		dbg.spawnPos = grainReadPos_;
+		dbg.readPosAfter = grainReadPos_;
+		dbg.lookBehind = computeGrainLookBehind (grainSamples, targetPitchRate, reverseOn, styleVal == 2 && numChannels >= 2);
+		dbg.futureMargin = captureAbsPos - (grainReadPos_ + dbg.lookBehind - 2.0);
+		grainDebugTrace_.record (dbg);
 	}
 	triggerWasOn_ = triggerOn;
 
@@ -1127,6 +1200,33 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			const double capturePos = (double) ((inputBufWritePos_ - 1 + inputBufLen_) & inputBufMask_);
 			resetWsolaAtPos (capturePos);
 			wsolaUnityBypassActive_ = false;
+		}
+		else if (engineVal == 1 && inputBufLen_ > 0)
+		{
+			const double captureAbsPos = currentCaptureAbsPos();
+			resetGrainAtCapturePos (captureAbsPos, grainSamples, targetPitchRate, reverseOn, styleVal == 2 && numChannels >= 2);
+
+			GrainDebugEntry dbg {};
+			dbg.blockIndex = debugBlockIndex;
+			dbg.sampleIndex = 0;
+			dbg.eventType = 2;
+			dbg.amount = amountVal;
+			dbg.mod = modVal;
+			dbg.speed = targetSpeed;
+			dbg.pitchRate = targetPitchRate;
+			dbg.windowSamples = windowSamples;
+			dbg.grainSamples = grainSamples;
+			dbg.style = styleVal;
+			dbg.reverseOn = reverseOn ? 1 : 0;
+			dbg.triggerOn = triggerOn ? 1 : 0;
+			dbg.activeGrains = 0;
+			dbg.capturePos = captureAbsPos;
+			dbg.readPosBefore = captureAbsPos;
+			dbg.spawnPos = grainReadPos_;
+			dbg.readPosAfter = grainReadPos_;
+			dbg.lookBehind = computeGrainLookBehind (grainSamples, targetPitchRate, reverseOn, styleVal == 2 && numChannels >= 2);
+			dbg.futureMargin = captureAbsPos - (grainReadPos_ + dbg.lookBehind - 2.0);
+			grainDebugTrace_.record (dbg);
 		}
 	}
 	prevEngineVal_ = engineVal;
@@ -1217,6 +1317,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			inputBuf_[0][inputBufWritePos_] = inL;
 			inputBuf_[1][inputBufWritePos_] = inR;
 			inputBufWritePos_ = (inputBufWritePos_ + 1) & inputBufMask_;
+			inputBufWriteAbsPos_ += 1.0;
 		}
 
 		float wetL = 0.0f;
@@ -1233,6 +1334,13 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			stretchTransitionRemaining_ = 0;
 			stretchTransitionTotal_ = 0;
 			stretchTransitionToUnity_ = false;
+		}
+		if (! triggerOn || engineVal != 1)
+		{
+			grainUnityBypassActive_ = false;
+			grainTransitionRemaining_ = 0;
+			grainTransitionTotal_ = 0;
+			grainTransitionToUnity_ = false;
 		}
 
 		if (! triggerOn)
@@ -1578,26 +1686,32 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		else if (engineVal == 1 && inputBufLen_ > 0)
 		{
             // Engine 1: GRANULAR
-            // Spawn new grains - readPos advances per spawn, not per sample
-			if (--grainSpawnCountdown_ <= 0)
+			const double grainCapturePos = currentCaptureAbsPos();
+			const double grainLookBehind = computeGrainLookBehind (grainSamples, pitchRate, reverseOn, isWide);
+			const bool grainUnity = ! reverseOn
+				&& ! isDual
+				&& ! isWide
+				&& std::abs (speed - 1.0f) <= 0.0005f
+				&& std::abs (pitchRate - 1.0f) <= 0.0005f;
+
+			const auto spawnGranularGrains = [&]()
 			{
-				// Overlap density from WINDOW (clamped for COLA safety)
-				const int density = juce::jlimit (2, kMaxGrains / 2, windowSamples / 64);
+				grainReadPos_ = clampGrainSpawnPos (grainReadPos_, grainCapturePos, grainLookBehind);
+				if (--grainSpawnCountdown_ > 0)
+					return;
+
+				const int grainWindowSamples = juce::jlimit (kWindowMin, kWindowMax,
+					(int) std::round (smoothedWindow_));
+				const int density = juce::jlimit (2, kMaxGrains / 2, grainWindowSamples / 64);
 				const int spawnInterval = juce::jmax (1, grainSamples / density);
 				grainSpawnCountdown_ = spawnInterval;
-
-				// Advance read position by analysis hop (per-spawn, not per-sample)
-                // analysisHop = spawnInterval * speed -> stretch ratio = 1/speed
+				const double spawnPos = grainReadPos_;
 				const float direction = reverseOn ? -1.0f : 1.0f;
-				grainReadPos_ += (float) spawnInterval * speed * direction;
-				if (grainReadPos_ >= (float) inputBufLen_)
-					grainReadPos_ -= (float) inputBufLen_;
-				else if (grainReadPos_ < 0.0f)
-					grainReadPos_ += (float) inputBufLen_;
+				const double nextReadPos = grainReadPos_ + (double) spawnInterval * (double) speed * (double) direction;
+				grainReadPos_ = clampGrainSpawnPos (nextReadPos, grainCapturePos, grainLookBehind);
 
 				if (isDual)
 				{
-                    // DUAL: spawn L-only grain at pitchRate + R-only grain at pitchRate x 0.5
 					for (int dch = 0; dch < 2; ++dch)
 					{
 						for (int attempt = 0; attempt < kMaxGrains; ++attempt)
@@ -1611,9 +1725,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 								g.elapsed = 0;
 								g.rate    = (dch == 0) ? (double) pitchRate : (double) (pitchRate * 0.5f);
 								g.reverse = reverseOn;
-								g.readPos = (double) grainReadPos_;
+								g.readPos = spawnPos;
 								g.playPos = g.reverse ? (double) (grainSamples - 1) : 0.0;
-								g.dualCh  = dch;  // 0=L-only, 1=R-only
+								g.dualCh  = dch;
 								grainNextSlot_ = (slot + 1) % kMaxGrains;
 								break;
 							}
@@ -1622,7 +1736,6 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				}
 				else if (isWide)
 				{
-					// WIDE: spawn L-only + R-only grains, R offset by half grain for decorrelation
 					for (int dch = 0; dch < 2; ++dch)
 					{
 						for (int attempt = 0; attempt < kMaxGrains; ++attempt)
@@ -1636,15 +1749,12 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 								g.elapsed = 0;
 								g.rate    = (double) pitchRate;
 								g.reverse = reverseOn;
-								double rp = (double) grainReadPos_;
+								double rp = spawnPos;
 								if (dch == 1)
-								{
 									rp += (double) (grainSamples / 2);
-									if (rp >= (double) inputBufLen_) rp -= (double) inputBufLen_;
-								}
 								g.readPos = rp;
 								g.playPos = g.reverse ? (double) (grainSamples - 1) : 0.0;
-								g.dualCh  = dch;  // 0=L-only, 1=R-only
+								g.dualCh  = dch;
 								grainNextSlot_ = (slot + 1) % kMaxGrains;
 								break;
 							}
@@ -1653,7 +1763,6 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				}
 				else
 				{
-					// Normal: spawn one grain for both channels
 					for (int attempt = 0; attempt < kMaxGrains; ++attempt)
 					{
 						const int slot = (grainNextSlot_ + attempt) % kMaxGrains;
@@ -1665,71 +1774,175 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 							g.elapsed = 0;
 							g.rate    = (double) pitchRate;
 							g.reverse = reverseOn;
-							g.readPos = (double) grainReadPos_;
+							g.readPos = spawnPos;
 							g.playPos = g.reverse ? (double) (grainSamples - 1) : 0.0;
-							g.dualCh  = -1;  // both channels
+							g.dualCh  = -1;
 							grainNextSlot_ = (slot + 1) % kMaxGrains;
 							break;
 						}
 					}
 				}
-			}
 
-			// Mix active grains
-			float sumL = 0.0f, sumR = 0.0f;
-			float sumEnvL = 0.0f, sumEnvR = 0.0f;
-			for (int g = 0; g < kMaxGrains; ++g)
+				GrainDebugEntry dbg {};
+				dbg.blockIndex = debugBlockIndex;
+				dbg.sampleIndex = i;
+				dbg.eventType = 0;
+				dbg.amount = amountVal;
+				dbg.mod = modVal;
+				dbg.speed = speed;
+				dbg.pitchRate = pitchRate;
+				dbg.windowSamples = grainWindowSamples;
+				dbg.grainSamples = grainSamples;
+				dbg.density = density;
+				dbg.spawnInterval = spawnInterval;
+				dbg.style = styleVal;
+				dbg.reverseOn = reverseOn ? 1 : 0;
+				dbg.triggerOn = triggerOn ? 1 : 0;
+				dbg.activeGrains = countActiveGrains();
+				dbg.capturePos = grainCapturePos;
+				dbg.readPosBefore = spawnPos;
+				dbg.spawnPos = spawnPos;
+				dbg.readPosAfter = grainReadPos_;
+				dbg.lookBehind = grainLookBehind;
+				dbg.futureMargin = grainCapturePos - (spawnPos + grainLookBehind - 2.0);
+				grainDebugTrace_.record (dbg);
+			};
+
+			const auto mixGranularGrains = [&]()
 			{
-				auto& gr = grains_[g];
-				if (! gr.active) continue;
-
-				// Hann window envelope
-				const float phase = (float) gr.elapsed / (float) gr.length;
-				const float env = hannWindow (phase);
-
-				// Read position in input buffer
-				const double bufPos = gr.readPos + gr.playPos;
-
-				// Accumulate per-channel based on dualCh
-				if (gr.dualCh <= 0)  // both (-1) or L-only (0)
+				float sumL = 0.0f, sumR = 0.0f;
+				float sumEnvL = 0.0f, sumEnvR = 0.0f;
+				for (int g = 0; g < kMaxGrains; ++g)
 				{
-					sumL += readInputBuf (0, bufPos) * env;
-					sumEnvL += env;
-				}
-				if (gr.dualCh == -1 || gr.dualCh == 1)  // both (-1) or R-only (1)
-				{
-					sumR += readInputBuf (1, bufPos) * env;
-					sumEnvR += env;
+					auto& gr = grains_[g];
+					if (! gr.active) continue;
+
+					const float phase = (float) gr.elapsed / (float) gr.length;
+					const float env = hannWindow (phase);
+					const double bufPos = gr.readPos + gr.playPos;
+
+					if (gr.dualCh <= 0)
+					{
+						sumL += readInputBuf (0, bufPos) * env;
+						sumEnvL += env;
+					}
+					if (gr.dualCh == -1 || gr.dualCh == 1)
+					{
+						sumR += readInputBuf (1, bufPos) * env;
+						sumEnvR += env;
+					}
+
+					if (gr.reverse)
+						gr.playPos -= gr.rate;
+					else
+						gr.playPos += gr.rate;
+
+					gr.elapsed++;
+					if (gr.elapsed >= gr.length)
+						gr.active = false;
 				}
 
-				// Advance grain playback position
-				if (gr.reverse)
-					gr.playPos -= gr.rate;
+				if (sumEnvL > 1.0f)
+				{
+					const float inv  = 1.0f / sumEnvL;
+					const float uncr = std::sqrt (inv);
+					sumL *= uncr + speed * (inv - uncr);
+				}
+				if (sumEnvR > 1.0f)
+				{
+					const float inv  = 1.0f / sumEnvR;
+					const float uncr = std::sqrt (inv);
+					sumR *= uncr + speed * (inv - uncr);
+				}
+
+				wetL = sumL;
+				wetR = sumR;
+			};
+
+			if (grainUnity)
+			{
+				const bool enteringUnityBypass = ! grainUnityBypassActive_ && ! grainTransitionToUnity_;
+				if (enteringUnityBypass)
+				{
+					if (countActiveGrains() > 0)
+					{
+						grainTransitionToUnity_ = true;
+						grainTransitionTotal_ = juce::jlimit (32,
+						                                      (int) std::round (currentSampleRate * 0.08),
+						                                      juce::jmax ((int) std::round (currentSampleRate * 0.02),
+						                                                  juce::jmax (1, grainSamples / 4)));
+						grainTransitionRemaining_ = grainTransitionTotal_;
+					}
+					else
+					{
+						resetGrainAtCapturePos (grainCapturePos, grainSamples, 1.0f, false, false);
+						grainUnityBypassActive_ = true;
+						grainTransitionRemaining_ = 0;
+						grainTransitionTotal_ = 0;
+						grainTransitionToUnity_ = false;
+					}
+				}
+
+				if (grainTransitionToUnity_ && grainTransitionRemaining_ > 0)
+				{
+					mixGranularGrains();
+					const float progress = 1.0f
+						- ((float) grainTransitionRemaining_ / (float) grainTransitionTotal_);
+					const float dryMix = std::sin (progress * juce::MathConstants<float>::halfPi);
+					const float wetMix = std::cos (progress * juce::MathConstants<float>::halfPi);
+					wetL = wetL * wetMix + inL * dryMix;
+					wetR = wetR * wetMix + inR * dryMix;
+					--grainTransitionRemaining_;
+
+					if (grainTransitionRemaining_ <= 0 || countActiveGrains() <= 0)
+					{
+						resetGrainAtCapturePos (grainCapturePos, grainSamples, 1.0f, false, false);
+						grainUnityBypassActive_ = true;
+						grainTransitionRemaining_ = 0;
+						grainTransitionTotal_ = 0;
+						grainTransitionToUnity_ = false;
+					}
+				}
 				else
-					gr.playPos += gr.rate;
-
-				gr.elapsed++;
-				if (gr.elapsed >= gr.length)
-					gr.active = false;
+				{
+					resetGrainAtCapturePos (grainCapturePos, grainSamples, 1.0f, false, false);
+					grainUnityBypassActive_ = true;
+					grainTransitionRemaining_ = 0;
+					grainTransitionTotal_ = 0;
+					grainTransitionToUnity_ = false;
+					wetL = inL;
+					wetR = inR;
+				}
 			}
-
-            // Normalize: speed=1 (no stretch) -> grains correlated -> 1/sumEnv;
-            // speed=0 (max stretch) -> grains uncorrelated -> 1/sqrt(sumEnv).
-			if (sumEnvL > 1.0f)
+			else
 			{
-				const float inv  = 1.0f / sumEnvL;
-				const float uncr = std::sqrt (inv);
-				sumL *= uncr + speed * (inv - uncr);
-			}
-			if (sumEnvR > 1.0f)
-			{
-				const float inv  = 1.0f / sumEnvR;
-				const float uncr = std::sqrt (inv);
-				sumR *= uncr + speed * (inv - uncr);
-			}
+				const bool leavingUnityBypass = grainUnityBypassActive_;
+				grainUnityBypassActive_ = false;
+				grainTransitionToUnity_ = false;
+				if (leavingUnityBypass)
+				{
+					resetGrainAtCapturePos (grainCapturePos, grainSamples, pitchRate, reverseOn, isWide);
+					grainTransitionTotal_ = juce::jlimit (48,
+					                                      (int) std::round (currentSampleRate * 0.10),
+					                                      juce::jmax ((int) std::round (currentSampleRate * 0.03),
+					                                                  juce::jmax (1, grainSamples / 3)));
+					grainTransitionRemaining_ = grainTransitionTotal_;
+				}
 
-			wetL = sumL;
-			wetR = sumR;
+				spawnGranularGrains();
+				mixGranularGrains();
+
+				if (grainTransitionRemaining_ > 0 && grainTransitionTotal_ > 0)
+				{
+					const float progress = 1.0f
+						- ((float) grainTransitionRemaining_ / (float) grainTransitionTotal_);
+					const float wetMix = std::sin (progress * juce::MathConstants<float>::halfPi);
+					const float dryMix = std::cos (progress * juce::MathConstants<float>::halfPi);
+					wetL = inL * dryMix + wetL * wetMix;
+					wetR = inR * dryMix + wetR * wetMix;
+					--grainTransitionRemaining_;
+				}
+			}
 		}
 		else
 		{
