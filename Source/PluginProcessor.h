@@ -516,6 +516,176 @@ private:
 
 	GrainDebugTrace grainDebugTrace_;
 
+	struct FftDebugContext
+	{
+		int   blockIndex    = 0;
+		int   sampleIndex   = 0;
+		int   engine        = 0;
+		float amount        = 0.0f;
+		float mod           = 0.0f;
+		float speed         = 0.0f;
+		float pitchRate     = 1.0f;
+		int   windowSamples = 0;
+		int   style         = 0;
+		int   reverseOn     = 0;
+		int   triggerOn     = 0;
+		int   alignOn       = 0;
+		int   pdcOn         = 0;
+		int   reportedLatency = 0;
+		int   dryDelayLen   = 0;
+		int   fftOutputPadLen = 0;
+	};
+
+	struct FftDebugEntry
+	{
+		int    blockIndex         = 0;
+		int    sampleIndex        = 0;
+		int    eventType          = 0; // 0=cycle, 1=trigger_reset, 2=engine_reset, 3=size_reset
+		int    engine             = 0;
+		float  amount             = 0.0f;
+		float  mod                = 0.0f;
+		float  speed              = 0.0f;
+		float  pitchRate          = 1.0f;
+		int    windowSamples      = 0;
+		int    fftSize            = 0;
+		int    analysisHop        = 0;
+		int    synthesisHop       = 0;
+		int    style              = 0;
+		int    reverseOn          = 0;
+		int    triggerOn          = 0;
+		int    wideMode           = 0;
+		int    passthrough        = 0;
+		int    peakCountL         = 0;
+		int    peakCountR         = 0;
+		int    lockedBinsL        = 0;
+		int    lockedBinsR        = 0;
+		double analysisReadBefore = 0.0;
+		double analysisReadAfter  = 0.0;
+		float  frameRmsL          = 0.0f;
+		float  frameRmsR          = 0.0f;
+		float  outputRmsL         = 0.0f;
+		float  outputRmsR         = 0.0f;
+		float  outputStartDeltaL  = 0.0f;
+		float  outputStartDeltaR  = 0.0f;
+		float  outputNormAtRead   = 0.0f;
+		float  previewOutL        = 0.0f;
+		float  previewOutR        = 0.0f;
+		double analysisLagSamples = 0.0;
+		int    cyclesSinceReset   = 0;
+		int    alignOn            = 0;
+		int    pdcOn              = 0;
+		int    reportedLatency    = 0;
+		int    dryDelayLen        = 0;
+		int    fftOutputPadLen    = 0;
+	};
+
+	class FftDebugTrace
+	{
+	public:
+		static constexpr int kRingSize = 16384;
+
+		void record (const FftDebugEntry& entry) noexcept
+		{
+			const int idx = writeIndex.fetch_add (1, std::memory_order_relaxed) & (kRingSize - 1);
+			ring[idx] = entry;
+		}
+
+		void setAutoDumpPath (const juce::String& path) { autoDumpPath = path; }
+
+		void enableDesktopAutoDump (const juce::String& filename = "stretr_fft_dump.csv")
+		{
+			auto desktop = juce::File::getSpecialLocation (juce::File::userDesktopDirectory);
+			setAutoDumpPath (desktop.getChildFile (filename).getFullPathName());
+		}
+
+		bool dumpToFile (const juce::String& filePath) const
+		{
+			juce::File f (filePath);
+			if (auto stream = f.createOutputStream())
+			{
+				stream->writeText (
+					"block_index,sample_index,event,engine,amount,mod,speed,pitch_rate,window_samples,fft_size,"
+					"analysis_hop,synthesis_hop,style,reverse_on,trigger_on,wide_mode,passthrough,peak_count_l,"
+					"peak_count_r,locked_bins_l,locked_bins_r,analysis_read_before,analysis_read_after,frame_rms_l,"
+					"frame_rms_r,output_rms_l,output_rms_r,output_start_delta_l,output_start_delta_r,"
+					"output_norm_at_read,preview_out_l,preview_out_r,analysis_lag_samples,cycles_since_reset,"
+					"align_on,pdc_on,reported_latency,dry_delay_len,fft_output_pad_len\n",
+					false, false, nullptr);
+
+				const int total = juce::jmin (writeIndex.load (std::memory_order_relaxed), kRingSize);
+				const int startIdx = writeIndex.load (std::memory_order_relaxed) - total;
+				for (int i = 0; i < total; ++i)
+				{
+					const auto& e = ring[(startIdx + i) & (kRingSize - 1)];
+					const juce::String eventName = (e.eventType == 1) ? "trigger_reset"
+						: (e.eventType == 2) ? "engine_reset"
+						: (e.eventType == 3) ? "size_reset"
+						: "cycle";
+					juce::String line;
+					line << e.blockIndex << ","
+					     << e.sampleIndex << ","
+					     << eventName << ","
+					     << e.engine << ","
+					     << juce::String (e.amount, 4) << ","
+					     << juce::String (e.mod, 4) << ","
+					     << juce::String (e.speed, 6) << ","
+					     << juce::String (e.pitchRate, 6) << ","
+					     << e.windowSamples << ","
+					     << e.fftSize << ","
+					     << e.analysisHop << ","
+					     << e.synthesisHop << ","
+					     << e.style << ","
+					     << e.reverseOn << ","
+					     << e.triggerOn << ","
+					     << e.wideMode << ","
+					     << e.passthrough << ","
+					     << e.peakCountL << ","
+					     << e.peakCountR << ","
+					     << e.lockedBinsL << ","
+					     << e.lockedBinsR << ","
+					     << juce::String (e.analysisReadBefore, 6) << ","
+					     << juce::String (e.analysisReadAfter, 6) << ","
+					     << juce::String (e.frameRmsL, 6) << ","
+					     << juce::String (e.frameRmsR, 6) << ","
+					     << juce::String (e.outputRmsL, 6) << ","
+					     << juce::String (e.outputRmsR, 6) << ","
+					     << juce::String (e.outputStartDeltaL, 6) << ","
+					     << juce::String (e.outputStartDeltaR, 6) << ","
+					     << juce::String (e.outputNormAtRead, 6) << ","
+					     << juce::String (e.previewOutL, 6) << ","
+					     << juce::String (e.previewOutR, 6) << ","
+					     << juce::String (e.analysisLagSamples, 6) << ","
+					     << e.cyclesSinceReset << ","
+					     << e.alignOn << ","
+					     << e.pdcOn << ","
+					     << e.reportedLatency << ","
+					     << e.dryDelayLen << ","
+					     << e.fftOutputPadLen << "\n";
+					stream->writeText (line, false, false, nullptr);
+				}
+
+				stream->flush();
+				return true;
+			}
+			return false;
+		}
+
+		~FftDebugTrace()
+		{
+			if (autoDumpPath.isNotEmpty() && writeIndex.load (std::memory_order_relaxed) > 0)
+				dumpToFile (autoDumpPath);
+		}
+
+	private:
+		FftDebugEntry ring[kRingSize] {};
+		std::atomic<int> writeIndex { 0 };
+		juce::String autoDumpPath;
+	};
+
+	FftDebugTrace fftDebugTrace_;
+	FftDebugContext fftDebugContext_;
+	int fftDebugBlockCounter_ = 0;
+
     // Granular engine state
 	struct Grain
 	{
@@ -554,11 +724,13 @@ private:
 		float heldMag[2][kMaxFftBins]        = {};
 		float heldFreq[2][kMaxFftBins]       = {};
 		float outputAccum[2][kStftOutBufLen] = {};
+		float outputNormAccum[kStftOutBufLen] = {};
 		int   outputReadPos    = 0;
 		int   synthCounter     = 0;
 		double analysisReadPos = 0.0;
 		bool  hasFrame         = false;
 		int   activeFftSize    = 0;
+		int   cyclesSinceReset = 0;
 	};
 	StftState stft_;
 
@@ -566,8 +738,12 @@ private:
 	int   currentFftOrder_ = -1;
 	float fftWindow_[kMaxFftSize]     = {};
 	float fftWork_[kMaxFftSize * 2]   = {};
+	float fftOutputPadBuf_[2][kMaxFftSize] = {};
+	int   fftOutputPadWritePos_ = 0;
 
 	void  ensureFft (int fftSize);
+	void  resetStftAtPos (double capturePos, int fftSize) noexcept;
+	int   recommendedFftSynthHop (int fftSize) const noexcept;
 	void  performStftCycle (int fftSize, int analysisHop, int synthesisHop,
 	                        float pitchRate, bool reverseOn, float pitchRateR = -1.0f,
 	                        bool wideMode = false);

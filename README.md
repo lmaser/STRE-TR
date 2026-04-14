@@ -210,9 +210,9 @@ Delays the dry path by the active FFT latency so dry and wet remain time-aligned
 
 ### PDC
 
-Reports FFT latency to the host.
+Reports a fixed maximum FFT latency to the host while an FFT engine is active.
 
-- `ON`: host latency compensation follows the active FFT size
+- `ON`: host latency compensation stays fixed at the maximum FFT size while the plugin pads the current FFT output internally
 - `OFF`: no latency is reported
 
 ### MODE IN / MODE OUT

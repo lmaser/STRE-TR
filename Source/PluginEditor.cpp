@@ -1015,6 +1015,17 @@ void STRETRAudioProcessorEditor::applyLabelTextColour (juce::Label& label, juce:
 
 void STRETRAudioProcessorEditor::sliderValueChanged (juce::Slider* slider)
 {
+    if (slider == &windowSlider && ! clampingWindowSlider_ && isCurrentEngineFft())
+    {
+        const int effectiveWindow = getEffectiveWindowValue (windowSlider.getValue());
+        if ((int) std::lround (windowSlider.getValue()) != effectiveWindow)
+        {
+            juce::ScopedValueSetter<bool> clampGuard (clampingWindowSlider_, true);
+            windowSlider.setValue ((double) effectiveWindow, juce::sendNotificationSync);
+            return;
+        }
+    }
+
     refreshLegendTextCache();
     if (slider == nullptr) { repaint(); return; }
 
@@ -1175,6 +1186,17 @@ void STRETRAudioProcessorEditor::updateEngineControls()
     auto* engineP = audioProcessor.apvts.getRawParameterValue (STRETRAudioProcessor::kParamEngine);
     const int engineVal = engineP ? (int) std::lround (engineP->load (std::memory_order_relaxed)) : 0;
 
+    if ((engineVal == 2 || engineVal == 3) && ! clampingWindowSlider_)
+    {
+        const int effectiveWindow = getEffectiveWindowValue (windowSlider.getValue());
+        if ((int) std::lround (windowSlider.getValue()) != effectiveWindow)
+        {
+            juce::ScopedValueSetter<bool> clampGuard (clampingWindowSlider_, true);
+            windowSlider.setValue ((double) effectiveWindow, juce::sendNotificationSync);
+            return;
+        }
+    }
+
     const bool grainActive = (engineVal == 1);   // GRAIN only
     grainSlider.setAlpha (grainActive ? 1.0f : 0.35f);
     grainSlider.setEnabled (grainActive);
@@ -1183,6 +1205,7 @@ void STRETRAudioProcessorEditor::updateEngineControls()
     reverseButton.setAlpha (reverseActive ? 1.0f : 0.35f);
     reverseButton.setEnabled (reverseActive);
 
+    refreshLegendTextCache();
     repaint();
 }
 
@@ -1303,14 +1326,35 @@ juce::String STRETRAudioProcessorEditor::getEngineTextShort() const
     }
 }
 
+int STRETRAudioProcessorEditor::getCurrentEngineValue() const
+{
+    if (auto* engineP = audioProcessor.apvts.getRawParameterValue (STRETRAudioProcessor::kParamEngine))
+        return (int) std::lround (engineP->load (std::memory_order_relaxed));
+
+    return (int) std::lround (engineSlider.getValue());
+}
+
+bool STRETRAudioProcessorEditor::isCurrentEngineFft() const
+{
+    const int engineVal = getCurrentEngineValue();
+    return engineVal == 2 || engineVal == 3;
+}
+
+int STRETRAudioProcessorEditor::getEffectiveWindowValue (double rawWindowValue) const
+{
+    return juce::jlimit (STRETRAudioProcessor::kWindowMin,
+                         STRETRAudioProcessor::kWindowMax,
+                         (int) std::lround (rawWindowValue));
+}
+
 juce::String STRETRAudioProcessorEditor::getWindowText() const
 {
-    const int sz = (int) std::lround (windowSlider.getValue());
+    const int sz = getEffectiveWindowValue (windowSlider.getValue());
     return juce::String (sz) + " WINDOW";
 }
 juce::String STRETRAudioProcessorEditor::getWindowTextShort() const
 {
-    const int sz = (int) std::lround (windowSlider.getValue());
+    const int sz = getEffectiveWindowValue (windowSlider.getValue());
     return juce::String (sz) + " WIN";
 }
 
@@ -1482,7 +1526,7 @@ bool STRETRAudioProcessorEditor::refreshLegendTextCache()
     }
     cachedGrainIntOnly   = juce::String ((int) std::lround (grainSlider.getValue())) + "ms";
     cachedEngineIntOnly  = getEngineTextShort();
-    cachedWindowIntOnly  = juce::String ((int) std::lround (windowSlider.getValue()));
+    cachedWindowIntOnly  = juce::String (getEffectiveWindowValue (windowSlider.getValue()));
     cachedStyleIntOnly   = getStyleTextShort();
     cachedInputIntOnly   = juce::String ((int) inputSlider.getValue()) + "dB";
     cachedOutputIntOnly  = juce::String ((int) outputSlider.getValue()) + "dB";
@@ -2399,7 +2443,7 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     else if (&s == &panSlider)
         currentDisplay = juce::String (juce::jlimit (0.0, 100.0, s.getValue() * 100.0), 0);
     else if (&s == &windowSlider)
-        currentDisplay = juce::String ((int) std::lround (s.getValue()));
+        currentDisplay = juce::String (getEffectiveWindowValue (s.getValue()));
     else
         currentDisplay = s.getTextFromValue (s.getValue());
 
@@ -2579,6 +2623,8 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
                 val = multiplierToModSlider (val);
             else if (targetSlider == &safeThis->panSlider)
                 val = juce::jlimit (0.0, 1.0, val / 100.0);
+            else if (targetSlider == &safeThis->windowSlider)
+                val = (double) safeThis->getEffectiveWindowValue (val);
 
             targetSlider->setValue (val, juce::sendNotificationSync);
         }), false);

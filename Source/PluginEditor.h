@@ -124,7 +124,7 @@ private:
             // Window (continuous 21..8192)
             if (owner != nullptr && this == &owner->windowSlider)
             {
-                return juce::String ((int) std::lround (v));
+                return juce::String (owner->getEffectiveWindowValue (v));
             }
 
             // Style (0=MONO 1=STEREO 2=WIDE 3=DUAL)
@@ -452,6 +452,9 @@ private:
     juce::String getEngineText() const;
     juce::String getEngineTextShort() const;
 
+    int getCurrentEngineValue() const;
+    bool isCurrentEngineFft() const;
+    int getEffectiveWindowValue (double rawWindowValue) const;
     juce::String getWindowText() const;
     juce::String getWindowTextShort() const;
 
@@ -504,6 +507,7 @@ private:
 
     juce::Path cachedInfoGearPath;
     juce::Rectangle<float> cachedInfoGearHole;
+    bool clampingWindowSlider_ = false;
 
     juce::String cachedAmountTextFull;
     juce::String cachedAmountTextShort;
