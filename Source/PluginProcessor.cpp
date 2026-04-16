@@ -36,6 +36,48 @@ namespace
 		return (dB <= -100.0f) ? 0.0f : std::exp2 (dB * 0.16609640474f);
 	}
 
+	inline float fastAtan2Approx (float y, float x) noexcept
+	{
+		constexpr float kPiOver4 = juce::MathConstants<float>::pi * 0.25f;
+		constexpr float k3PiOver4 = juce::MathConstants<float>::pi * 0.75f;
+		const float absY = std::abs (y) + 1.0e-12f;
+
+		float angle;
+		if (x < 0.0f)
+		{
+			const float r = (x + absY) / (absY - x);
+			angle = k3PiOver4 + (0.1963f * r * r - 0.9817f) * r;
+		}
+		else
+		{
+			const float r = (x - absY) / (x + absY);
+			angle = kPiOver4 + (0.1963f * r * r - 0.9817f) * r;
+		}
+
+		return (y < 0.0f) ? -angle : angle;
+	}
+
+	inline float wrapPhaseToPiFast (float phase) noexcept
+	{
+		const float twoPi = juce::MathConstants<float>::twoPi;
+		const float pi = juce::MathConstants<float>::pi;
+
+		if (phase > pi)
+		{
+			phase -= twoPi;
+			if (phase > pi)
+				phase -= twoPi;
+		}
+		else if (phase < -pi)
+		{
+			phase += twoPi;
+			if (phase < -pi)
+				phase += twoPi;
+		}
+
+		return phase;
+	}
+
     // Wet-signal biquad filter helpers
 	using BQC = STRETRAudioProcessor::WetFilterBiquadCoeffs;
 
@@ -263,6 +305,10 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	std::memset (fftWork_, 0, sizeof (fftWork_));
 	std::memset (fftOutputPadBuf_, 0, sizeof (fftOutputPadBuf_));
 	fftOutputPadWritePos_ = 0;
+	fftUnityBypassActive_ = false;
+	fftTransitionRemaining_ = 0;
+	fftTransitionTotal_ = 0;
+	fftTransitionToUnity_ = false;
 	std::memset (dryDelayBuf_, 0, sizeof (dryDelayBuf_));
 	dryDelayWritePos_ = 0;
 	dryDelayLen_ = 0;
@@ -773,6 +819,7 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
                                               bool wideMode)
 {
 	if (fft_ == nullptr || inputBufLen_ <= 0 || fftSize <= 0) return;
+	const auto cycleStartTicks = juce::Time::getHighResolutionTicks();
 
 	const int numBins    = fftSize / 2 + 1;
 	const int outBufLen  = kStftOutBufLen;
@@ -793,6 +840,14 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 	float debugFrameRms[2] = {};
 	float debugOutputRms[2] = {};
 	float debugOutputStartDelta[2] = {};
+	float debugSpectralFlux[2] = {};
+	float debugPhaseResetMix[2] = {};
+	float debugLockStrengthMean[2] = {};
+	juce::int64 forwardFftTicks = 0;
+	juce::int64 binAnalysisTicks = 0;
+	juce::int64 pitchMapTicks = 0;
+	juce::int64 phaseLockTicks = 0;
+	juce::int64 ifftOlaTicks = 0;
 
 	for (int ch = 0; ch < 2; ++ch)
 	{
@@ -800,9 +855,10 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 		const float pr = (ch == 1 && pitchRateR > 0.0f) ? pitchRateR : pitchRate;
 		float frameEnergy = 0.0f;
 
-        // Analysis
+		// Analysis
 		if (analysisHop > 0 || ! stft_.hasFrame)
 		{
+			const auto forwardStartTicks = juce::Time::getHighResolutionTicks();
 			for (int j = 0; j < fftSize; ++j)
 			{
 				const int idx = ((int) stft_.analysisReadPos + j) & inputBufMask_;
@@ -813,32 +869,63 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 				fftWork_[j] = 0.0f;
 
 			fft_->performRealOnlyForwardTransform (fftWork_, true);
+			forwardFftTicks += juce::Time::getHighResolutionTicks() - forwardStartTicks;
 
+			const auto binAnalysisStartTicks = juce::Time::getHighResolutionTicks();
+			const bool useFastLargeFftAnalysis = (fftSize > 1024);
+			const float invAnalysisHop = (analysisHop > 0) ? (1.0f / (float) analysisHop) : 0.0f;
+			const float expectedPhaseStep = expBase * (float) analysisHop;
+			float expectedPhase = 0.0f;
+			float baseFreq = 0.0f;
+			float positiveFlux = 0.0f;
+			float fluxNorm = 0.0f;
 			for (int k = 0; k < numBins; ++k)
 			{
 				const float re  = fftWork_[k * 2];
 				const float im  = fftWork_[k * 2 + 1];
 				const float mag = std::sqrt (re * re + im * im);
-				const float ph  = std::atan2 (im, re);
+				const float prevMag = stft_.prevMag[ch][k];
+				const float ph  = useFastLargeFftAnalysis ? fastAtan2Approx (im, re)
+				                                          : std::atan2 (im, re);
 
 				float phaseDiff = ph - stft_.prevPhase[ch][k];
 				stft_.prevPhase[ch][k] = ph;
 
 				if (analysisHop > 0)
 				{
-					phaseDiff -= expBase * (float) k * (float) analysisHop;
-					while (phaseDiff >  pi) phaseDiff -= twoPi;
-					while (phaseDiff < -pi) phaseDiff += twoPi;
-					stft_.lastFreq[ch][k] = expBase * (float) k
-					                       + phaseDiff / (float) analysisHop;
+					if (useFastLargeFftAnalysis)
+					{
+						phaseDiff -= expectedPhase;
+						phaseDiff = wrapPhaseToPiFast (phaseDiff);
+						stft_.lastFreq[ch][k] = baseFreq + phaseDiff * invAnalysisHop;
+					}
+					else
+					{
+						phaseDiff -= expBase * (float) k * (float) analysisHop;
+						while (phaseDiff >  pi) phaseDiff -= twoPi;
+						while (phaseDiff < -pi) phaseDiff += twoPi;
+						stft_.lastFreq[ch][k] = expBase * (float) k
+						                       + phaseDiff / (float) analysisHop;
+					}
 				}
 				else
 				{
-					stft_.lastFreq[ch][k] = expBase * (float) k;
+					stft_.lastFreq[ch][k] = useFastLargeFftAnalysis ? baseFreq
+					                                                : expBase * (float) k;
 				}
 
+				positiveFlux += juce::jmax (0.0f, mag - prevMag);
+				fluxNorm += juce::jmax (mag, prevMag);
+				stft_.prevMag[ch][k] = mag;
 				stft_.lastMag[ch][k] = mag;
+				if (useFastLargeFftAnalysis)
+				{
+					expectedPhase += expectedPhaseStep;
+					baseFreq += expBase;
+				}
 			}
+			debugSpectralFlux[ch] = (fluxNorm > 1.0e-6f) ? (positiveFlux / fluxNorm) : 0.0f;
+			binAnalysisTicks += juce::Time::getHighResolutionTicks() - binAnalysisStartTicks;
 			stft_.hasFrame = true;
 		}
 		debugFrameRms[ch] = std::sqrt (frameEnergy / (float) juce::jmax (1, fftSize));
@@ -862,6 +949,7 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 		}
 		else
 		{
+			const auto pitchMapStartTicks = juce::Time::getHighResolutionTicks();
 			for (int k = 0; k < numBins; ++k)
 			{
 				float mag, freq;
@@ -892,47 +980,235 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 				synthMag[k] = mag;
 				stft_.synthPhase[ch][k] += freq * (float) synthesisHop;
 			}
+			pitchMapTicks += juce::Time::getHighResolutionTicks() - pitchMapStartTicks;
 
-			// Phase locking (only when not in passthrough)
+			// Phase locking (only when not in passthrough).
+			// Keep the legacy identity locking for <=1024, but for larger FFTs
+			// use prominent peaks and regions of influence so bins stay coherent
+			// without being chained to every weak local maximum.
 			{
-				bool isPeak[kMaxFftBins];
+				const auto phaseLockStartTicks = juce::Time::getHighResolutionTicks();
+				bool isPeak[kMaxFftBins] = {};
 				isPeak[0] = (numBins > 1) ? (synthMag[0] >= synthMag[1]) : true;
 				for (int k = 1; k < numBins - 1; ++k)
 					isPeak[k] = (synthMag[k] >= synthMag[k - 1] && synthMag[k] >= synthMag[k + 1]);
 				if (numBins > 1)
 					isPeak[numBins - 1] = (synthMag[numBins - 1] >= synthMag[numBins - 2]);
 
-				int peakCount = 0;
-				for (int k = 0; k < numBins; ++k)
-					if (isPeak[k])
-						++peakCount;
-				debugPeakCount[ch] = peakCount;
-
-				int nearestPk[kMaxFftBins];
-				int lp = 0;
-				for (int k = 0; k < numBins; ++k) { if (isPeak[k]) lp = k; nearestPk[k] = lp; }
-				lp = numBins - 1;
-				for (int k = numBins - 1; k >= 0; --k)
+				if (fftSize <= 1024)
 				{
-					if (isPeak[k]) lp = k;
-					if (std::abs (k - lp) < std::abs (k - nearestPk[k]))
-						nearestPk[k] = lp;
-				}
+					int peakCount = 0;
+					float lockStrengthSum = 0.0f;
+					int lockStrengthCount = 0;
+					for (int k = 0; k < numBins; ++k)
+						if (isPeak[k])
+							++peakCount;
+					debugPeakCount[ch] = peakCount;
 
-				for (int k = 0; k < numBins; ++k)
-				{
-					if (! isPeak[k])
+					int nearestPk[kMaxFftBins];
+					int lp = 0;
+					for (int k = 0; k < numBins; ++k) { if (isPeak[k]) lp = k; nearestPk[k] = lp; }
+					lp = numBins - 1;
+					for (int k = numBins - 1; k >= 0; --k)
 					{
-						const int pk = nearestPk[k];
-						stft_.synthPhase[ch][k] = stft_.synthPhase[ch][pk]
-						    + (stft_.prevPhase[ch][k] - stft_.prevPhase[ch][pk]);
-						++debugLockedBins[ch];
+						if (isPeak[k]) lp = k;
+						if (std::abs (k - lp) < std::abs (k - nearestPk[k]))
+							nearestPk[k] = lp;
 					}
+
+					for (int k = 0; k < numBins; ++k)
+					{
+						if (! isPeak[k])
+						{
+							const int pk = nearestPk[k];
+							stft_.synthPhase[ch][k] = stft_.synthPhase[ch][pk]
+							    + (stft_.prevPhase[ch][k] - stft_.prevPhase[ch][pk]);
+							++debugLockedBins[ch];
+							lockStrengthSum += 1.0f;
+							++lockStrengthCount;
+						}
+					}
+					debugLockStrengthMean[ch] = (lockStrengthCount > 0)
+						? (lockStrengthSum / (float) lockStrengthCount)
+						: 0.0f;
 				}
+				else
+				{
+					int prominentPeaks[kMaxFftBins];
+					int prominentPeakCount = 0;
+					const bool transientAwareReset = (analysisHop > 0);
+					float pitchResetScale = 1.0f;
+					if (std::abs (pr - 1.0f) > 0.001f)
+						pitchResetScale = juce::jlimit (0.35f, 0.8f, 1.0f / std::sqrt (std::abs (pr)));
+
+					const float transientResetMix = transientAwareReset
+						? juce::jlimit (0.0f, 1.0f, (debugSpectralFlux[ch] - 0.07f) / 0.10f) * pitchResetScale
+						: 0.0f;
+					float stabilityResetMix = 0.0f;
+					float startupResetMix = 0.0f;
+					if (fftSize == 2048)
+					{
+						const float stretchNorm = juce::jlimit (0.0f, 1.0f,
+						                                        std::abs ((float) analysisHop - (float) synthesisHop)
+						                                            / (float) juce::jmax (1, synthesisHop));
+						const float pitchNorm = juce::jlimit (0.0f, 1.0f,
+						                                      std::abs (pr - 1.0f) / 3.0f);
+						const float activityNorm = juce::jmax (stretchNorm, pitchNorm);
+						if (activityNorm > 0.001f)
+						{
+							const float cycleNorm = juce::jlimit (0.0f, 1.0f,
+							                                      (float) stft_.cyclesSinceReset / 160.0f);
+							stabilityResetMix = (0.03f + 0.08f * cycleNorm)
+							                  * juce::jmax (0.35f, activityNorm);
+
+							const float startupNorm = juce::jlimit (0.0f, 1.0f,
+							                                        (96.0f - (float) stft_.cyclesSinceReset) / 96.0f);
+							startupResetMix = (0.06f + 0.18f * pitchNorm)
+							                * startupNorm
+							                * juce::jmax (0.35f, activityNorm);
+						}
+					}
+					float hopSlewResetMix = 0.0f;
+					float hopStepResetMix = 0.0f;
+					if (fftSize == 2048)
+					{
+						const float lowFluxNorm = juce::jlimit (0.0f, 1.0f,
+						                                        (0.10f - debugSpectralFlux[ch]) / 0.07f);
+						hopSlewResetMix = 0.16f
+						                * juce::jlimit (0.0f, 1.0f, stft_.analysisHopSlewNorm)
+						                * (0.65f + 0.35f * lowFluxNorm);
+						hopStepResetMix = 0.28f
+						                * juce::jlimit (0.0f, 1.0f, stft_.analysisHopStepNorm)
+						                * (0.60f + 0.40f * lowFluxNorm);
+					}
+					float pitchStabilityResetMix = 0.0f;
+					if (fftSize == 2048)
+					{
+						const float pitchNorm = juce::jlimit (0.0f, 1.0f,
+						                                      (std::abs (pr - 1.0f) - 0.15f) / 2.85f);
+						const float lowFluxNorm = juce::jlimit (0.0f, 1.0f,
+						                                        (0.12f - debugSpectralFlux[ch]) / 0.08f);
+						pitchStabilityResetMix = 0.06f * pitchNorm * lowFluxNorm;
+					}
+					const float resetMix = juce::jlimit (0.0f, 1.0f,
+					                                     juce::jmax (juce::jmax (juce::jmax (juce::jmax (juce::jmax (transientResetMix, stabilityResetMix),
+					                                                                                               startupResetMix),
+					                                                                                  hopSlewResetMix),
+					                                                                     hopStepResetMix),
+					                                                 pitchStabilityResetMix));
+					debugPhaseResetMix[ch] = resetMix;
+
+					float maxSynthMag = 0.0f;
+					for (int k = 0; k < numBins; ++k)
+						maxSynthMag = juce::jmax (maxSynthMag, synthMag[k]);
+
+					const float peakFloor = maxSynthMag * 0.005f;
+					const float prominenceFloor = maxSynthMag * 0.0015f;
+					const int minPeakSpacing = 3;
+
+					for (int k = 0; k < numBins; ++k)
+					{
+						if (! isPeak[k])
+							continue;
+
+						const float mag = synthMag[k];
+						const float left = (k > 0) ? synthMag[k - 1] : mag;
+						const float right = (k + 1 < numBins) ? synthMag[k + 1] : mag;
+						const float localProminence = mag - 0.5f * (left + right);
+
+						if (mag < peakFloor || localProminence < prominenceFloor)
+							continue;
+
+						if (prominentPeakCount > 0
+						    && (k - prominentPeaks[prominentPeakCount - 1]) <= minPeakSpacing)
+						{
+							const int prevPk = prominentPeaks[prominentPeakCount - 1];
+							if (mag > synthMag[prevPk])
+								prominentPeaks[prominentPeakCount - 1] = k;
+							continue;
+						}
+
+						prominentPeaks[prominentPeakCount++] = k;
+					}
+
+					if (prominentPeakCount == 0 && numBins > 0)
+					{
+						int strongestPeak = 0;
+						for (int k = 1; k < numBins; ++k)
+							if (synthMag[k] > synthMag[strongestPeak])
+								strongestPeak = k;
+						prominentPeaks[prominentPeakCount++] = strongestPeak;
+					}
+
+					debugPeakCount[ch] = prominentPeakCount;
+
+					for (int peakIndex = 0; peakIndex < prominentPeakCount; ++peakIndex)
+					{
+						const int pk = prominentPeaks[peakIndex];
+						const int leftEdge = (peakIndex == 0)
+							? 0
+							: ((prominentPeaks[peakIndex - 1] + pk) / 2 + 1);
+						const int rightEdge = (peakIndex == prominentPeakCount - 1)
+							? (numBins - 1)
+							: ((pk + prominentPeaks[peakIndex + 1]) / 2);
+						const float peakPrevPhase = stft_.prevPhase[ch][pk];
+						float peakSynthPhase = stft_.synthPhase[ch][pk];
+
+						if (resetMix > 0.0f)
+						{
+							const float phaseToAnalysis = wrapPhaseToPiFast (peakPrevPhase - peakSynthPhase);
+							peakSynthPhase += resetMix * phaseToAnalysis;
+							stft_.synthPhase[ch][pk] = peakSynthPhase;
+						}
+
+						const int leftRadius = juce::jmax (1, pk - leftEdge);
+						const int rightRadius = juce::jmax (1, rightEdge - pk);
+						const int regionRadius = juce::jmax (leftRadius, rightRadius);
+						const float baseEdgeLock = (fftSize >= 8192) ? 0.18f
+						                         : (fftSize >= 4096) ? 0.32f
+						                                              : 0.55f;
+						const float widthRelax = juce::jlimit (0.0f, 0.12f,
+						                                       0.008f * (float) juce::jmax (0, regionRadius - 8));
+						const float pitchRelax = juce::jlimit (0.0f, 0.16f,
+						                                       0.06f * std::abs (pr - 1.0f));
+						const float resetTighten = 0.08f * resetMix;
+						const float edgeLock = juce::jlimit (0.12f, 0.85f,
+						                                     baseEdgeLock - widthRelax - pitchRelax + resetTighten);
+						float lockStrengthSum = 0.0f;
+						int lockStrengthCount = 0;
+
+						for (int k = leftEdge; k <= rightEdge; ++k)
+						{
+							if (k == pk)
+								continue;
+
+							const int sideRadius = (k < pk) ? leftRadius : rightRadius;
+							const float t = juce::jlimit (0.0f, 1.0f,
+							                              (float) std::abs (k - pk) / (float) juce::jmax (1, sideRadius));
+							const float smoothT = t * t * (3.0f - 2.0f * t);
+							const float lockBlend = 1.0f + (edgeLock - 1.0f) * smoothT;
+							const float lockedPhase = peakSynthPhase
+							    + (stft_.prevPhase[ch][k] - peakPrevPhase);
+							const float phaseToLocked = wrapPhaseToPiFast (lockedPhase - stft_.synthPhase[ch][k]);
+							stft_.synthPhase[ch][k] += lockBlend * phaseToLocked;
+							++debugLockedBins[ch];
+							lockStrengthSum += lockBlend;
+							++lockStrengthCount;
+						}
+
+						if (lockStrengthCount > 0)
+							debugLockStrengthMean[ch] += lockStrengthSum / (float) lockStrengthCount;
+					}
+
+					if (prominentPeakCount > 0)
+						debugLockStrengthMean[ch] /= (float) prominentPeakCount;
+				}
+				phaseLockTicks += juce::Time::getHighResolutionTicks() - phaseLockStartTicks;
 			}
 		}
 
 		// Step 3: write complex output (only numBins used by performRealOnlyInverseTransform)
+		const auto ifftOlaStartTicks = juce::Time::getHighResolutionTicks();
 		for (int k = 0; k < numBins; ++k)
 		{
             // WIDE: add linear phase ramp to R -> temporal shift of fftSize/2 samples
@@ -960,6 +1236,7 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 			if (ch == 0)
 				stft_.outputNormAccum[outIdx] += windowSq;
 		}
+		ifftOlaTicks += juce::Time::getHighResolutionTicks() - ifftOlaStartTicks;
 		debugOutputRms[ch] = std::sqrt (outputEnergy / (float) juce::jmax (1, fftSize));
 	}
 
@@ -1007,6 +1284,35 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 	dbg.outputNormAtRead = normAtRead;
 	dbg.previewOutL = previewOutL;
 	dbg.previewOutR = previewOutR;
+	if (stft_.identitySampleCount > 0)
+	{
+		dbg.identityRefRmsL = std::sqrt ((float) (stft_.identityRefSqAccum[0] / (double) stft_.identitySampleCount));
+		dbg.identityRefRmsR = std::sqrt ((float) (stft_.identityRefSqAccum[1] / (double) stft_.identitySampleCount));
+		dbg.identityErrRmsL = std::sqrt ((float) (stft_.identityErrSqAccum[0] / (double) stft_.identitySampleCount));
+		dbg.identityErrRmsR = std::sqrt ((float) (stft_.identityErrSqAccum[1] / (double) stft_.identitySampleCount));
+	dbg.identityMaxAbsErrL = stft_.identityMaxAbsErr[0];
+	dbg.identityMaxAbsErrR = stft_.identityMaxAbsErr[1];
+	}
+	dbg.spectralFluxL = debugSpectralFlux[0];
+	dbg.spectralFluxR = debugSpectralFlux[1];
+	dbg.phaseResetMixL = debugPhaseResetMix[0];
+	dbg.phaseResetMixR = debugPhaseResetMix[1];
+	dbg.lockStrengthMeanL = debugLockStrengthMean[0];
+	dbg.lockStrengthMeanR = debugLockStrengthMean[1];
+	const double cycleDurationUs = juce::Time::highResolutionTicksToSeconds (
+		juce::Time::getHighResolutionTicks() - cycleStartTicks) * 1000000.0;
+	const double cycleBudgetUs = (currentSampleRate > 0.0 && synthesisHop > 0)
+		? ((double) synthesisHop / currentSampleRate) * 1000000.0
+		: 0.0;
+	dbg.cycleDurationUs = (float) cycleDurationUs;
+	dbg.cycleRealtimeCpuPct = (cycleBudgetUs > 0.0)
+		? (float) ((cycleDurationUs / cycleBudgetUs) * 100.0)
+		: 0.0f;
+	dbg.forwardFftUs = (float) (juce::Time::highResolutionTicksToSeconds (forwardFftTicks) * 1000000.0);
+	dbg.binAnalysisUs = (float) (juce::Time::highResolutionTicksToSeconds (binAnalysisTicks) * 1000000.0);
+	dbg.pitchMapUs = (float) (juce::Time::highResolutionTicksToSeconds (pitchMapTicks) * 1000000.0);
+	dbg.phaseLockUs = (float) (juce::Time::highResolutionTicksToSeconds (phaseLockTicks) * 1000000.0);
+	dbg.ifftOlaUs = (float) (juce::Time::highResolutionTicksToSeconds (ifftOlaTicks) * 1000000.0);
 	dbg.analysisLagSamples = analysisLagSamples;
 	dbg.cyclesSinceReset = stft_.cyclesSinceReset;
 	dbg.alignOn = fftDebugContext_.alignOn;
@@ -1015,6 +1321,13 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 	dbg.dryDelayLen = fftDebugContext_.dryDelayLen;
 	dbg.fftOutputPadLen = fftDebugContext_.fftOutputPadLen;
 	fftDebugTrace_.record (dbg);
+	stft_.identityErrSqAccum[0] = 0.0;
+	stft_.identityErrSqAccum[1] = 0.0;
+	stft_.identityRefSqAccum[0] = 0.0;
+	stft_.identityRefSqAccum[1] = 0.0;
+	stft_.identityMaxAbsErr[0] = 0.0f;
+	stft_.identityMaxAbsErr[1] = 0.0f;
+	stft_.identitySampleCount = 0;
 	++stft_.cyclesSinceReset;
 }
 
@@ -1024,6 +1337,7 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
                                                           bool wideMode)
 {
 	if (fft_ == nullptr || inputBufLen_ <= 0 || fftSize <= 0) return;
+	const auto cycleStartTicks = juce::Time::getHighResolutionTicks();
 
 	const int   numBins    = fftSize / 2 + 1;
 	const int   outBufLen  = kStftOutBufLen;
@@ -1210,6 +1524,24 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 	dbg.outputNormAtRead = normAtRead;
 	dbg.previewOutL = previewOutL;
 	dbg.previewOutR = previewOutR;
+	if (stft_.identitySampleCount > 0)
+	{
+		dbg.identityRefRmsL = std::sqrt ((float) (stft_.identityRefSqAccum[0] / (double) stft_.identitySampleCount));
+		dbg.identityRefRmsR = std::sqrt ((float) (stft_.identityRefSqAccum[1] / (double) stft_.identitySampleCount));
+		dbg.identityErrRmsL = std::sqrt ((float) (stft_.identityErrSqAccum[0] / (double) stft_.identitySampleCount));
+		dbg.identityErrRmsR = std::sqrt ((float) (stft_.identityErrSqAccum[1] / (double) stft_.identitySampleCount));
+	dbg.identityMaxAbsErrL = stft_.identityMaxAbsErr[0];
+	dbg.identityMaxAbsErrR = stft_.identityMaxAbsErr[1];
+	}
+	const double cycleDurationUs = juce::Time::highResolutionTicksToSeconds (
+		juce::Time::getHighResolutionTicks() - cycleStartTicks) * 1000000.0;
+	const double cycleBudgetUs = (currentSampleRate > 0.0 && synthesisHop > 0)
+		? ((double) synthesisHop / currentSampleRate) * 1000000.0
+		: 0.0;
+	dbg.cycleDurationUs = (float) cycleDurationUs;
+	dbg.cycleRealtimeCpuPct = (cycleBudgetUs > 0.0)
+		? (float) ((cycleDurationUs / cycleBudgetUs) * 100.0)
+		: 0.0f;
 	dbg.analysisLagSamples = analysisLagSamples;
 	dbg.cyclesSinceReset = stft_.cyclesSinceReset;
 	dbg.alignOn = fftDebugContext_.alignOn;
@@ -1218,6 +1550,13 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 	dbg.dryDelayLen = fftDebugContext_.dryDelayLen;
 	dbg.fftOutputPadLen = fftDebugContext_.fftOutputPadLen;
 	fftDebugTrace_.record (dbg);
+	stft_.identityErrSqAccum[0] = 0.0;
+	stft_.identityErrSqAccum[1] = 0.0;
+	stft_.identityRefSqAccum[0] = 0.0;
+	stft_.identityRefSqAccum[1] = 0.0;
+	stft_.identityMaxAbsErr[0] = 0.0f;
+	stft_.identityMaxAbsErr[1] = 0.0f;
+	stft_.identitySampleCount = 0;
 	++stft_.cyclesSinceReset;
 }
 
@@ -1358,7 +1697,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		dbg.alignOn = alignOn ? 1 : 0;
 		dbg.pdcOn = pdcOn ? 1 : 0;
 		dbg.reportedLatency = (pdcOn && requestedFftSize > 0) ? kMaxFftSize : 0;
-		dbg.dryDelayLen = (alignOn && requestedFftSize > 0) ? requestedFftSize : 0;
+		dbg.dryDelayLen = (alignOn && requestedFftSize > 0)
+			? juce::jmin (requestedFftSize + recommendedFftSynthHop (requestedFftSize), kDryDelayBufLen - 1)
+			: 0;
 		dbg.fftOutputPadLen = (pdcOn && requestedFftSize > 0)
 			? juce::jmax (0, kMaxFftSize - requestedFftSize) : 0;
 		fftDebugTrace_.record (dbg);
@@ -1466,9 +1807,13 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	{
 		const int  fftLat  = ((engineVal == 2 || engineVal == 3) && stft_.activeFftSize > 0)
 		                     ? stft_.activeFftSize : 0;
+		const int fftSynthHopForAlign = (fftLat > 0) ? recommendedFftSynthHop (fftLat) : 0;
+		const int fftWetLatency = (fftLat > 0) ? (fftLat + fftSynthHopForAlign) : 0;
 		reportedLatency = (pdcOn && fftLat > 0) ? kMaxFftSize : 0;
 		setLatencySamples (reportedLatency);
-		dryDelayLen_ = (alignOn && fftLat > 0) ? fftLat : 0;
+		dryDelayLen_ = (alignOn && fftWetLatency > 0)
+			? juce::jmin (fftWetLatency, kDryDelayBufLen - 1)
+			: 0;
 		fftOutputPadLen = (pdcOn && fftLat > 0) ? juce::jmax (0, kMaxFftSize - fftLat) : 0;
 	}
 
@@ -1519,10 +1864,10 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		{
 			dryDelayBuf_[0][dryDelayWritePos_] = channelL[i];
 			dryDelayBuf_[1][dryDelayWritePos_] = (channelR != nullptr) ? channelR[i] : channelL[i];
-			const int rdp = (dryDelayWritePos_ - dryDelayLen_ + kMaxFftSize) & (kMaxFftSize - 1);
+			const int rdp = (dryDelayWritePos_ - dryDelayLen_ + kDryDelayBufLen) & (kDryDelayBufLen - 1);
 			dryOrigL = dryDelayBuf_[0][rdp];
 			dryOrigR = dryDelayBuf_[1][rdp];
-			dryDelayWritePos_ = (dryDelayWritePos_ + 1) & (kMaxFftSize - 1);
+			dryDelayWritePos_ = (dryDelayWritePos_ + 1) & (kDryDelayBufLen - 1);
 		}
 		else
 		{
@@ -1573,6 +1918,13 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			grainTransitionTotal_ = 0;
 			grainTransitionToUnity_ = false;
 		}
+		if (! triggerOn || engineVal != 2)
+		{
+			fftUnityBypassActive_ = false;
+			fftTransitionRemaining_ = 0;
+			fftTransitionTotal_ = 0;
+			fftTransitionToUnity_ = false;
+		}
 
 		if (! triggerOn)
 		{
@@ -1584,72 +1936,204 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		{
             // Engines 2 and 3: FFT-based (phase vocoder / spectral hold)
 			const int outBufLen = kStftOutBufLen;
-			const float norm = stft_.outputNormAccum[stft_.outputReadPos];
-			const float invNorm = (norm > 1.0e-6f) ? (1.0f / norm) : 0.0f;
-
-			wetL = stft_.outputAccum[0][stft_.outputReadPos] * invNorm;
-			wetR = stft_.outputAccum[1][stft_.outputReadPos] * invNorm;
-			stft_.outputAccum[0][stft_.outputReadPos] = 0.0f;
-			stft_.outputAccum[1][stft_.outputReadPos] = 0.0f;
-			stft_.outputNormAccum[stft_.outputReadPos] = 0.0f;
-			stft_.outputReadPos = (stft_.outputReadPos + 1) & (outBufLen - 1);
-
 			const int fftSynthHop = recommendedFftSynthHop (stft_.activeFftSize);
-			if (++stft_.synthCounter >= fftSynthHop)
+			const int fftWetLatency = stft_.activeFftSize + fftSynthHop;
+			const int identityRefPos = (inputBufWritePos_ - fftWetLatency + inputBufLen_) & inputBufMask_;
+			const float identityRefL = inputBuf_[0][identityRefPos];
+			const float identityRefR = inputBuf_[1][identityRefPos];
+			const bool fftUnity = (engineVal == 2)
+			                   && ! reverseOn
+			                   && ! isDual
+			                   && ! isWide
+			                   && std::abs (speed - 1.0f) <= 0.0005f
+			                   && std::abs (pitchRate - 1.0f) <= 0.0005f;
+			const int fftTransitionSamples = juce::jlimit (32,
+			                                               (int) std::round (currentSampleRate * 0.08),
+			                                               juce::jmax ((int) std::round (currentSampleRate * 0.02),
+			                                                           juce::jmax (1, fftSynthHop / 2)));
+
+			auto readCurrentFftWet = [&] (float& outL, float& outR)
 			{
-				stft_.synthCounter = 0;
+				const float norm = stft_.outputNormAccum[stft_.outputReadPos];
+				const float invNorm = (norm > 1.0e-6f) ? (1.0f / norm) : 0.0f;
+				outL = stft_.outputAccum[0][stft_.outputReadPos] * invNorm;
+				outR = stft_.outputAccum[1][stft_.outputReadPos] * invNorm;
+			};
+
+			auto consumeCurrentFftWet = [&]()
+			{
+				stft_.outputAccum[0][stft_.outputReadPos] = 0.0f;
+				stft_.outputAccum[1][stft_.outputReadPos] = 0.0f;
+				stft_.outputNormAccum[stft_.outputReadPos] = 0.0f;
+				stft_.outputReadPos = (stft_.outputReadPos + 1) & (outBufLen - 1);
+			};
+
+			auto accumulateIdentityMetrics = [&] (float actualWetL, float actualWetR)
+			{
+				const float identityErrL = actualWetL - identityRefL;
+				const float identityErrR = actualWetR - identityRefR;
+				stft_.identityRefSqAccum[0] += (double) identityRefL * (double) identityRefL;
+				stft_.identityRefSqAccum[1] += (double) identityRefR * (double) identityRefR;
+				stft_.identityErrSqAccum[0] += (double) identityErrL * (double) identityErrL;
+				stft_.identityErrSqAccum[1] += (double) identityErrR * (double) identityErrR;
+				stft_.identityMaxAbsErr[0] = juce::jmax (stft_.identityMaxAbsErr[0], std::abs (identityErrL));
+				stft_.identityMaxAbsErr[1] = juce::jmax (stft_.identityMaxAbsErr[1], std::abs (identityErrR));
+				++stft_.identitySampleCount;
+			};
+
+			auto runFftCycle = [&] (float cycleSpeed, float cyclePitchRate, float cyclePitchRateR)
+			{
+				fftDebugContext_.blockIndex = debugBlockIndex;
+				fftDebugContext_.sampleIndex = i;
+				fftDebugContext_.engine = engineVal;
+				fftDebugContext_.amount = amountVal;
+				fftDebugContext_.mod = modVal;
+				fftDebugContext_.speed = cycleSpeed;
+				fftDebugContext_.pitchRate = cyclePitchRate;
+				fftDebugContext_.windowSamples = windowSamples;
+				fftDebugContext_.style = styleVal;
+				fftDebugContext_.reverseOn = reverseOn ? 1 : 0;
+				fftDebugContext_.triggerOn = triggerOn ? 1 : 0;
+				fftDebugContext_.alignOn = alignOn ? 1 : 0;
+				fftDebugContext_.pdcOn = pdcOn ? 1 : 0;
+				fftDebugContext_.reportedLatency = reportedLatency;
+				fftDebugContext_.dryDelayLen = dryDelayLen_;
+				fftDebugContext_.fftOutputPadLen = fftOutputPadLen;
 
 				if (engineVal == 3)
 				{
-					// Spectral Hold: always analyze at normal rate, blend magnitudes
-					// Power curve (t^0.25) so low amount values already produce audible hold
-					const float t = 1.0f - speed;  // 0..1 = amount normalised
+					const float t = 1.0f - cycleSpeed;  // 0..1 = amount normalised
 					const float holdCoeff = std::sqrt (std::sqrt (t));
-					fftDebugContext_.blockIndex = debugBlockIndex;
-					fftDebugContext_.sampleIndex = i;
-					fftDebugContext_.engine = engineVal;
-					fftDebugContext_.amount = amountVal;
-					fftDebugContext_.mod = modVal;
-					fftDebugContext_.speed = speed;
-					fftDebugContext_.pitchRate = pitchRate;
-					fftDebugContext_.windowSamples = windowSamples;
-					fftDebugContext_.style = styleVal;
-					fftDebugContext_.reverseOn = reverseOn ? 1 : 0;
-					fftDebugContext_.triggerOn = triggerOn ? 1 : 0;
-					fftDebugContext_.alignOn = alignOn ? 1 : 0;
-					fftDebugContext_.pdcOn = pdcOn ? 1 : 0;
-					fftDebugContext_.reportedLatency = reportedLatency;
-					fftDebugContext_.dryDelayLen = dryDelayLen_;
-					fftDebugContext_.fftOutputPadLen = fftOutputPadLen;
 					performStftCycleSpectralHold (stft_.activeFftSize, fftSynthHop,
-					                              holdCoeff, pitchRate, pitchRateR, isWide);
+					                              holdCoeff, cyclePitchRate, cyclePitchRateR, isWide);
 				}
 				else
 				{
-					// Phase Vocoder: reduce analysis hop for time stretch.
-					// Use rounded hops so near-unity stays truly neutral instead of truncating to N-1.
-					int fftAnalysisHop = 0;
-					if (speed > 0.0001f)
-						fftAnalysisHop = juce::jlimit (1, fftSynthHop,
-						                               (int) std::lround ((double) fftSynthHop * (double) speed));
-					fftDebugContext_.blockIndex = debugBlockIndex;
-					fftDebugContext_.sampleIndex = i;
-					fftDebugContext_.engine = engineVal;
-					fftDebugContext_.amount = amountVal;
-					fftDebugContext_.mod = modVal;
-					fftDebugContext_.speed = speed;
-					fftDebugContext_.pitchRate = pitchRate;
-					fftDebugContext_.windowSamples = windowSamples;
-					fftDebugContext_.style = styleVal;
-					fftDebugContext_.reverseOn = reverseOn ? 1 : 0;
-					fftDebugContext_.triggerOn = triggerOn ? 1 : 0;
-					fftDebugContext_.alignOn = alignOn ? 1 : 0;
-					fftDebugContext_.pdcOn = pdcOn ? 1 : 0;
-					fftDebugContext_.reportedLatency = reportedLatency;
-					fftDebugContext_.dryDelayLen = dryDelayLen_;
-					fftDebugContext_.fftOutputPadLen = fftOutputPadLen;
+					int targetAnalysisHop = 0;
+					if (cycleSpeed > 0.0001f)
+						targetAnalysisHop = juce::jlimit (1, fftSynthHop,
+						                                  (int) std::lround ((double) fftSynthHop * (double) cycleSpeed));
+					int fftAnalysisHop = targetAnalysisHop;
+					stft_.analysisHopSlewNorm = 0.0f;
+					stft_.analysisHopStepNorm = 0.0f;
+					if (engineVal == 2 && stft_.activeFftSize == 2048)
+					{
+						if (stft_.lastAnalysisHop >= 0)
+						{
+							const int maxHopDelta = juce::jmax (16, fftSynthHop / 8);
+							fftAnalysisHop = juce::jlimit (stft_.lastAnalysisHop - maxHopDelta,
+							                               stft_.lastAnalysisHop + maxHopDelta,
+							                               targetAnalysisHop);
+							stft_.analysisHopSlewNorm = juce::jlimit (0.0f, 1.0f,
+							                                          (float) std::abs (targetAnalysisHop - fftAnalysisHop)
+							                                              / (float) juce::jmax (1, fftSynthHop));
+							stft_.analysisHopStepNorm = juce::jlimit (0.0f, 1.0f,
+							                                          (float) std::abs (fftAnalysisHop - stft_.lastAnalysisHop)
+							                                              / (float) juce::jmax (1, fftSynthHop));
+						}
+						stft_.lastAnalysisHop = fftAnalysisHop;
+					}
 					performStftCycle (stft_.activeFftSize, fftAnalysisHop,
-					                  fftSynthHop, pitchRate, reverseOn, pitchRateR, isWide);
+					                  fftSynthHop, cyclePitchRate, reverseOn, cyclePitchRateR, isWide);
+				}
+			};
+
+			if (engineVal == 2 && ! fftUnity && fftTransitionToUnity_)
+			{
+				fftTransitionToUnity_ = false;
+				fftTransitionRemaining_ = 0;
+				fftTransitionTotal_ = 0;
+				fftUnityBypassActive_ = false;
+			}
+
+			if (engineVal == 2 && ! fftUnity && fftUnityBypassActive_)
+			{
+				const int fftSizeForReset = (requestedFftSize > 0) ? requestedFftSize : stft_.activeFftSize;
+				const double capturePos = (double) ((inputBufWritePos_ - 1 + inputBufLen_) & inputBufMask_);
+				resetStftAtPos (capturePos, fftSizeForReset);
+				recordFftReset (4, capturePos);
+				stft_.synthCounter = 0;
+				const float bootstrapPitchRate = targetPitchRate;
+				const float bootstrapPitchRateR = isDual ? (bootstrapPitchRate * 0.5f) : -1.0f;
+				runFftCycle (targetSpeed, bootstrapPitchRate, bootstrapPitchRateR);
+				fftUnityBypassActive_ = false;
+				fftTransitionToUnity_ = false;
+				fftTransitionTotal_ = fftTransitionSamples;
+				fftTransitionRemaining_ = fftTransitionTotal_;
+			}
+
+			if (engineVal == 2 && fftUnity && ! fftUnityBypassActive_ && ! fftTransitionToUnity_)
+			{
+				if (stft_.hasFrame)
+				{
+					fftTransitionToUnity_ = true;
+					fftTransitionTotal_ = fftTransitionSamples;
+					fftTransitionRemaining_ = fftTransitionTotal_;
+				}
+				else
+				{
+					fftUnityBypassActive_ = true;
+					fftTransitionRemaining_ = 0;
+					fftTransitionTotal_ = 0;
+					fftTransitionToUnity_ = false;
+				}
+			}
+
+			if (engineVal == 2 && fftUnityBypassActive_ && ! fftTransitionToUnity_)
+			{
+				wetL = identityRefL;
+				wetR = identityRefR;
+				accumulateIdentityMetrics (wetL, wetR);
+			}
+			else
+			{
+				float fftWetL = 0.0f, fftWetR = 0.0f;
+				readCurrentFftWet (fftWetL, fftWetR);
+
+				if (engineVal == 2 && fftTransitionRemaining_ > 0 && fftTransitionTotal_ > 0)
+				{
+					const float progress = 1.0f
+						- ((float) fftTransitionRemaining_ / (float) fftTransitionTotal_);
+					if (fftTransitionToUnity_)
+					{
+						const float unityMix = std::sin (progress * juce::MathConstants<float>::halfPi);
+						const float fftMix = std::cos (progress * juce::MathConstants<float>::halfPi);
+						wetL = fftWetL * fftMix + identityRefL * unityMix;
+						wetR = fftWetR * fftMix + identityRefR * unityMix;
+					}
+					else
+					{
+						const float fftMix = std::sin (progress * juce::MathConstants<float>::halfPi);
+						const float unityMix = std::cos (progress * juce::MathConstants<float>::halfPi);
+						wetL = identityRefL * unityMix + fftWetL * fftMix;
+						wetR = identityRefR * unityMix + fftWetR * fftMix;
+					}
+					--fftTransitionRemaining_;
+				}
+				else
+				{
+					wetL = fftWetL;
+					wetR = fftWetR;
+				}
+
+				accumulateIdentityMetrics (wetL, wetR);
+				consumeCurrentFftWet();
+
+				if (++stft_.synthCounter >= fftSynthHop)
+				{
+					stft_.synthCounter = 0;
+					runFftCycle (speed, pitchRate, pitchRateR);
+				}
+
+				if (engineVal == 2 && fftTransitionRemaining_ <= 0)
+				{
+					if (fftTransitionToUnity_)
+					{
+						fftUnityBypassActive_ = true;
+						fftTransitionToUnity_ = false;
+					}
+					fftTransitionRemaining_ = 0;
+					fftTransitionTotal_ = 0;
 				}
 			}
 		}

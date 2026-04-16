@@ -540,7 +540,7 @@ private:
 	{
 		int    blockIndex         = 0;
 		int    sampleIndex        = 0;
-		int    eventType          = 0; // 0=cycle, 1=trigger_reset, 2=engine_reset, 3=size_reset
+		int    eventType          = 0; // 0=cycle, 1=trigger_reset, 2=engine_reset, 3=size_reset, 4=unity_exit_reset
 		int    engine             = 0;
 		float  amount             = 0.0f;
 		float  mod                = 0.0f;
@@ -570,6 +570,25 @@ private:
 		float  outputNormAtRead   = 0.0f;
 		float  previewOutL        = 0.0f;
 		float  previewOutR        = 0.0f;
+		float  identityRefRmsL    = 0.0f;
+		float  identityRefRmsR    = 0.0f;
+		float  identityErrRmsL    = 0.0f;
+		float  identityErrRmsR    = 0.0f;
+		float  identityMaxAbsErrL = 0.0f;
+		float  identityMaxAbsErrR = 0.0f;
+		float  spectralFluxL      = 0.0f;
+		float  spectralFluxR      = 0.0f;
+		float  phaseResetMixL     = 0.0f;
+		float  phaseResetMixR     = 0.0f;
+		float  lockStrengthMeanL  = 0.0f;
+		float  lockStrengthMeanR  = 0.0f;
+		float  cycleDurationUs    = 0.0f;
+		float  cycleRealtimeCpuPct = 0.0f;
+		float  forwardFftUs       = 0.0f;
+		float  binAnalysisUs      = 0.0f;
+		float  pitchMapUs         = 0.0f;
+		float  phaseLockUs        = 0.0f;
+		float  ifftOlaUs          = 0.0f;
 		double analysisLagSamples = 0.0;
 		int    cyclesSinceReset   = 0;
 		int    alignOn            = 0;
@@ -608,7 +627,11 @@ private:
 					"analysis_hop,synthesis_hop,style,reverse_on,trigger_on,wide_mode,passthrough,peak_count_l,"
 					"peak_count_r,locked_bins_l,locked_bins_r,analysis_read_before,analysis_read_after,frame_rms_l,"
 					"frame_rms_r,output_rms_l,output_rms_r,output_start_delta_l,output_start_delta_r,"
-					"output_norm_at_read,preview_out_l,preview_out_r,analysis_lag_samples,cycles_since_reset,"
+					"output_norm_at_read,preview_out_l,preview_out_r,identity_ref_rms_l,identity_ref_rms_r,"
+					"identity_err_rms_l,identity_err_rms_r,identity_max_abs_err_l,identity_max_abs_err_r,"
+					"spectral_flux_l,spectral_flux_r,phase_reset_mix_l,phase_reset_mix_r,lock_strength_mean_l,lock_strength_mean_r,"
+					"cycle_duration_us,cycle_realtime_cpu_pct,forward_fft_us,bin_analysis_us,pitch_map_us,phase_lock_us,ifft_ola_us,"
+					"analysis_lag_samples,cycles_since_reset,"
 					"align_on,pdc_on,reported_latency,dry_delay_len,fft_output_pad_len\n",
 					false, false, nullptr);
 
@@ -620,6 +643,7 @@ private:
 					const juce::String eventName = (e.eventType == 1) ? "trigger_reset"
 						: (e.eventType == 2) ? "engine_reset"
 						: (e.eventType == 3) ? "size_reset"
+						: (e.eventType == 4) ? "unity_exit_reset"
 						: "cycle";
 					juce::String line;
 					line << e.blockIndex << ","
@@ -654,6 +678,25 @@ private:
 					     << juce::String (e.outputNormAtRead, 6) << ","
 					     << juce::String (e.previewOutL, 6) << ","
 					     << juce::String (e.previewOutR, 6) << ","
+					     << juce::String (e.identityRefRmsL, 6) << ","
+					     << juce::String (e.identityRefRmsR, 6) << ","
+					     << juce::String (e.identityErrRmsL, 6) << ","
+					     << juce::String (e.identityErrRmsR, 6) << ","
+					     << juce::String (e.identityMaxAbsErrL, 6) << ","
+					     << juce::String (e.identityMaxAbsErrR, 6) << ","
+					     << juce::String (e.spectralFluxL, 6) << ","
+					     << juce::String (e.spectralFluxR, 6) << ","
+					     << juce::String (e.phaseResetMixL, 6) << ","
+					     << juce::String (e.phaseResetMixR, 6) << ","
+					     << juce::String (e.lockStrengthMeanL, 6) << ","
+					     << juce::String (e.lockStrengthMeanR, 6) << ","
+					     << juce::String (e.cycleDurationUs, 6) << ","
+					     << juce::String (e.cycleRealtimeCpuPct, 6) << ","
+					     << juce::String (e.forwardFftUs, 6) << ","
+					     << juce::String (e.binAnalysisUs, 6) << ","
+					     << juce::String (e.pitchMapUs, 6) << ","
+					     << juce::String (e.phaseLockUs, 6) << ","
+					     << juce::String (e.ifftOlaUs, 6) << ","
 					     << juce::String (e.analysisLagSamples, 6) << ","
 					     << e.cyclesSinceReset << ","
 					     << e.alignOn << ","
@@ -714,20 +757,29 @@ private:
 	static constexpr int kMaxFftSize    = 8192;
 	static constexpr int kMaxFftBins    = kMaxFftSize / 2 + 1;
 	static constexpr int kStftOutBufLen = kMaxFftSize * 2;
+	static constexpr int kDryDelayBufLen = kStftOutBufLen;
 
 	struct StftState
 	{
 		float prevPhase[2][kMaxFftBins]      = {};
 		float synthPhase[2][kMaxFftBins]     = {};
+		float prevMag[2][kMaxFftBins]        = {};
 		float lastMag[2][kMaxFftBins]        = {};
 		float lastFreq[2][kMaxFftBins]       = {};
 		float heldMag[2][kMaxFftBins]        = {};
 		float heldFreq[2][kMaxFftBins]       = {};
 		float outputAccum[2][kStftOutBufLen] = {};
 		float outputNormAccum[kStftOutBufLen] = {};
+		double identityErrSqAccum[2] = {};
+		double identityRefSqAccum[2] = {};
+		float  identityMaxAbsErr[2] = {};
+		int    identitySampleCount = 0;
 		int   outputReadPos    = 0;
 		int   synthCounter     = 0;
 		double analysisReadPos = 0.0;
+		int    lastAnalysisHop = -1;
+		float  analysisHopSlewNorm = 0.0f;
+		float  analysisHopStepNorm = 0.0f;
 		bool  hasFrame         = false;
 		int   activeFftSize    = 0;
 		int   cyclesSinceReset = 0;
@@ -740,6 +792,10 @@ private:
 	float fftWork_[kMaxFftSize * 2]   = {};
 	float fftOutputPadBuf_[2][kMaxFftSize] = {};
 	int   fftOutputPadWritePos_ = 0;
+	bool  fftUnityBypassActive_ = false;
+	int   fftTransitionRemaining_ = 0;
+	int   fftTransitionTotal_ = 0;
+	bool  fftTransitionToUnity_ = false;
 
 	void  ensureFft (int fftSize);
 	void  resetStftAtPos (double capturePos, int fftSize) noexcept;
@@ -755,7 +811,7 @@ private:
 	float invSqrtLut_[kMaxGrains + 1] = {};
 
     // Dry delay buffer for ALIGN when FFT latency is active
-	float dryDelayBuf_[2][kMaxFftSize] = {};
+	float dryDelayBuf_[2][kDryDelayBufLen] = {};
 	int   dryDelayWritePos_ = 0;
 	int   dryDelayLen_       = 0;
 
