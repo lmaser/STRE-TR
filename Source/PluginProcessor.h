@@ -525,6 +525,9 @@ private:
 		float mod           = 0.0f;
 		float speed         = 0.0f;
 		float pitchRate     = 1.0f;
+		float targetAnalysisHop = 0.0f;
+		float filteredAnalysisHop = 0.0f;
+		int   analysisHopDebug = -1;
 		int   windowSamples = 0;
 		int   style         = 0;
 		int   reverseOn     = 0;
@@ -548,6 +551,8 @@ private:
 		float  pitchRate          = 1.0f;
 		int    windowSamples      = 0;
 		int    fftSize            = 0;
+		float  targetAnalysisHop  = 0.0f;
+		float  filteredAnalysisHop = 0.0f;
 		int    analysisHop        = 0;
 		int    synthesisHop       = 0;
 		int    style              = 0;
@@ -624,7 +629,7 @@ private:
 			{
 				stream->writeText (
 					"block_index,sample_index,event,engine,amount,mod,speed,pitch_rate,window_samples,fft_size,"
-					"analysis_hop,synthesis_hop,style,reverse_on,trigger_on,wide_mode,passthrough,peak_count_l,"
+					"target_analysis_hop,filtered_analysis_hop,analysis_hop,synthesis_hop,style,reverse_on,trigger_on,wide_mode,passthrough,peak_count_l,"
 					"peak_count_r,locked_bins_l,locked_bins_r,analysis_read_before,analysis_read_after,frame_rms_l,"
 					"frame_rms_r,output_rms_l,output_rms_r,output_start_delta_l,output_start_delta_r,"
 					"output_norm_at_read,preview_out_l,preview_out_r,identity_ref_rms_l,identity_ref_rms_r,"
@@ -656,6 +661,8 @@ private:
 					     << juce::String (e.pitchRate, 6) << ","
 					     << e.windowSamples << ","
 					     << e.fftSize << ","
+					     << juce::String (e.targetAnalysisHop, 6) << ","
+					     << juce::String (e.filteredAnalysisHop, 6) << ","
 					     << e.analysisHop << ","
 					     << e.synthesisHop << ","
 					     << e.style << ","
@@ -777,7 +784,10 @@ private:
 		int   outputReadPos    = 0;
 		int   synthCounter     = 0;
 		double analysisReadPos = 0.0;
+		double filteredAnalysisHop = -1.0;
+		double analysisHopQuantError = 0.0;
 		int    lastAnalysisHop = -1;
+		int    freezeEntryWarmupCycles = 0;
 		float  analysisHopSlewNorm = 0.0f;
 		float  analysisHopStepNorm = 0.0f;
 		bool  hasFrame         = false;
@@ -791,11 +801,20 @@ private:
 	float fftWindow_[kMaxFftSize]     = {};
 	float fftWork_[kMaxFftSize * 2]   = {};
 	float fftOutputPadBuf_[2][kMaxFftSize] = {};
+	static constexpr int kFftWetHistoryLen = 512;
+	float fftWetHistory_[2][kFftWetHistoryLen] = {};
+	int   fftWetHistoryWritePos_ = 0;
 	int   fftOutputPadWritePos_ = 0;
 	bool  fftUnityBypassActive_ = false;
+	int   fftStartupWarmupRemainingCycles_ = 0;
 	int   fftTransitionRemaining_ = 0;
 	int   fftTransitionTotal_ = 0;
 	bool  fftTransitionToUnity_ = false;
+	int   fftFreezeTransitionRemaining_ = 0;
+	int   fftFreezeTransitionTotal_ = 0;
+	int   fftFreezeTransitionReadPos_ = 0;
+	bool  fftExplicitFreezeActive_ = false;
+	bool  fftExplicitFreezeCapturePending_ = false;
 
 	void  ensureFft (int fftSize);
 	void  resetStftAtPos (double capturePos, int fftSize) noexcept;

@@ -304,11 +304,18 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	fft_.reset();
 	std::memset (fftWork_, 0, sizeof (fftWork_));
 	std::memset (fftOutputPadBuf_, 0, sizeof (fftOutputPadBuf_));
+	std::memset (fftWetHistory_, 0, sizeof (fftWetHistory_));
+	fftWetHistoryWritePos_ = 0;
 	fftOutputPadWritePos_ = 0;
 	fftUnityBypassActive_ = false;
 	fftTransitionRemaining_ = 0;
 	fftTransitionTotal_ = 0;
 	fftTransitionToUnity_ = false;
+	fftFreezeTransitionRemaining_ = 0;
+	fftFreezeTransitionTotal_ = 0;
+	fftFreezeTransitionReadPos_ = 0;
+	fftExplicitFreezeActive_ = false;
+	fftExplicitFreezeCapturePending_ = false;
 	std::memset (dryDelayBuf_, 0, sizeof (dryDelayBuf_));
 	dryDelayWritePos_ = 0;
 	dryDelayLen_ = 0;
@@ -843,11 +850,23 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 	float debugSpectralFlux[2] = {};
 	float debugPhaseResetMix[2] = {};
 	float debugLockStrengthMean[2] = {};
+	const bool freezeEntryCrossfadeActive = (fftSize >= 4096)
+		&& (analysisHop <= 0)
+		&& (stft_.freezeEntryWarmupCycles > 0 || stft_.cyclesSinceReset < 8);
+	const float freezeEntryCrossfadeNorm = freezeEntryCrossfadeActive
+		? juce::jlimit (0.0f, 1.0f,
+		                juce::jmax ((float) stft_.freezeEntryWarmupCycles / ((fftSize >= 8192) ? 8.0f : 6.0f),
+		                            (8.0f - (float) stft_.cyclesSinceReset) / 8.0f))
+		: 0.0f;
+	const int freezeEntryFadeSamples = freezeEntryCrossfadeActive
+		? juce::jlimit (64, fftSize / 8, juce::jmax (64, synthesisHop / 4))
+		: 0;
 	juce::int64 forwardFftTicks = 0;
 	juce::int64 binAnalysisTicks = 0;
 	juce::int64 pitchMapTicks = 0;
 	juce::int64 phaseLockTicks = 0;
 	juce::int64 ifftOlaTicks = 0;
+	const bool analyseCurrentFrame = (analysisHop > 0) || ! stft_.hasFrame;
 
 	for (int ch = 0; ch < 2; ++ch)
 	{
@@ -856,7 +875,7 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 		float frameEnergy = 0.0f;
 
 		// Analysis
-		if (analysisHop > 0 || ! stft_.hasFrame)
+		if (analyseCurrentFrame)
 		{
 			const auto forwardStartTicks = juce::Time::getHighResolutionTicks();
 			for (int j = 0; j < fftSize; ++j)
@@ -926,7 +945,6 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 			}
 			debugSpectralFlux[ch] = (fluxNorm > 1.0e-6f) ? (positiveFlux / fluxNorm) : 0.0f;
 			binAnalysisTicks += juce::Time::getHighResolutionTicks() - binAnalysisStartTicks;
-			stft_.hasFrame = true;
 		}
 		debugFrameRms[ch] = std::sqrt (frameEnergy / (float) juce::jmax (1, fftSize));
 
@@ -1090,12 +1108,94 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 						                                        (0.12f - debugSpectralFlux[ch]) / 0.08f);
 						pitchStabilityResetMix = 0.06f * pitchNorm * lowFluxNorm;
 					}
+					float freezeTransitionResetMix = 0.0f;
+					if (fftSize != 2048 && synthesisHop > 0)
+					{
+						const float freezeHopThreshold = (float) juce::jmax (1, synthesisHop / 8);
+						const float lowHopNorm = (analysisHop <= 0)
+							? 1.0f
+							: juce::jlimit (0.0f, 1.0f,
+							                (freezeHopThreshold - (float) analysisHop) / freezeHopThreshold);
+						if (lowHopNorm > 0.0f)
+						{
+							const float lowFluxNorm = juce::jlimit (0.0f, 1.0f,
+							                                        (0.09f - debugSpectralFlux[ch]) / 0.06f);
+							const float transitionNorm = juce::jmax (juce::jlimit (0.0f, 1.0f, stft_.analysisHopStepNorm),
+							                                         juce::jlimit (0.0f, 1.0f, stft_.analysisHopSlewNorm));
+							const float baseTransitionMix = (fftSize >= 8192) ? 0.40f
+							                              : (fftSize >= 4096) ? 0.33f
+							                                                   : 0.26f;
+							const float transitionFloor = (fftSize >= 4096 && analysisHop <= 0) ? 0.45f : 0.0f;
+							const float effectiveTransitionNorm = juce::jmax (transitionNorm, transitionFloor);
+							freezeTransitionResetMix = baseTransitionMix * lowHopNorm * effectiveTransitionNorm
+							                         * (0.70f + 0.30f * lowFluxNorm);
+						}
+					}
+					float freezeWarmupResetMix = 0.0f;
+					if (fftSize != 2048 && synthesisHop > 0 && stft_.freezeEntryWarmupCycles > 0)
+					{
+						const float freezeHopThreshold = (float) juce::jmax (1, synthesisHop / 8);
+						const float lowHopNorm = (analysisHop <= 0)
+							? 1.0f
+							: juce::jlimit (0.0f, 1.0f,
+							                (freezeHopThreshold - (float) analysisHop) / freezeHopThreshold);
+						const float lowFluxNorm = juce::jlimit (0.0f, 1.0f,
+						                                        (0.09f - debugSpectralFlux[ch]) / 0.06f);
+						const float warmupDivisor = (fftSize >= 8192) ? 8.0f
+						                         : (fftSize >= 4096) ? 6.0f
+						                                              : 4.0f;
+						const float warmupNorm = juce::jlimit (0.0f, 1.0f,
+						                                       (float) stft_.freezeEntryWarmupCycles / warmupDivisor);
+						const float baseFloor = (fftSize >= 8192) ? 0.34f
+						                         : (fftSize >= 4096) ? 0.26f
+						                                              : 0.11f;
+						const float hopFloor = (fftSize >= 4096) ? 0.80f : 0.45f;
+						freezeWarmupResetMix = baseFloor * warmupNorm
+						                     * juce::jmax (hopFloor, lowHopNorm)
+						                     * (0.75f + 0.25f * lowFluxNorm);
+					}
+					float freezeStartupResetMix = 0.0f;
+					if (fftSize >= 4096 && synthesisHop > 0 && analysisHop <= 0)
+					{
+						const float startupNorm = juce::jlimit (0.0f, 1.0f,
+						                                        (8.0f - (float) stft_.cyclesSinceReset) / 8.0f);
+						if (startupNorm > 0.0f)
+						{
+							const float lowFluxNorm = juce::jlimit (0.0f, 1.0f,
+							                                        (0.10f - debugSpectralFlux[ch]) / 0.07f);
+							const float baseFloor = (fftSize >= 8192) ? 0.30f : 0.22f;
+							freezeStartupResetMix = baseFloor * startupNorm
+							                      * (0.75f + 0.25f * lowFluxNorm);
+						}
+					}
+					float unityPitchStartupResetMix = 0.0f;
+					if (fftSize >= 2048
+					    && fftStartupWarmupRemainingCycles_ > 0
+					    && std::abs (pr - 1.0f) > 0.0015f)
+					{
+						const float startupNorm = juce::jlimit (0.0f, 1.0f,
+						                                        (float) fftStartupWarmupRemainingCycles_ / 4.0f);
+						const float pitchNorm = juce::jlimit (0.0f, 1.0f,
+						                                      std::abs (pr - 1.0f) / 3.0f);
+						const float lowFluxNorm = juce::jlimit (0.0f, 1.0f,
+						                                        (0.14f - debugSpectralFlux[ch]) / 0.10f);
+						const float baseFloor = (fftSize >= 8192) ? 0.30f
+						                         : (fftSize >= 4096) ? 0.24f
+						                                              : 0.18f;
+						unityPitchStartupResetMix = baseFloor * startupNorm
+						                          * (0.50f + 0.50f * pitchNorm)
+						                          * (0.60f + 0.40f * lowFluxNorm);
+					}
 					const float resetMix = juce::jlimit (0.0f, 1.0f,
-					                                     juce::jmax (juce::jmax (juce::jmax (juce::jmax (juce::jmax (transientResetMix, stabilityResetMix),
+					                                     juce::jmax (juce::jmax (juce::jmax (juce::jmax (juce::jmax (juce::jmax (transientResetMix, stabilityResetMix),
 					                                                                                               startupResetMix),
 					                                                                                  hopSlewResetMix),
 					                                                                     hopStepResetMix),
-					                                                 pitchStabilityResetMix));
+					                                                 pitchStabilityResetMix),
+					                                                 juce::jmax (juce::jmax (juce::jmax (freezeTransitionResetMix,
+					                                                                         freezeWarmupResetMix),
+					                                                                         freezeStartupResetMix),
+					                                                             unityPitchStartupResetMix)));
 					debugPhaseResetMix[ch] = resetMix;
 
 					float maxSynthMag = 0.0f;
@@ -1228,7 +1328,20 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 		{
 			const int outIdx = (stft_.outputReadPos + j) & (outBufLen - 1);
 			const float windowSq = fftWindow_[j] * fftWindow_[j];
-			const float outSample = fftWork_[j] * fftWindow_[j];
+			float outSample = fftWork_[j] * fftWindow_[j];
+			if (freezeEntryCrossfadeActive && j < freezeEntryFadeSamples)
+			{
+				const float fadePos = (freezeEntryFadeSamples > 1)
+					? ((float) j / (float) (freezeEntryFadeSamples - 1))
+					: 1.0f;
+				const float fadeCurve = fadePos * fadePos * (3.0f - 2.0f * fadePos);
+				const float startGain = (fftSize >= 8192) ? 0.10f : 0.18f;
+				const float fadeGain = (startGain + (1.0f - startGain) * fadeCurve);
+				const float gain = juce::jlimit (0.0f, 1.0f,
+				                                 1.0f - freezeEntryCrossfadeNorm
+				                                       + freezeEntryCrossfadeNorm * fadeGain);
+				outSample *= gain;
+			}
 			if (j == 0)
 				debugOutputStartDelta[ch] = outSample - previousStart;
 			outputEnergy += outSample * outSample;
@@ -1239,6 +1352,9 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 		ifftOlaTicks += juce::Time::getHighResolutionTicks() - ifftOlaStartTicks;
 		debugOutputRms[ch] = std::sqrt (outputEnergy / (float) juce::jmax (1, fftSize));
 	}
+
+	if (analyseCurrentFrame)
+		stft_.hasFrame = true;
 
 	// Advance analysis read position
 	if (analysisHop > 0)
@@ -1262,6 +1378,8 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 	dbg.pitchRate = pitchRate;
 	dbg.windowSamples = fftDebugContext_.windowSamples;
 	dbg.fftSize = fftSize;
+	dbg.targetAnalysisHop = fftDebugContext_.targetAnalysisHop;
+	dbg.filteredAnalysisHop = fftDebugContext_.filteredAnalysisHop;
 	dbg.analysisHop = analysisHop;
 	dbg.synthesisHop = synthesisHop;
 	dbg.style = fftDebugContext_.style;
@@ -1506,7 +1624,11 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 	dbg.pitchRate = pitchRate;
 	dbg.windowSamples = fftDebugContext_.windowSamples;
 	dbg.fftSize = fftSize;
-	dbg.analysisHop = synthesisHop;
+	dbg.targetAnalysisHop = fftDebugContext_.targetAnalysisHop;
+	dbg.filteredAnalysisHop = fftDebugContext_.filteredAnalysisHop;
+	dbg.analysisHop = (fftDebugContext_.analysisHopDebug >= 0)
+		? fftDebugContext_.analysisHopDebug
+		: synthesisHop;
 	dbg.synthesisHop = synthesisHop;
 	dbg.style = fftDebugContext_.style;
 	dbg.reverseOn = 0;
@@ -1924,6 +2046,10 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			fftTransitionRemaining_ = 0;
 			fftTransitionTotal_ = 0;
 			fftTransitionToUnity_ = false;
+			fftFreezeTransitionRemaining_ = 0;
+			fftFreezeTransitionTotal_ = 0;
+			fftExplicitFreezeActive_ = false;
+			fftExplicitFreezeCapturePending_ = false;
 		}
 
 		if (! triggerOn)
@@ -1941,12 +2067,34 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			const int identityRefPos = (inputBufWritePos_ - fftWetLatency + inputBufLen_) & inputBufMask_;
 			const float identityRefL = inputBuf_[0][identityRefPos];
 			const float identityRefR = inputBuf_[1][identityRefPos];
-			const bool fftUnity = (engineVal == 2)
-			                   && ! reverseOn
-			                   && ! isDual
-			                   && ! isWide
-			                   && std::abs (speed - 1.0f) <= 0.0005f
-			                   && std::abs (pitchRate - 1.0f) <= 0.0005f;
+			const bool fftUnityCapable = (engineVal == 2)
+			                          && ! reverseOn
+			                          && ! isDual
+			                          && ! isWide;
+			const bool fftExplicitFreezeCapable = fftUnityCapable
+			                                  && (stft_.activeFftSize >= 4096)
+			                                  && (std::abs (targetPitchRate - 1.0f) <= 0.0015f);
+			const bool fftTargetFreeze = fftExplicitFreezeCapable && (amountVal >= 99.9f);
+			const bool fftUnityStateActive = fftUnityBypassActive_ || fftTransitionToUnity_;
+			const bool fftLargeFftNearUnity = (engineVal == 2) && (stft_.activeFftSize >= 4096);
+			const float unityEnterSpeedTol = 0.0005f;
+			const float unityExitSpeedTol  = 0.0035f;
+			const float unityEnterPitchTol = 0.0015f;
+			const float unityExitPitchTol  = 0.0060f;
+			const float unityEnterAmountTol = (stft_.activeFftSize >= 8192) ? 0.80f
+			                              : (stft_.activeFftSize >= 4096) ? 0.40f
+			                                                           : 0.0f;
+			const float unityExitAmountTol = (stft_.activeFftSize >= 8192) ? 1.40f
+			                             : (stft_.activeFftSize >= 4096) ? 0.85f
+			                                                          : 0.0f;
+			const bool fftUnitySpeedOk = fftLargeFftNearUnity
+				? (amountVal <= (fftUnityStateActive ? unityExitAmountTol : unityEnterAmountTol))
+				: (std::abs (targetSpeed - 1.0f)
+				       <= (fftUnityStateActive ? unityExitSpeedTol : unityEnterSpeedTol));
+			const bool fftUnity = fftUnityCapable
+			                   && fftUnitySpeedOk
+			                   && std::abs (targetPitchRate - 1.0f)
+			                          <= (fftUnityStateActive ? unityExitPitchTol : unityEnterPitchTol);
 			const int fftTransitionSamples = juce::jlimit (32,
 			                                               (int) std::round (currentSampleRate * 0.08),
 			                                               juce::jmax ((int) std::round (currentSampleRate * 0.02),
@@ -1990,6 +2138,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				fftDebugContext_.mod = modVal;
 				fftDebugContext_.speed = cycleSpeed;
 				fftDebugContext_.pitchRate = cyclePitchRate;
+				fftDebugContext_.targetAnalysisHop = 0.0f;
+				fftDebugContext_.filteredAnalysisHop = 0.0f;
+				fftDebugContext_.analysisHopDebug = -1;
 				fftDebugContext_.windowSamples = windowSamples;
 				fftDebugContext_.style = styleVal;
 				fftDebugContext_.reverseOn = reverseOn ? 1 : 0;
@@ -2007,34 +2158,150 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					performStftCycleSpectralHold (stft_.activeFftSize, fftSynthHop,
 					                              holdCoeff, cyclePitchRate, cyclePitchRateR, isWide);
 				}
+				else if (engineVal == 2 && fftExplicitFreezeActive_)
+				{
+					fftDebugContext_.analysisHopDebug = 0;
+					const float holdCoeff = fftExplicitFreezeCapturePending_ ? 0.0f : 1.0f;
+					performStftCycleSpectralHold (stft_.activeFftSize, fftSynthHop,
+					                              holdCoeff, cyclePitchRate, cyclePitchRateR, isWide);
+					if (fftExplicitFreezeCapturePending_)
+					{
+						fftExplicitFreezeCapturePending_ = false;
+						fftFreezeTransitionTotal_ = (stft_.activeFftSize >= 8192) ? 160 : 96;
+						fftFreezeTransitionRemaining_ = fftFreezeTransitionTotal_;
+						fftFreezeTransitionReadPos_ = (fftWetHistoryWritePos_ - fftFreezeTransitionTotal_
+							+ kFftWetHistoryLen) & (kFftWetHistoryLen - 1);
+					}
+				}
 				else
 				{
-					int targetAnalysisHop = 0;
+					double targetAnalysisHop = 0.0;
+					double filteredAnalysisHop = 0.0;
 					if (cycleSpeed > 0.0001f)
-						targetAnalysisHop = juce::jlimit (1, fftSynthHop,
-						                                  (int) std::lround ((double) fftSynthHop * (double) cycleSpeed));
-					int fftAnalysisHop = targetAnalysisHop;
+						targetAnalysisHop = juce::jlimit (1.0, (double) fftSynthHop,
+						                                  (double) fftSynthHop * (double) cycleSpeed);
+					int fftAnalysisHop = (targetAnalysisHop > 0.0001)
+						? juce::jlimit (1, fftSynthHop, (int) std::lround (targetAnalysisHop))
+						: 0;
 					stft_.analysisHopSlewNorm = 0.0f;
 					stft_.analysisHopStepNorm = 0.0f;
-					if (engineVal == 2 && stft_.activeFftSize == 2048)
+					const int freezeHopThreshold = juce::jmax (1, fftSynthHop / 8);
+					const bool useContinuousAnalysisHop = (engineVal == 2)
+						&& (stft_.activeFftSize == 2048);
+					const bool resetContinuousForFreeze = (engineVal == 2)
+						&& (targetAnalysisHop <= (double) freezeHopThreshold);
+					if (useContinuousAnalysisHop)
 					{
-						if (stft_.lastAnalysisHop >= 0)
+						filteredAnalysisHop = targetAnalysisHop;
+						if (resetContinuousForFreeze)
 						{
-							const int maxHopDelta = juce::jmax (16, fftSynthHop / 8);
-							fftAnalysisHop = juce::jlimit (stft_.lastAnalysisHop - maxHopDelta,
-							                               stft_.lastAnalysisHop + maxHopDelta,
-							                               targetAnalysisHop);
+							stft_.filteredAnalysisHop = -1.0;
+							stft_.analysisHopQuantError = 0.0;
+						}
+						else if (stft_.filteredAnalysisHop >= 0.0)
+						{
+							const double maxHopDelta = (double) ((stft_.activeFftSize >= 8192)
+								? juce::jmax (24, fftSynthHop / 12)
+								: (stft_.activeFftSize >= 4096)
+									? juce::jmax (20, fftSynthHop / 14)
+									: juce::jmax (16, fftSynthHop / 8));
+							filteredAnalysisHop = stft_.filteredAnalysisHop;
+							if (targetAnalysisHop > filteredAnalysisHop + maxHopDelta)
+								filteredAnalysisHop += maxHopDelta;
+							else if (targetAnalysisHop < filteredAnalysisHop - maxHopDelta)
+								filteredAnalysisHop -= maxHopDelta;
+							else
+								filteredAnalysisHop = targetAnalysisHop;
+
 							stft_.analysisHopSlewNorm = juce::jlimit (0.0f, 1.0f,
-							                                          (float) std::abs (targetAnalysisHop - fftAnalysisHop)
-							                                              / (float) juce::jmax (1, fftSynthHop));
-							stft_.analysisHopStepNorm = juce::jlimit (0.0f, 1.0f,
-							                                          (float) std::abs (fftAnalysisHop - stft_.lastAnalysisHop)
+							                                          (float) std::abs (targetAnalysisHop - filteredAnalysisHop)
 							                                              / (float) juce::jmax (1, fftSynthHop));
 						}
+						else if (stft_.activeFftSize >= 4096 && targetAnalysisHop > 0.0001)
+						{
+							const bool nearUnityHop = targetAnalysisHop >= ((double) fftSynthHop * 0.75);
+							filteredAnalysisHop = nearUnityHop ? (double) fftSynthHop : targetAnalysisHop;
+						}
+
+						if (filteredAnalysisHop > 0.0001)
+						{
+							const double quantizedHop = filteredAnalysisHop + stft_.analysisHopQuantError;
+							fftAnalysisHop = juce::jlimit (1, fftSynthHop, (int) std::lround (quantizedHop));
+							stft_.analysisHopQuantError = juce::jlimit (-1.0, 1.0,
+							                                            stft_.analysisHopQuantError
+							                                                + filteredAnalysisHop
+							                                                - (double) fftAnalysisHop);
+						}
+						else
+						{
+							fftAnalysisHop = 0;
+							stft_.analysisHopQuantError = 0.0;
+						}
+						stft_.filteredAnalysisHop = filteredAnalysisHop;
+					}
+					else
+					{
+						filteredAnalysisHop = targetAnalysisHop;
+					}
+					fftDebugContext_.targetAnalysisHop = (float) targetAnalysisHop;
+					fftDebugContext_.filteredAnalysisHop = (float) filteredAnalysisHop;
+
+					if (engineVal == 2)
+					{
+						if (stft_.activeFftSize >= 4096
+						    && stft_.freezeEntryWarmupCycles > 0
+						    && targetAnalysisHop <= (double) freezeHopThreshold)
+						{
+							const float warmupDivisor = (stft_.activeFftSize >= 8192) ? 8.0f : 6.0f;
+							const float warmupNorm = juce::jlimit (0.0f, 1.0f,
+							                                       (float) stft_.freezeEntryWarmupCycles / warmupDivisor);
+							const float freezeRamp = warmupNorm * warmupNorm;
+							const int freezeFloorHop = juce::jlimit (0, freezeHopThreshold,
+							                                         (int) std::lround ((float) freezeHopThreshold * freezeRamp));
+							fftAnalysisHop = juce::jmax (fftAnalysisHop, freezeFloorHop);
+						}
+						const bool enteringFreeze = (fftAnalysisHop <= freezeHopThreshold)
+							&& (stft_.lastAnalysisHop > freezeHopThreshold);
+						const bool freezeImmediatelyAfterReset = (fftAnalysisHop <= freezeHopThreshold)
+							&& (stft_.lastAnalysisHop < 0);
+						if (enteringFreeze || freezeImmediatelyAfterReset)
+						{
+							stft_.freezeEntryWarmupCycles = (stft_.activeFftSize >= 8192) ? 8
+							                              : (stft_.activeFftSize >= 4096) ? 6
+							                                                                   : 3;
+							if (stft_.activeFftSize >= 4096)
+							{
+								fftFreezeTransitionTotal_ = (stft_.activeFftSize >= 8192) ? 160 : 96;
+								fftFreezeTransitionRemaining_ = fftFreezeTransitionTotal_;
+								fftFreezeTransitionReadPos_ = (fftWetHistoryWritePos_ - fftFreezeTransitionTotal_
+									+ kFftWetHistoryLen) & (kFftWetHistoryLen - 1);
+							}
+						}
+
+						if (stft_.lastAnalysisHop >= 0)
+						{
+							stft_.analysisHopSlewNorm = juce::jlimit (0.0f, 1.0f,
+							                                          juce::jmax (stft_.analysisHopSlewNorm,
+							                                                      (float) std::abs (targetAnalysisHop - (double) fftAnalysisHop)
+							                                                          / (float) juce::jmax (1, fftSynthHop)));
+							stft_.analysisHopStepNorm = juce::jlimit (0.0f, 1.0f,
+							                                          juce::jmax (stft_.analysisHopStepNorm,
+							                                                      (float) std::abs (fftAnalysisHop - stft_.lastAnalysisHop)
+							                                                          / (float) juce::jmax (1, fftSynthHop)));
+						}
+
+						if (! useContinuousAnalysisHop)
+						{
+							stft_.filteredAnalysisHop = -1.0;
+							stft_.analysisHopQuantError = 0.0;
+						}
+
 						stft_.lastAnalysisHop = fftAnalysisHop;
 					}
 					performStftCycle (stft_.activeFftSize, fftAnalysisHop,
 					                  fftSynthHop, cyclePitchRate, reverseOn, cyclePitchRateR, isWide);
+					if (engineVal == 2 && stft_.freezeEntryWarmupCycles > 0)
+						--stft_.freezeEntryWarmupCycles;
 				}
 			};
 
@@ -2043,7 +2310,26 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				fftTransitionToUnity_ = false;
 				fftTransitionRemaining_ = 0;
 				fftTransitionTotal_ = 0;
+				fftStartupWarmupRemainingCycles_ = 0;
 				fftUnityBypassActive_ = false;
+				fftFreezeTransitionRemaining_ = 0;
+				fftFreezeTransitionTotal_ = 0;
+			}
+
+			if (engineVal == 2 && fftExplicitFreezeActive_ && ! fftTargetFreeze)
+			{
+				fftExplicitFreezeActive_ = false;
+				fftExplicitFreezeCapturePending_ = false;
+				fftFreezeTransitionTotal_ = (stft_.activeFftSize >= 8192) ? 160 : 96;
+				fftFreezeTransitionRemaining_ = fftFreezeTransitionTotal_;
+				fftFreezeTransitionReadPos_ = (fftWetHistoryWritePos_ - fftFreezeTransitionTotal_
+					+ kFftWetHistoryLen) & (kFftWetHistoryLen - 1);
+			}
+
+			if (engineVal == 2 && fftTargetFreeze && ! fftExplicitFreezeActive_)
+			{
+				fftExplicitFreezeActive_ = true;
+				fftExplicitFreezeCapturePending_ = true;
 			}
 
 			if (engineVal == 2 && ! fftUnity && fftUnityBypassActive_)
@@ -2058,12 +2344,59 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				runFftCycle (targetSpeed, bootstrapPitchRate, bootstrapPitchRateR);
 				fftUnityBypassActive_ = false;
 				fftTransitionToUnity_ = false;
-				fftTransitionTotal_ = fftTransitionSamples;
-				fftTransitionRemaining_ = fftTransitionTotal_;
+				fftFreezeTransitionRemaining_ = 0;
+				fftFreezeTransitionTotal_ = 0;
+				fftExplicitFreezeActive_ = false;
+				fftExplicitFreezeCapturePending_ = false;
+				const bool nearUnityPitch = std::abs (bootstrapPitchRate - 1.0f) <= 0.0015f;
+				const bool unityPitchHandoff = std::abs (targetSpeed - 1.0f) <= 0.0005f
+					&& ! nearUnityPitch;
+				if ((fftSizeForReset == 1024 || fftSizeForReset == 2048) && nearUnityPitch)
+				{
+					fftStartupWarmupRemainingCycles_ = (fftSizeForReset == 1024) ? 3 : 4;
+					fftTransitionTotal_ = 0;
+					fftTransitionRemaining_ = 0;
+				}
+				else if (unityPitchHandoff)
+				{
+					fftStartupWarmupRemainingCycles_ = (fftSizeForReset >= 8192) ? 4
+					                               : (fftSizeForReset >= 2048) ? 3
+					                                                          : 2;
+					fftTransitionTotal_ = 0;
+					fftTransitionRemaining_ = 0;
+				}
+				else
+				{
+					fftStartupWarmupRemainingCycles_ = 0;
+					if (fftTargetFreeze)
+					{
+						fftTransitionTotal_ = 0;
+						fftTransitionRemaining_ = 0;
+					}
+					else
+					{
+						fftTransitionTotal_ = fftTransitionSamples;
+						fftTransitionRemaining_ = fftTransitionTotal_;
+					}
+				}
 			}
 
 			if (engineVal == 2 && fftUnity && ! fftUnityBypassActive_ && ! fftTransitionToUnity_)
 			{
+				if (fftStartupWarmupRemainingCycles_ > 0)
+				{
+					fftStartupWarmupRemainingCycles_ = 0;
+					fftUnityBypassActive_ = true;
+					fftTransitionRemaining_ = 0;
+					fftTransitionTotal_ = 0;
+					fftTransitionToUnity_ = false;
+					fftFreezeTransitionRemaining_ = 0;
+					fftFreezeTransitionTotal_ = 0;
+					fftExplicitFreezeActive_ = false;
+					fftExplicitFreezeCapturePending_ = false;
+				}
+				else
+				{
 				if (stft_.hasFrame)
 				{
 					fftTransitionToUnity_ = true;
@@ -2076,6 +2409,11 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					fftTransitionRemaining_ = 0;
 					fftTransitionTotal_ = 0;
 					fftTransitionToUnity_ = false;
+					fftFreezeTransitionRemaining_ = 0;
+					fftFreezeTransitionTotal_ = 0;
+					fftExplicitFreezeActive_ = false;
+					fftExplicitFreezeCapturePending_ = false;
+				}
 				}
 			}
 
@@ -2090,7 +2428,12 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				float fftWetL = 0.0f, fftWetR = 0.0f;
 				readCurrentFftWet (fftWetL, fftWetR);
 
-				if (engineVal == 2 && fftTransitionRemaining_ > 0 && fftTransitionTotal_ > 0)
+				if (engineVal == 2 && fftStartupWarmupRemainingCycles_ > 0)
+				{
+					wetL = identityRefL;
+					wetR = identityRefR;
+				}
+				else if (engineVal == 2 && fftTransitionRemaining_ > 0 && fftTransitionTotal_ > 0)
 				{
 					const float progress = 1.0f
 						- ((float) fftTransitionRemaining_ / (float) fftTransitionTotal_);
@@ -2110,6 +2453,20 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					}
 					--fftTransitionRemaining_;
 				}
+				else if (engineVal == 2 && fftFreezeTransitionRemaining_ > 0 && fftFreezeTransitionTotal_ > 0)
+				{
+					const float progress = 1.0f
+						- ((float) fftFreezeTransitionRemaining_ / (float) fftFreezeTransitionTotal_);
+					const float freezeMix = std::sin (progress * juce::MathConstants<float>::halfPi);
+					const float liveMix = std::cos (progress * juce::MathConstants<float>::halfPi);
+					const int histIdx = fftFreezeTransitionReadPos_ & (kFftWetHistoryLen - 1);
+					const float liveWetL = fftWetHistory_[0][histIdx];
+					const float liveWetR = fftWetHistory_[1][histIdx];
+					wetL = liveWetL * liveMix + fftWetL * freezeMix;
+					wetR = liveWetR * liveMix + fftWetR * freezeMix;
+					fftFreezeTransitionReadPos_ = (fftFreezeTransitionReadPos_ + 1) & (kFftWetHistoryLen - 1);
+					--fftFreezeTransitionRemaining_;
+				}
 				else
 				{
 					wetL = fftWetL;
@@ -2123,6 +2480,16 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				{
 					stft_.synthCounter = 0;
 					runFftCycle (speed, pitchRate, pitchRateR);
+					if (engineVal == 2 && fftStartupWarmupRemainingCycles_ > 0)
+					{
+						--fftStartupWarmupRemainingCycles_;
+						if (fftStartupWarmupRemainingCycles_ <= 0)
+						{
+							fftStartupWarmupRemainingCycles_ = 0;
+							fftTransitionTotal_ = fftTransitionSamples;
+							fftTransitionRemaining_ = fftTransitionTotal_;
+						}
+					}
 				}
 
 				if (engineVal == 2 && fftTransitionRemaining_ <= 0)
@@ -2135,6 +2502,18 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					fftTransitionRemaining_ = 0;
 					fftTransitionTotal_ = 0;
 				}
+				if (engineVal == 2 && fftFreezeTransitionRemaining_ <= 0)
+				{
+					fftFreezeTransitionRemaining_ = 0;
+					fftFreezeTransitionTotal_ = 0;
+				}
+			}
+
+			if (engineVal == 2)
+			{
+				fftWetHistory_[0][fftWetHistoryWritePos_] = wetL;
+				fftWetHistory_[1][fftWetHistoryWritePos_] = wetR;
+				fftWetHistoryWritePos_ = (fftWetHistoryWritePos_ + 1) & (kFftWetHistoryLen - 1);
 			}
 		}
 		else if (engineVal == 0 && inputBufLen_ > 0)
