@@ -1021,7 +1021,7 @@ void STRETRAudioProcessorEditor::sliderValueChanged (juce::Slider* slider)
         if ((int) std::lround (windowSlider.getValue()) != effectiveWindow)
         {
             juce::ScopedValueSetter<bool> clampGuard (clampingWindowSlider_, true);
-            windowSlider.setValue ((double) effectiveWindow, juce::sendNotificationSync);
+            windowSlider.setValue ((double) effectiveWindow, juce::dontSendNotification);
             return;
         }
     }
@@ -1183,16 +1183,24 @@ void STRETRAudioProcessorEditor::updateEngineControls()
 {
     if (promptOverlayActive) return;  // don't override prompt overlay state
 
-    auto* engineP = audioProcessor.apvts.getRawParameterValue (STRETRAudioProcessor::kParamEngine);
-    const int engineVal = engineP ? (int) std::lround (engineP->load (std::memory_order_relaxed)) : 0;
+	auto* engineP = audioProcessor.apvts.getRawParameterValue (STRETRAudioProcessor::kParamEngine);
+	const int engineVal = engineP ? (int) std::lround (engineP->load (std::memory_order_relaxed)) : 0;
 
-    if ((engineVal == 2 || engineVal == 3) && ! clampingWindowSlider_)
-    {
+	const int familyWindow = audioProcessor.getStoredWindowForEngine (engineVal);
+	if (! clampingWindowSlider_ && (int) std::lround (windowSlider.getValue()) != familyWindow)
+	{
+		juce::ScopedValueSetter<bool> clampGuard (clampingWindowSlider_, true);
+		windowSlider.setValue ((double) familyWindow, juce::dontSendNotification);
+		return;
+	}
+
+	if ((engineVal == 2 || engineVal == 3) && ! clampingWindowSlider_)
+	{
         const int effectiveWindow = getEffectiveWindowValue (windowSlider.getValue());
         if ((int) std::lround (windowSlider.getValue()) != effectiveWindow)
         {
             juce::ScopedValueSetter<bool> clampGuard (clampingWindowSlider_, true);
-            windowSlider.setValue ((double) effectiveWindow, juce::sendNotificationSync);
+            windowSlider.setValue ((double) effectiveWindow, juce::dontSendNotification);
             return;
         }
     }

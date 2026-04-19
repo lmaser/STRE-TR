@@ -197,6 +197,8 @@ public:
 	void setUiIoExpanded (bool expanded);
 	bool getUiIoExpanded() const noexcept;
 
+	int getStoredWindowForEngine (int engineVal) const noexcept;
+
 	void setUiCustomPaletteColour (int index, juce::Colour colour);
 	juce::Colour getUiCustomPaletteColour (int index) const noexcept;
 
@@ -537,6 +539,25 @@ private:
 		int   reportedLatency = 0;
 		int   dryDelayLen   = 0;
 		int   fftOutputPadLen = 0;
+		float smoothedWindow = 0.0f;
+		float targetWindow = 0.0f;
+		int   windowTransitionActive = 0;
+		float windowTransitionProgress = 0.0f;
+		int   fftOutputFadeActive = 0;
+		float fftOutputFadeProgress = 0.0f;
+		float fftWetPreWindowFadeL = 0.0f;
+		float fftWetPostWindowFadeL = 0.0f;
+		float fftWetPreOutputFadeL = 0.0f;
+		float fftWetPostOutputFadeL = 0.0f;
+		float fftWetPreWindowDeltaL = 0.0f;
+		float fftWetPostWindowDeltaL = 0.0f;
+		float fftWetPostOutputDeltaL = 0.0f;
+		float engineFadeOldOutL = 0.0f;
+		float engineFadeOldMix = 0.0f;
+		float engineFadeNewMix = 0.0f;
+		float fftOutputFadeOldOutL = 0.0f;
+		float fftOutputFadeOldMix = 0.0f;
+		float fftOutputFadeNewMix = 0.0f;
 	};
 
 	struct FftDebugEntry
@@ -601,6 +622,25 @@ private:
 		int    reportedLatency    = 0;
 		int    dryDelayLen        = 0;
 		int    fftOutputPadLen    = 0;
+		float  smoothedWindow     = 0.0f;
+		float  targetWindow       = 0.0f;
+		int    windowTransitionActive = 0;
+		float  windowTransitionProgress = 0.0f;
+		int    fftOutputFadeActive = 0;
+		float  fftOutputFadeProgress = 0.0f;
+		float  fftWetPreWindowFadeL = 0.0f;
+		float  fftWetPostWindowFadeL = 0.0f;
+		float  fftWetPreOutputFadeL = 0.0f;
+		float  fftWetPostOutputFadeL = 0.0f;
+		float  fftWetPreWindowDeltaL = 0.0f;
+		float  fftWetPostWindowDeltaL = 0.0f;
+		float  fftWetPostOutputDeltaL = 0.0f;
+		float  engineFadeOldOutL = 0.0f;
+		float  engineFadeOldMix = 0.0f;
+		float  engineFadeNewMix = 0.0f;
+		float  fftOutputFadeOldOutL = 0.0f;
+		float  fftOutputFadeOldMix = 0.0f;
+		float  fftOutputFadeNewMix = 0.0f;
 	};
 
 	class FftDebugTrace
@@ -637,7 +677,13 @@ private:
 					"spectral_flux_l,spectral_flux_r,phase_reset_mix_l,phase_reset_mix_r,lock_strength_mean_l,lock_strength_mean_r,"
 					"cycle_duration_us,cycle_realtime_cpu_pct,forward_fft_us,bin_analysis_us,pitch_map_us,phase_lock_us,ifft_ola_us,"
 					"analysis_lag_samples,cycles_since_reset,"
-					"align_on,pdc_on,reported_latency,dry_delay_len,fft_output_pad_len\n",
+					"align_on,pdc_on,reported_latency,dry_delay_len,fft_output_pad_len,"
+					"smoothed_window,target_window,window_transition_active,window_transition_progress,"
+					"fft_output_fade_active,fft_output_fade_progress,"
+					"fft_wet_pre_window_fade_l,fft_wet_post_window_fade_l,fft_wet_pre_output_fade_l,fft_wet_post_output_fade_l,"
+					"fft_wet_pre_window_delta_l,fft_wet_post_window_delta_l,fft_wet_post_output_delta_l,"
+					"engine_fade_old_out_l,engine_fade_old_mix,engine_fade_new_mix,"
+					"fft_output_fade_old_out_l,fft_output_fade_old_mix,fft_output_fade_new_mix\n",
 					false, false, nullptr);
 
 				const int total = juce::jmin (writeIndex.load (std::memory_order_relaxed), kRingSize);
@@ -710,7 +756,26 @@ private:
 					     << e.pdcOn << ","
 					     << e.reportedLatency << ","
 					     << e.dryDelayLen << ","
-					     << e.fftOutputPadLen << "\n";
+					     << e.fftOutputPadLen << ","
+					     << juce::String (e.smoothedWindow, 6) << ","
+					     << juce::String (e.targetWindow, 6) << ","
+					     << e.windowTransitionActive << ","
+					     << juce::String (e.windowTransitionProgress, 6) << ","
+					     << e.fftOutputFadeActive << ","
+					     << juce::String (e.fftOutputFadeProgress, 6) << ","
+					     << juce::String (e.fftWetPreWindowFadeL, 6) << ","
+					     << juce::String (e.fftWetPostWindowFadeL, 6) << ","
+					     << juce::String (e.fftWetPreOutputFadeL, 6) << ","
+					     << juce::String (e.fftWetPostOutputFadeL, 6) << ","
+					     << juce::String (e.fftWetPreWindowDeltaL, 6) << ","
+					     << juce::String (e.fftWetPostWindowDeltaL, 6) << ","
+					     << juce::String (e.fftWetPostOutputDeltaL, 6) << ","
+					     << juce::String (e.engineFadeOldOutL, 6) << ","
+					     << juce::String (e.engineFadeOldMix, 6) << ","
+					     << juce::String (e.engineFadeNewMix, 6) << ","
+					     << juce::String (e.fftOutputFadeOldOutL, 6) << ","
+					     << juce::String (e.fftOutputFadeOldMix, 6) << ","
+					     << juce::String (e.fftOutputFadeNewMix, 6) << "\n";
 					stream->writeText (line, false, false, nullptr);
 				}
 
@@ -727,7 +792,7 @@ private:
 		}
 
 	private:
-		FftDebugEntry ring[kRingSize] {};
+		std::unique_ptr<FftDebugEntry[]> ring = std::make_unique<FftDebugEntry[]>(kRingSize);
 		std::atomic<int> writeIndex { 0 };
 		juce::String autoDumpPath;
 	};
@@ -795,15 +860,22 @@ private:
 		int   cyclesSinceReset = 0;
 	};
 	StftState stft_;
+	StftState stftResizeScratch_;
 
 	std::unique_ptr<juce::dsp::FFT> fft_;
 	int   currentFftOrder_ = -1;
 	float fftWindow_[kMaxFftSize]     = {};
 	float fftWork_[kMaxFftSize * 2]   = {};
 	float fftOutputPadBuf_[2][kMaxFftSize] = {};
-	static constexpr int kFftWetHistoryLen = 512;
+	static constexpr int kFftWetHistoryLen = 8192;
 	float fftWetHistory_[2][kFftWetHistoryLen] = {};
 	int   fftWetHistoryWritePos_ = 0;
+	float fftPrevWetPreWindowL_ = 0.0f;
+	float fftPrevWetPostWindowL_ = 0.0f;
+	float fftPrevWetPostOutputL_ = 0.0f;
+	int   fft1WindowTransitionRemaining_ = 0;
+	int   fft1WindowTransitionTotal_ = 0;
+	int   fft1WindowTransitionReadPos_ = 0;
 	int   fftOutputPadWritePos_ = 0;
 	bool  fftUnityBypassActive_ = false;
 	int   fftStartupWarmupRemainingCycles_ = 0;
@@ -813,18 +885,33 @@ private:
 	int   fftFreezeTransitionRemaining_ = 0;
 	int   fftFreezeTransitionTotal_ = 0;
 	int   fftFreezeTransitionReadPos_ = 0;
+	int   fft2WindowTransitionRemaining_ = 0;
+	int   fft2WindowTransitionTotal_ = 0;
+	int   fft2WindowTransitionReadPos_ = 0;
 	bool  fftExplicitFreezeActive_ = false;
 	bool  fftExplicitFreezeCapturePending_ = false;
 
+	static constexpr int kWetOutputHistoryLen = 8192;
+	float wetOutputHistory_[2][kWetOutputHistoryLen] = {};
+	int   wetOutputHistoryWritePos_ = 0;
+	int   engineFadeReadPos_ = 0;
+	int   fftOutputFadeReadPos_ = 0;
+
 	void  ensureFft (int fftSize);
 	void  resetStftAtPos (double capturePos, int fftSize) noexcept;
+	void  resizeStftAtPos (double capturePos, int fftSize) noexcept;
+	void  resizeFft2StateAtPos (double capturePos, int fftSize) noexcept;
 	int   recommendedFftSynthHop (int fftSize) const noexcept;
+	int   samplesForMs (double ms) const noexcept;
+	int   recommendedFftWindowCrossfadeSamples() const noexcept;
+	int   recommendedEngineCrossfadeSamples() const noexcept;
 	void  performStftCycle (int fftSize, int analysisHop, int synthesisHop,
 	                        float pitchRate, bool reverseOn, float pitchRateR = -1.0f,
 	                        bool wideMode = false);
 	void  performStftCycleSpectralHold (int fftSize, int synthesisHop,
-	                                    float holdCoeff, float pitchRate, float pitchRateR = -1.0f,
-	                                    bool wideMode = false);
+	                                    float holdCoeff, float pitchRate, bool reverseOn,
+	                                    bool freezeAnalysisInput = false,
+	                                    float pitchRateR = -1.0f, bool wideMode = false);
 
     // Precomputed 1/sqrt(n) for granular normalization
 	float invSqrtLut_[kMaxGrains + 1] = {};
@@ -873,6 +960,7 @@ private:
 	float smoothedWindow_    = (float) kWindowDefault;  // smoothed window size in samples
 	float smoothedSpeed_     = 1.0f;   // smoothed stretch speed (0=freeze, 1=normal)
 	float smoothedPitchRate_ = 1.0f;   // smoothed pitch ratio
+	float windowSmoothStep_  = 0.0045f;
 
 	struct WetFilterChannelState
 	{
@@ -980,7 +1068,9 @@ private:
 	// Engine crossfade state
 	int   prevEngineVal_   = -1;
 	int   engineFadePos_   = 0;
-	static constexpr int kEngineFadeLen = 1024; // ~23 ms @ 44.1 kHz
+	int   engineFadeTotal_ = 0;
+	int   fftOutputFadePos_ = 0;
+	int   fftOutputFadeTotal_ = 0;
 
 	// DC blocker state (1-pole HP ~5 Hz)
 	float dcBlockR_        = 0.9997f;
