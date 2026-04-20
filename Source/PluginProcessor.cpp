@@ -1033,13 +1033,6 @@ void STRETRAudioProcessor::resetFftWindowDuckPrepareState (int capturedWindowVal
 	fftPendingWindowVal_ = capturedWindowVal;
 	fftWindowTraceRemaining_ = 0;
 	fftAmountTraceRemaining_ = 0;
-	fftWindowMuteWasActive_ = false;
-	fftWindowMuteFadeOutRemaining_ = 0;
-	fftWindowMuteFadeOutTotal_ = 0;
-	fftWindowMuteFadeInRemaining_ = 0;
-	fftWindowMuteFadeInTotal_ = 0;
-	fftWindowMuteStartL_ = 0.0f;
-	fftWindowMuteStartR_ = 0.0f;
 	prevFftDuckWindowVal_ = capturedWindowVal;
 	prevFftDuckAmountVal_ = amountVal;
 	prevFftDuckEngineVal_ = engineVal;
@@ -1054,11 +1047,6 @@ void STRETRAudioProcessor::clearFftWindowDuckRuntimeState() noexcept
 	fftWindowCaptureRemaining_ = 0;
 	fftWindowTraceRemaining_ = 0;
 	fftAmountTraceRemaining_ = 0;
-	fftWindowMuteWasActive_ = false;
-	fftWindowMuteFadeOutRemaining_ = 0;
-	fftWindowMuteFadeOutTotal_ = 0;
-	fftWindowMuteFadeInRemaining_ = 0;
-	fftWindowMuteFadeInTotal_ = 0;
 }
 
 void STRETRAudioProcessor::clearEngineFadeState() noexcept
@@ -2417,26 +2405,6 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			    || fftWindowCaptureRemaining_ > 0
 			    || fftWindowApplyDelayRemaining_ > 0
 			    || windowTransitionRemaining > 0);
-		if (engineVal == 3 && fftWindowMotionActiveBlock && ! fftWindowMuteWasActive_)
-		{
-			const int fadeOutSamples = samplesForMs (8.0);
-			fftWindowMuteFadeOutTotal_ = juce::jmax (1, fadeOutSamples);
-			fftWindowMuteFadeOutRemaining_ = fftWindowMuteFadeOutTotal_;
-			const int lastHistIdx = (wetOutputHistoryWritePos_ - 1 + kWetOutputHistoryLen) & (kWetOutputHistoryLen - 1);
-			fftWindowMuteStartL_ = wetOutputHistory_[0][lastHistIdx];
-			fftWindowMuteStartR_ = wetOutputHistory_[1][lastHistIdx];
-			fftWindowMuteFadeInRemaining_ = 0;
-			fftWindowMuteFadeInTotal_ = 0;
-		}
-		else if (engineVal == 3 && ! fftWindowMotionActiveBlock && fftWindowMuteWasActive_)
-		{
-			const int fadeInSamples = samplesForMs (60.0);
-			fftWindowMuteFadeInTotal_ = juce::jmax (1, fadeInSamples);
-			fftWindowMuteFadeInRemaining_ = fftWindowMuteFadeInTotal_;
-			fftWindowMuteFadeOutRemaining_ = 0;
-			fftWindowMuteFadeOutTotal_ = 0;
-		}
-		fftWindowMuteWasActive_ = (engineVal == 3) ? fftWindowMotionActiveBlock : false;
 	}
 
 	// Grain size in samples
@@ -2458,8 +2426,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		dbg.fftWindowApplyDelayRemaining = fftWindowApplyDelayRemaining_;
 		dbg.fftWindowCaptureRemaining = fftWindowCaptureRemaining_;
 		dbg.fftDuckGain = fftParamDuckGain_;
-		dbg.fftWindowMuteFadeOutRemaining = fftWindowMuteFadeOutRemaining_;
-		dbg.fftWindowMuteFadeInRemaining = fftWindowMuteFadeInRemaining_;
+		dbg.fftWindowMuteFadeOutRemaining = 0;
+		dbg.fftWindowMuteFadeInRemaining = 0;
 	};
 
 	auto recordFftReset = [&] (int eventType, double capturePos)
@@ -2550,8 +2518,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		fftDebugContext_.fftWindowApplyDelayRemaining = fftWindowApplyDelayRemaining_;
 		fftDebugContext_.fftWindowCaptureRemaining = fftWindowCaptureRemaining_;
 		fftDebugContext_.fftDuckGain = fftParamDuckGain_;
-		fftDebugContext_.fftWindowMuteFadeOutRemaining = fftWindowMuteFadeOutRemaining_;
-		fftDebugContext_.fftWindowMuteFadeInRemaining = fftWindowMuteFadeInRemaining_;
+		fftDebugContext_.fftWindowMuteFadeOutRemaining = 0;
+		fftDebugContext_.fftWindowMuteFadeInRemaining = 0;
 		fftDebugContext_.windowTransitionActive = isWindowTransitionActiveForEngine (engineVal) ? 1 : 0;
 		fftDebugContext_.windowTransitionProgress = getWindowTransitionProgressForEngine (engineVal);
 		fftDebugContext_.fftOutputFadeActive = ((engineVal == 2 || engineVal == 3) && fftOutputFadePos_ > 0 && fftOutputFadeTotal_ > 0) ? 1 : 0;
@@ -4160,8 +4128,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			dbg.fftWindowApplyDelayRemaining = fftWindowApplyDelayRemaining_;
 			dbg.fftWindowCaptureRemaining = fftWindowCaptureRemaining_;
 			dbg.fftDuckGain = fftParamDuckGain_;
-			dbg.fftWindowMuteFadeOutRemaining = fftWindowMuteFadeOutRemaining_;
-			dbg.fftWindowMuteFadeInRemaining = fftWindowMuteFadeInRemaining_;
+			dbg.fftWindowMuteFadeOutRemaining = 0;
+			dbg.fftWindowMuteFadeInRemaining = 0;
 			fftDebugTrace_.record (dbg);
 		};
 

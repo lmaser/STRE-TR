@@ -911,13 +911,6 @@ private:
 	int   fftPendingWindowVal_ = (int) kWindowDefault;
 	int   fftWindowTraceRemaining_ = 0;
 	int   fftAmountTraceRemaining_ = 0;
-	bool  fftWindowMuteWasActive_ = false;
-	int   fftWindowMuteFadeOutRemaining_ = 0;
-	int   fftWindowMuteFadeOutTotal_ = 0;
-	int   fftWindowMuteFadeInRemaining_ = 0;
-	int   fftWindowMuteFadeInTotal_ = 0;
-	float fftWindowMuteStartL_ = 0.0f;
-	float fftWindowMuteStartR_ = 0.0f;
 	float fft2HoldCoeffSmoothed_ = 0.0f;
 	int   prevFftDuckWindowVal_ = 0;
 	float prevFftDuckAmountVal_ = 0.0f;
