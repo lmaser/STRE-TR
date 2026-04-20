@@ -957,6 +957,13 @@ private:
 	int   recommendedFftWindowCrossfadeSamples() const noexcept;
 	int   recommendedFft2WindowCrossfadeSamples (int fromFftSize, int toFftSize) const noexcept;
 	int   recommendedEngineCrossfadeSamples() const noexcept;
+	void  resetFftWindowDuckPrepareState (int capturedWindowVal, float amountVal,
+	                                     int engineVal, bool triggerOn) noexcept;
+	void  clearFftWindowDuckRuntimeState() noexcept;
+	void  resetEngineFadeState() noexcept;
+	void  clearEngineFadeState() noexcept;
+	void  resetFftOutputFadeState() noexcept;
+	void  clearFftOutputFadeState() noexcept;
 	void  performStftCycle (int fftSize, int analysisHop, int synthesisHop,
 	                        float pitchRate, bool reverseOn, float pitchRateR = -1.0f,
 	                        bool wideMode = false);

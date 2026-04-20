@@ -245,33 +245,19 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	smoothedWetLevel   = loadAtomicOrDefault (wetLevelParam, kWetLevelDefault);
 	smoothedLimThreshold = fastDecibelsToGain (loadAtomicOrDefault (limThresholdParam, kLimThresholdDefault));
 	smoothedWindow_    = loadAtomicOrDefault (windowParam, kWindowDefault);
+	const int initialWindowVal = (int) std::lround (smoothedWindow_);
+	const float initialAmountVal = loadAtomicOrDefault (amountParam, kAmountDefault);
+	const int initialEngineVal = loadIntParamOrDefault (engineParam, 0);
+	const bool initialTriggerOn = loadBoolParamOrDefault (triggerParam, false);
 	fft2GeometryLog2Window_ = std::log2 (juce::jlimit ((float) kWindowMin, (float) kWindowMax, smoothedWindow_));
-	smoothedSpeed_     = juce::jmax (0.0f, 1.0f - loadAtomicOrDefault (amountParam, kAmountDefault) / 100.0f);
+	smoothedSpeed_     = juce::jmax (0.0f, 1.0f - initialAmountVal / 100.0f);
 	smoothedPitchRate_ = std::exp2 ((loadAtomicOrDefault (modParam, kModDefault) - 0.5f) * 4.0f);
 	{
 		const float t = 1.0f - smoothedSpeed_;
 		fft2HoldCoeffSmoothed_ = std::sqrt (std::sqrt (juce::jlimit (0.0f, 1.0f, t)));
 	}
 	windowSmoothStep_  = 1.0f - std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.030f));
-	fftParamDuckGain_ = 1.0f;
-	fftParamDuckHoldRemaining_ = 0;
-	fftWindowApplyDelayRemaining_ = 0;
-	fftWindowCaptureRemaining_ = 0;
-	fftCapturedWindowVal_ = (int) std::lround (smoothedWindow_);
-	fftPendingWindowVal_ = fftCapturedWindowVal_;
-	fftWindowTraceRemaining_ = 0;
-	fftAmountTraceRemaining_ = 0;
-	fftWindowMuteWasActive_ = false;
-	fftWindowMuteFadeOutRemaining_ = 0;
-	fftWindowMuteFadeOutTotal_ = 0;
-	fftWindowMuteFadeInRemaining_ = 0;
-	fftWindowMuteFadeInTotal_ = 0;
-	fftWindowMuteStartL_ = 0.0f;
-	fftWindowMuteStartR_ = 0.0f;
-	prevFftDuckWindowVal_ = (int) std::lround (smoothedWindow_);
-	prevFftDuckAmountVal_ = loadAtomicOrDefault (amountParam, kAmountDefault);
-	prevFftDuckEngineVal_ = loadIntParamOrDefault (engineParam, 0);
-	prevFftDuckTriggerOn_ = loadBoolParamOrDefault (triggerParam, false);
+	resetFftWindowDuckPrepareState (initialWindowVal, initialAmountVal, initialEngineVal, initialTriggerOn);
 
     // Initialize Hann LUT
 	for (int i = 0; i <= kHannLutSize; ++i)
@@ -351,22 +337,8 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	fftExplicitFreezeCapturePending_ = false;
 	std::memset (wetOutputHistory_, 0, sizeof (wetOutputHistory_));
 	wetOutputHistoryWritePos_ = 0;
-	engineFadeReadPos_ = 0;
-	engineFadeTotal_ = 0;
-	engineFadeHoldSamples_ = 0;
-	fftOutputFadeReadPos_ = 0;
-	fftOutputFadePos_ = 0;
-	fftOutputFadeTotal_ = 0;
-	fftOutputFadeHoldSamples_ = 0;
-	fftWindowTraceRemaining_ = 0;
-	fftAmountTraceRemaining_ = 0;
-	fftWindowMuteWasActive_ = false;
-	fftWindowMuteFadeOutRemaining_ = 0;
-	fftWindowMuteFadeOutTotal_ = 0;
-	fftWindowMuteFadeInRemaining_ = 0;
-	fftWindowMuteFadeInTotal_ = 0;
-	fftWindowMuteStartL_ = 0.0f;
-	fftWindowMuteStartR_ = 0.0f;
+	resetEngineFadeState();
+	resetFftOutputFadeState();
 	std::memset (dryDelayBuf_, 0, sizeof (dryDelayBuf_));
 	dryDelayWritePos_ = 0;
 	dryDelayLen_ = 0;
@@ -1048,6 +1020,71 @@ int STRETRAudioProcessor::recommendedFft2WindowCrossfadeSamples (int fromFftSize
 int STRETRAudioProcessor::recommendedEngineCrossfadeSamples() const noexcept
 {
 	return juce::jlimit (64, kWetOutputHistoryLen - 1, samplesForMs (45.0));
+}
+
+void STRETRAudioProcessor::resetFftWindowDuckPrepareState (int capturedWindowVal, float amountVal,
+                                                           int engineVal, bool triggerOn) noexcept
+{
+	fftParamDuckGain_ = 1.0f;
+	fftParamDuckHoldRemaining_ = 0;
+	fftWindowApplyDelayRemaining_ = 0;
+	fftWindowCaptureRemaining_ = 0;
+	fftCapturedWindowVal_ = capturedWindowVal;
+	fftPendingWindowVal_ = capturedWindowVal;
+	fftWindowTraceRemaining_ = 0;
+	fftAmountTraceRemaining_ = 0;
+	fftWindowMuteWasActive_ = false;
+	fftWindowMuteFadeOutRemaining_ = 0;
+	fftWindowMuteFadeOutTotal_ = 0;
+	fftWindowMuteFadeInRemaining_ = 0;
+	fftWindowMuteFadeInTotal_ = 0;
+	fftWindowMuteStartL_ = 0.0f;
+	fftWindowMuteStartR_ = 0.0f;
+	prevFftDuckWindowVal_ = capturedWindowVal;
+	prevFftDuckAmountVal_ = amountVal;
+	prevFftDuckEngineVal_ = engineVal;
+	prevFftDuckTriggerOn_ = triggerOn;
+}
+
+void STRETRAudioProcessor::clearFftWindowDuckRuntimeState() noexcept
+{
+	fftParamDuckHoldRemaining_ = 0;
+	fftParamDuckGain_ = 1.0f;
+	fftWindowApplyDelayRemaining_ = 0;
+	fftWindowCaptureRemaining_ = 0;
+	fftWindowTraceRemaining_ = 0;
+	fftAmountTraceRemaining_ = 0;
+	fftWindowMuteWasActive_ = false;
+	fftWindowMuteFadeOutRemaining_ = 0;
+	fftWindowMuteFadeOutTotal_ = 0;
+	fftWindowMuteFadeInRemaining_ = 0;
+	fftWindowMuteFadeInTotal_ = 0;
+}
+
+void STRETRAudioProcessor::clearEngineFadeState() noexcept
+{
+	engineFadePos_ = 0;
+	engineFadeTotal_ = 0;
+	engineFadeHoldSamples_ = 0;
+}
+
+void STRETRAudioProcessor::resetEngineFadeState() noexcept
+{
+	engineFadeReadPos_ = 0;
+	clearEngineFadeState();
+}
+
+void STRETRAudioProcessor::clearFftOutputFadeState() noexcept
+{
+	fftOutputFadePos_ = 0;
+	fftOutputFadeTotal_ = 0;
+	fftOutputFadeHoldSamples_ = 0;
+}
+
+void STRETRAudioProcessor::resetFftOutputFadeState() noexcept
+{
+	fftOutputFadeReadPos_ = 0;
+	clearFftOutputFadeState();
 }
 
 int STRETRAudioProcessor::recommendedFftSynthHop (int fftSize) const noexcept
@@ -2252,17 +2289,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	}
 	else if (! fftDuckEngineActive)
 	{
-		fftParamDuckHoldRemaining_ = 0;
-		fftParamDuckGain_ = 1.0f;
-		fftWindowApplyDelayRemaining_ = 0;
-		fftWindowCaptureRemaining_ = 0;
-		fftWindowTraceRemaining_ = 0;
-		fftAmountTraceRemaining_ = 0;
-		fftWindowMuteWasActive_ = false;
-		fftWindowMuteFadeOutRemaining_ = 0;
-		fftWindowMuteFadeOutTotal_ = 0;
-		fftWindowMuteFadeInRemaining_ = 0;
-		fftWindowMuteFadeInTotal_ = 0;
+		clearFftWindowDuckRuntimeState();
 	}
 	prevFftDuckWindowVal_ = windowVal;
 	prevFftDuckAmountVal_ = amountVal;
@@ -2298,8 +2325,6 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	bool fftSizeChanged = false;
 	if (fftEngineActive && inputBufLen_ > 0)
 	{
-		const bool fftStyleDual = (styleVal == 3 && numChannels >= 2);
-		const bool fftStyleWide = (styleVal == 2 && numChannels >= 2);
 		const int fftWindowSamples = (engineVal == 3) ? fft2GeometryWindowSamples : windowSamples;
 		const int desiredFftSize = juce::jlimit (64, kMaxFftSize, nextPowerOf2 (fftWindowSamples));
 		const int previousFftSize = stft_.activeFftSize;
@@ -2490,9 +2515,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		engineFadePos_ = engineFadeTotal_;
 		engineFadeReadPos_ = (wetOutputHistoryWritePos_ - engineFadeTotal_ + kWetOutputHistoryLen)
 			& (kWetOutputHistoryLen - 1);
-		fftOutputFadePos_ = 0;
-		fftOutputFadeTotal_ = 0;
-		fftOutputFadeHoldSamples_ = 0;
+		clearFftOutputFadeState();
 		if (engineVal == 0 && inputBufLen_ > 0)
 		{
 			const double capturePos = (double) ((inputBufWritePos_ - 1 + inputBufLen_) & inputBufMask_);
@@ -2538,9 +2561,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 	if (! triggerOn || ! fftEngineActive)
 	{
-		fftOutputFadePos_ = 0;
-		fftOutputFadeTotal_ = 0;
-		fftOutputFadeHoldSamples_ = 0;
+		clearFftOutputFadeState();
 	}
 
 	if (triggerOn && ! fftReseededThisBlock && fftSizeChanged && (engineVal == 2 || engineVal == 3) && requestedFftSize > 0)
