@@ -275,6 +275,7 @@ private:
 		float overlapRmseR  = 0.0f;
 	};
 
+#if JUCE_DEBUG
 	struct StretchDebugEntry
 	{
 		int    blockIndex      = 0;
@@ -396,6 +397,7 @@ private:
 
 	StretchDebugTrace stretchDebugTrace_;
 	int stretchDebugBlockCounter_ = 0;
+#endif
 
 	void resetWsolaAtPos (double capturePos) noexcept;
 	WsolaMatchResult wsolaBestOverlapOffset (int channel, double nominalPos, int overlapLen,
@@ -410,6 +412,7 @@ private:
 	                             bool reverseOn, bool wideMode) noexcept;
 	int countActiveGrains() const noexcept;
 
+#if JUCE_DEBUG
 	struct GrainDebugEntry
 	{
 		int    blockIndex     = 0;
@@ -517,6 +520,7 @@ private:
 	};
 
 	GrainDebugTrace grainDebugTrace_;
+#endif
 
 	struct FftDebugContext
 	{
@@ -558,8 +562,6 @@ private:
 		int   fftWindowApplyDelayRemaining = 0;
 		int   fftWindowCaptureRemaining = 0;
 		float fftDuckGain = 1.0f;
-		int   fftWindowMuteFadeOutRemaining = 0;
-		int   fftWindowMuteFadeInRemaining = 0;
 		float engineFadeOldOutL = 0.0f;
 		float engineFadeOldMix = 0.0f;
 		float engineFadeNewMix = 0.0f;
@@ -568,6 +570,7 @@ private:
 		float fftOutputFadeNewMix = 0.0f;
 	};
 
+#if JUCE_DEBUG
 	struct FftDebugEntry
 	{
 		int    blockIndex         = 0;
@@ -649,8 +652,6 @@ private:
 		int    fftWindowApplyDelayRemaining = 0;
 		int    fftWindowCaptureRemaining = 0;
 		float  fftDuckGain = 1.0f;
-		int    fftWindowMuteFadeOutRemaining = 0;
-		int    fftWindowMuteFadeInRemaining = 0;
 		float  engineFadeOldOutL = 0.0f;
 		float  engineFadeOldMix = 0.0f;
 		float  engineFadeNewMix = 0.0f;
@@ -699,7 +700,7 @@ private:
 					"fft_wet_pre_window_fade_l,fft_wet_post_window_fade_l,fft_wet_pre_output_fade_l,fft_wet_post_output_fade_l,"
 					"fft_wet_pre_window_delta_l,fft_wet_post_window_delta_l,fft_wet_post_output_delta_l,"
 					"raw_window_changed,raw_amount_changed,fft_window_motion_active,fft_window_apply_delay_remaining,fft_window_capture_remaining,"
-					"fft_duck_gain,fft_window_mute_fade_out_remaining,fft_window_mute_fade_in_remaining,"
+					"fft_duck_gain,"
 					"engine_fade_old_out_l,engine_fade_old_mix,engine_fade_new_mix,"
 					"fft_output_fade_old_out_l,fft_output_fade_old_mix,fft_output_fade_new_mix\n",
 					false, false, nullptr);
@@ -798,8 +799,6 @@ private:
 					     << e.fftWindowApplyDelayRemaining << ","
 					     << e.fftWindowCaptureRemaining << ","
 					     << juce::String (e.fftDuckGain, 6) << ","
-					     << e.fftWindowMuteFadeOutRemaining << ","
-					     << e.fftWindowMuteFadeInRemaining << ","
 					     << juce::String (e.engineFadeOldOutL, 6) << ","
 					     << juce::String (e.engineFadeOldMix, 6) << ","
 					     << juce::String (e.engineFadeNewMix, 6) << ","
@@ -828,8 +827,8 @@ private:
 	};
 
 	FftDebugTrace fftDebugTrace_;
+#endif
 	FftDebugContext fftDebugContext_;
-	int fftDebugBlockCounter_ = 0;
 
     // Granular engine state
 	struct Grain

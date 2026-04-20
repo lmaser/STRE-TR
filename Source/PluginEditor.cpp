@@ -1300,11 +1300,17 @@ juce::String STRETRAudioProcessorEditor::getModTextShort() const
 
 juce::String STRETRAudioProcessorEditor::getGrainText() const
 {
+    if (getCurrentEngineValue() != 1)
+        return "GRAIN";
+
     const float ms = (float) grainSlider.getValue();
     return juce::String (ms, 1) + " ms GRAIN";
 }
 juce::String STRETRAudioProcessorEditor::getGrainTextShort() const
 {
+    if (getCurrentEngineValue() != 1)
+        return "GRAIN";
+
     const float ms = (float) grainSlider.getValue();
     return juce::String (ms, 1) + "ms GRN";
 }
@@ -1532,7 +1538,9 @@ bool STRETRAudioProcessorEditor::refreshLegendTextCache()
         cachedModIntOnly = (std::abs (mult - 1.0f) < kMultEpsilon)
                            ? "X1" : ("X" + juce::String (mult, 2));
     }
-    cachedGrainIntOnly   = juce::String ((int) std::lround (grainSlider.getValue())) + "ms";
+    cachedGrainIntOnly   = (getCurrentEngineValue() == 1)
+                           ? juce::String ((int) std::lround (grainSlider.getValue())) + "ms"
+                           : juce::String ("GRAIN");
     cachedEngineIntOnly  = getEngineTextShort();
     cachedWindowIntOnly  = juce::String (getEffectiveWindowValue (windowSlider.getValue()));
     cachedStyleIntOnly   = getStyleTextShort();

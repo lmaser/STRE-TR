@@ -26,6 +26,7 @@ WSOLA-based elastic time stretching with overlap search and crossfade between se
 - Best for more direct, time-domain stretching.
 - Supports reverse.
 - `AMOUNT` reduces analysis advance toward freeze.
+- Near neutral settings can fall back to a unity-safe path instead of forcing continuous resegmentation.
 
 ### GRAIN
 
@@ -43,14 +44,16 @@ Phase-vocoder engine with overlap-add reconstruction and pitch-rate control.
 - Best for spectral stretching and pitched material.
 - Supports reverse.
 - `AMOUNT` reduces FFT analysis hop toward freeze.
+- `WINDOW` is mapped to power-of-two FFT sizes internally.
 
 ### FFT2
 
 Spectral-hold engine built on the same FFT framework.
 
 - Best for frozen or semi-frozen spectral textures.
-- `RVS` is intentionally disabled here.
+- Supports reverse.
 - `AMOUNT` increases hold intensity rather than moving an analysis hop toward zero.
+- Shares the FFT window family with `FFT1`, using power-of-two sizes internally.
 
 ## Interface
 
@@ -201,8 +204,7 @@ Engine arm/trigger behavior.
 
 Reverse playback/read direction.
 
-- Active in `STRETCH`, `GRAIN`, and `FFT1`
-- Disabled in `FFT2`
+- Active in `STRETCH`, `GRAIN`, `FFT1`, and `FFT2`
 
 ### ALIGN
 
@@ -268,10 +270,10 @@ Independent inversion modes for polarity and stereo:
 ## Technical Notes
 
 - Input buffer: up to `262144` samples
-- `STRETCH`: WSOLA with overlap search and crossfade
+- `STRETCH`: WSOLA with overlap search, segment crossfade, and unity-safe bypass near neutral motion
 - `GRAIN`: up to `64` grains with Hann envelopes
-- `FFT1`: phase vocoder
-- `FFT2`: spectral hold built on the FFT engine
+- `FFT1`: phase vocoder with freeze reached by reducing FFT analysis advance
+- `FFT2`: spectral hold built on the FFT engine, with hold intensity controlled by `AMOUNT`
 - Wet filter: HP/LP biquads with periodic coefficient updates
 - Tilt: first-order wet tilt
 - Chaos: Hermite-interpolated random targets with drift
@@ -279,6 +281,7 @@ Independent inversion modes for polarity and stereo:
   - Stage 1: `2 ms` attack / `10 ms` release
   - Stage 2: instant attack / `100 ms` release
 - Safety stage: hard clip at about `+48 dBFS`
+- Developer diagnostics and CSV trace dumps are opt-in and intended for debug builds, not normal release behavior
 
 ## Smoothing
 
@@ -301,7 +304,7 @@ Filter, tilt, and chaos subsystems also have their own internal smoothing/update
 
 - `ALIGN` and `PDC` matter only for the FFT engines
 - `TRG` is central to the creative workflow of this plugin; with `TRG` off the wet path stays clean
-- `FFT2` is the only engine that disables `RVS`
+- `FFT1` and `FFT2` quantize `WINDOW` to power-of-two FFT sizes internally, while `STRETCH` and `GRAIN` use the smoothed value directly
 
 ## Changelog
 
@@ -311,3 +314,4 @@ Filter, tilt, and chaos subsystems also have their own internal smoothing/update
 - Kept `STRETCH`, `GRAIN`, `FFT1`, and `FFT2` under the same editor
 - Smoothed `SEND DRY/WET` and `LIM THRESHOLD` to match the rest of the series
 - Cleaned documentation and removed stale or incorrect legacy descriptions
+- Release hardening: developer traces are now opt-in and kept out of normal release behavior

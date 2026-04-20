@@ -6,6 +6,24 @@ namespace
 	constexpr float kGainSmoothCoeff = 0.9955f;
 	constexpr float kGainSmoothStep  = 1.0f - kGainSmoothCoeff;
 
+	// Developer diagnostics stay off by default and FFT trace code is only meant
+	// to exist in debug-oriented builds.
+	struct DeveloperDiagnosticsConfig
+	{
+		static constexpr bool kEnableAutoDump = false;
+		static constexpr bool kEnableHeavyFftDebugTrace = false;
+#if JUCE_DEBUG
+		static constexpr bool kCompileStretchDebugTrace = true;
+		static constexpr bool kCompileGrainDebugTrace = true;
+		static constexpr bool kCompileFftDebugTrace = true;
+#else
+		static constexpr bool kCompileStretchDebugTrace = false;
+		static constexpr bool kCompileGrainDebugTrace = false;
+		static constexpr bool kCompileFftDebugTrace = false;
+#endif
+		static constexpr bool kEnableFftTraceRecording = kCompileFftDebugTrace && kEnableHeavyFftDebugTrace;
+	};
+
 	inline float loadAtomicOrDefault (std::atomic<float>* p, float def) noexcept
 	{
 		return p != nullptr ? p->load (std::memory_order_relaxed) : def;
@@ -190,10 +208,15 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 	uiEditorWidth.store (w, std::memory_order_relaxed);
 	uiEditorHeight.store (h, std::memory_order_relaxed);
 
-	perfTrace.enableDesktopAutoDump();
-	stretchDebugTrace_.enableDesktopAutoDump();
-	grainDebugTrace_.enableDesktopAutoDump();
-	fftDebugTrace_.enableDesktopAutoDump();
+	if constexpr (DeveloperDiagnosticsConfig::kEnableAutoDump)
+	{
+		perfTrace.enableDesktopAutoDump();
+#if JUCE_DEBUG
+		stretchDebugTrace_.enableDesktopAutoDump();
+		grainDebugTrace_.enableDesktopAutoDump();
+		fftDebugTrace_.enableDesktopAutoDump();
+#endif
+	}
 }
 
 STRETRAudioProcessor::~STRETRAudioProcessor() {}
@@ -1170,7 +1193,12 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
                                               bool wideMode)
 {
 	if (fft_ == nullptr || inputBufLen_ <= 0 || fftSize <= 0) return;
-	const auto cycleStartTicks = juce::Time::getHighResolutionTicks();
+   #if JUCE_DEBUG
+	const bool fftDebugEnabled = DeveloperDiagnosticsConfig::kEnableFftTraceRecording;
+   #else
+	constexpr bool fftDebugEnabled = false;
+   #endif
+	const auto cycleStartTicks = fftDebugEnabled ? juce::Time::getHighResolutionTicks() : juce::int64 { 0 };
 
 	const int numBins    = fftSize / 2 + 1;
 	const int outBufLen  = kStftOutBufLen;
@@ -1182,7 +1210,7 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 	const float invNormAtRead = (normAtRead > 1.0e-6f) ? (1.0f / normAtRead) : 0.0f;
 	const float previewOutL = stft_.outputAccum[0][stft_.outputReadPos] * invNormAtRead;
 	const float previewOutR = stft_.outputAccum[1][stft_.outputReadPos] * invNormAtRead;
-	const double analysisLagSamples = (inputBufLen_ > 0)
+	const double analysisLagSamples = (fftDebugEnabled && inputBufLen_ > 0)
 		? std::fmod ((double) inputBufWritePos_ - analysisReadBefore + (double) inputBufLen_,
 		             (double) inputBufLen_)
 		: 0.0;
@@ -1221,7 +1249,7 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 		// Analysis
 		if (analyseCurrentFrame)
 		{
-			const auto forwardStartTicks = juce::Time::getHighResolutionTicks();
+			const auto forwardStartTicks = fftDebugEnabled ? juce::Time::getHighResolutionTicks() : juce::int64 { 0 };
 			for (int j = 0; j < fftSize; ++j)
 			{
 				const int idx = ((int) stft_.analysisReadPos + j) & inputBufMask_;
@@ -1232,9 +1260,10 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 				fftWork_[j] = 0.0f;
 
 			fft_->performRealOnlyForwardTransform (fftWork_, true);
-			forwardFftTicks += juce::Time::getHighResolutionTicks() - forwardStartTicks;
+			if (fftDebugEnabled)
+				forwardFftTicks += juce::Time::getHighResolutionTicks() - forwardStartTicks;
 
-			const auto binAnalysisStartTicks = juce::Time::getHighResolutionTicks();
+			const auto binAnalysisStartTicks = fftDebugEnabled ? juce::Time::getHighResolutionTicks() : juce::int64 { 0 };
 			const bool useFastLargeFftAnalysis = (fftSize > 1024);
 			const float invAnalysisHop = (analysisHop > 0) ? (1.0f / (float) analysisHop) : 0.0f;
 			const float expectedPhaseStep = expBase * (float) analysisHop;
@@ -1288,7 +1317,8 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 				}
 			}
 			debugSpectralFlux[ch] = (fluxNorm > 1.0e-6f) ? (positiveFlux / fluxNorm) : 0.0f;
-			binAnalysisTicks += juce::Time::getHighResolutionTicks() - binAnalysisStartTicks;
+			if (fftDebugEnabled)
+				binAnalysisTicks += juce::Time::getHighResolutionTicks() - binAnalysisStartTicks;
 		}
 		debugFrameRms[ch] = std::sqrt (frameEnergy / (float) juce::jmax (1, fftSize));
 
@@ -1311,7 +1341,7 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 		}
 		else
 		{
-			const auto pitchMapStartTicks = juce::Time::getHighResolutionTicks();
+			const auto pitchMapStartTicks = fftDebugEnabled ? juce::Time::getHighResolutionTicks() : juce::int64 { 0 };
 			for (int k = 0; k < numBins; ++k)
 			{
 				float mag, freq;
@@ -1342,7 +1372,8 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 				synthMag[k] = mag;
 				stft_.synthPhase[ch][k] += freq * (float) synthesisHop;
 			}
-			pitchMapTicks += juce::Time::getHighResolutionTicks() - pitchMapStartTicks;
+			if (fftDebugEnabled)
+				pitchMapTicks += juce::Time::getHighResolutionTicks() - pitchMapStartTicks;
 
 			const bool lowFft64 = (fftSize <= 64);
 			const float lowFftPitchNorm = juce::jlimit (0.0f, 1.0f,
@@ -1353,7 +1384,7 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 			// use prominent peaks and regions of influence so bins stay coherent
 			// without being chained to every weak local maximum.
 			{
-				const auto phaseLockStartTicks = juce::Time::getHighResolutionTicks();
+				const auto phaseLockStartTicks = fftDebugEnabled ? juce::Time::getHighResolutionTicks() : juce::int64 { 0 };
 				bool isPeak[kMaxFftBins] = {};
 				isPeak[0] = (numBins > 1) ? (synthMag[0] >= synthMag[1]) : true;
 				for (int k = 1; k < numBins - 1; ++k)
@@ -1673,12 +1704,13 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 						stft_.synthPhase[ch][k] += analysisPhaseRelax * phaseToAnalysis;
 					}
 				}
-				phaseLockTicks += juce::Time::getHighResolutionTicks() - phaseLockStartTicks;
+				if (fftDebugEnabled)
+					phaseLockTicks += juce::Time::getHighResolutionTicks() - phaseLockStartTicks;
 			}
 		}
 
 		// Step 3: write complex output (only numBins used by performRealOnlyInverseTransform)
-		const auto ifftOlaStartTicks = juce::Time::getHighResolutionTicks();
+		const auto ifftOlaStartTicks = fftDebugEnabled ? juce::Time::getHighResolutionTicks() : juce::int64 { 0 };
 		for (int k = 0; k < numBins; ++k)
 		{
             // WIDE: add linear phase ramp to R -> temporal shift of fftSize/2 samples
@@ -1719,7 +1751,8 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 			if (ch == 0)
 				stft_.outputNormAccum[outIdx] += windowSq;
 		}
-		ifftOlaTicks += juce::Time::getHighResolutionTicks() - ifftOlaStartTicks;
+		if (fftDebugEnabled)
+			ifftOlaTicks += juce::Time::getHighResolutionTicks() - ifftOlaStartTicks;
 		debugOutputRms[ch] = std::sqrt (outputEnergy / (float) juce::jmax (1, fftSize));
 	}
 
@@ -1737,105 +1770,108 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 			stft_.analysisReadPos += (double) inputBufLen_;
 	}
 
-	FftDebugEntry dbg {};
-	dbg.blockIndex = fftDebugContext_.blockIndex;
-	dbg.sampleIndex = fftDebugContext_.sampleIndex;
-	dbg.eventType = 0;
-	dbg.engine = fftDebugContext_.engine;
-	dbg.amount = fftDebugContext_.amount;
-	dbg.mod = fftDebugContext_.mod;
-	dbg.speed = fftDebugContext_.speed;
-	dbg.pitchRate = pitchRate;
-	dbg.windowSamples = fftDebugContext_.windowSamples;
-	dbg.fftSize = fftSize;
-	dbg.targetAnalysisHop = fftDebugContext_.targetAnalysisHop;
-	dbg.filteredAnalysisHop = fftDebugContext_.filteredAnalysisHop;
-	dbg.analysisHop = analysisHop;
-	dbg.synthesisHop = synthesisHop;
-	dbg.style = fftDebugContext_.style;
-	dbg.reverseOn = reverseOn ? 1 : 0;
-	dbg.triggerOn = fftDebugContext_.triggerOn;
-	dbg.wideMode = wideMode ? 1 : 0;
-	dbg.passthrough = ((analysisHop == synthesisHop) && (std::abs (pitchRate - 1.0f) <= 0.001f)) ? 1 : 0;
-	dbg.peakCountL = debugPeakCount[0];
-	dbg.peakCountR = debugPeakCount[1];
-	dbg.lockedBinsL = debugLockedBins[0];
-	dbg.lockedBinsR = debugLockedBins[1];
-	dbg.analysisReadBefore = analysisReadBefore;
-	dbg.analysisReadAfter = stft_.analysisReadPos;
-	dbg.frameRmsL = debugFrameRms[0];
-	dbg.frameRmsR = debugFrameRms[1];
-	dbg.outputRmsL = debugOutputRms[0];
-	dbg.outputRmsR = debugOutputRms[1];
-	dbg.outputStartDeltaL = debugOutputStartDelta[0];
-	dbg.outputStartDeltaR = debugOutputStartDelta[1];
-	dbg.outputNormAtRead = normAtRead;
-	dbg.previewOutL = previewOutL;
-	dbg.previewOutR = previewOutR;
-	if (stft_.identitySampleCount > 0)
+   #if JUCE_DEBUG
+	if (fftDebugEnabled)
 	{
-		dbg.identityRefRmsL = std::sqrt ((float) (stft_.identityRefSqAccum[0] / (double) stft_.identitySampleCount));
-		dbg.identityRefRmsR = std::sqrt ((float) (stft_.identityRefSqAccum[1] / (double) stft_.identitySampleCount));
-		dbg.identityErrRmsL = std::sqrt ((float) (stft_.identityErrSqAccum[0] / (double) stft_.identitySampleCount));
-		dbg.identityErrRmsR = std::sqrt ((float) (stft_.identityErrSqAccum[1] / (double) stft_.identitySampleCount));
-	dbg.identityMaxAbsErrL = stft_.identityMaxAbsErr[0];
-	dbg.identityMaxAbsErrR = stft_.identityMaxAbsErr[1];
+		FftDebugEntry dbg {};
+		dbg.blockIndex = fftDebugContext_.blockIndex;
+		dbg.sampleIndex = fftDebugContext_.sampleIndex;
+		dbg.eventType = 0;
+		dbg.engine = fftDebugContext_.engine;
+		dbg.amount = fftDebugContext_.amount;
+		dbg.mod = fftDebugContext_.mod;
+		dbg.speed = fftDebugContext_.speed;
+		dbg.pitchRate = pitchRate;
+		dbg.windowSamples = fftDebugContext_.windowSamples;
+		dbg.fftSize = fftSize;
+		dbg.targetAnalysisHop = fftDebugContext_.targetAnalysisHop;
+		dbg.filteredAnalysisHop = fftDebugContext_.filteredAnalysisHop;
+		dbg.analysisHop = analysisHop;
+		dbg.synthesisHop = synthesisHop;
+		dbg.style = fftDebugContext_.style;
+		dbg.reverseOn = reverseOn ? 1 : 0;
+		dbg.triggerOn = fftDebugContext_.triggerOn;
+		dbg.wideMode = wideMode ? 1 : 0;
+		dbg.passthrough = ((analysisHop == synthesisHop) && (std::abs (pitchRate - 1.0f) <= 0.001f)) ? 1 : 0;
+		dbg.peakCountL = debugPeakCount[0];
+		dbg.peakCountR = debugPeakCount[1];
+		dbg.lockedBinsL = debugLockedBins[0];
+		dbg.lockedBinsR = debugLockedBins[1];
+		dbg.analysisReadBefore = analysisReadBefore;
+		dbg.analysisReadAfter = stft_.analysisReadPos;
+		dbg.frameRmsL = debugFrameRms[0];
+		dbg.frameRmsR = debugFrameRms[1];
+		dbg.outputRmsL = debugOutputRms[0];
+		dbg.outputRmsR = debugOutputRms[1];
+		dbg.outputStartDeltaL = debugOutputStartDelta[0];
+		dbg.outputStartDeltaR = debugOutputStartDelta[1];
+		dbg.outputNormAtRead = normAtRead;
+		dbg.previewOutL = previewOutL;
+		dbg.previewOutR = previewOutR;
+		if (stft_.identitySampleCount > 0)
+		{
+			dbg.identityRefRmsL = std::sqrt ((float) (stft_.identityRefSqAccum[0] / (double) stft_.identitySampleCount));
+			dbg.identityRefRmsR = std::sqrt ((float) (stft_.identityRefSqAccum[1] / (double) stft_.identitySampleCount));
+			dbg.identityErrRmsL = std::sqrt ((float) (stft_.identityErrSqAccum[0] / (double) stft_.identitySampleCount));
+			dbg.identityErrRmsR = std::sqrt ((float) (stft_.identityErrSqAccum[1] / (double) stft_.identitySampleCount));
+			dbg.identityMaxAbsErrL = stft_.identityMaxAbsErr[0];
+			dbg.identityMaxAbsErrR = stft_.identityMaxAbsErr[1];
+		}
+		dbg.spectralFluxL = debugSpectralFlux[0];
+		dbg.spectralFluxR = debugSpectralFlux[1];
+		dbg.phaseResetMixL = debugPhaseResetMix[0];
+		dbg.phaseResetMixR = debugPhaseResetMix[1];
+		dbg.lockStrengthMeanL = debugLockStrengthMean[0];
+		dbg.lockStrengthMeanR = debugLockStrengthMean[1];
+		const double cycleDurationUs = juce::Time::highResolutionTicksToSeconds (
+			juce::Time::getHighResolutionTicks() - cycleStartTicks) * 1000000.0;
+		const double cycleBudgetUs = (currentSampleRate > 0.0 && synthesisHop > 0)
+			? ((double) synthesisHop / currentSampleRate) * 1000000.0
+			: 0.0;
+		dbg.cycleDurationUs = (float) cycleDurationUs;
+		dbg.cycleRealtimeCpuPct = (cycleBudgetUs > 0.0)
+			? (float) ((cycleDurationUs / cycleBudgetUs) * 100.0)
+			: 0.0f;
+		dbg.forwardFftUs = (float) (juce::Time::highResolutionTicksToSeconds (forwardFftTicks) * 1000000.0);
+		dbg.binAnalysisUs = (float) (juce::Time::highResolutionTicksToSeconds (binAnalysisTicks) * 1000000.0);
+		dbg.pitchMapUs = (float) (juce::Time::highResolutionTicksToSeconds (pitchMapTicks) * 1000000.0);
+		dbg.phaseLockUs = (float) (juce::Time::highResolutionTicksToSeconds (phaseLockTicks) * 1000000.0);
+		dbg.ifftOlaUs = (float) (juce::Time::highResolutionTicksToSeconds (ifftOlaTicks) * 1000000.0);
+		dbg.analysisLagSamples = analysisLagSamples;
+		dbg.cyclesSinceReset = stft_.cyclesSinceReset;
+		dbg.alignOn = fftDebugContext_.alignOn;
+		dbg.pdcOn = fftDebugContext_.pdcOn;
+		dbg.reportedLatency = fftDebugContext_.reportedLatency;
+		dbg.dryDelayLen = fftDebugContext_.dryDelayLen;
+		dbg.fftOutputPadLen = fftDebugContext_.fftOutputPadLen;
+		dbg.smoothedWindow = fftDebugContext_.smoothedWindow;
+		dbg.targetWindow = fftDebugContext_.targetWindow;
+		dbg.windowTransitionActive = fftDebugContext_.windowTransitionActive;
+		dbg.windowTransitionProgress = fftDebugContext_.windowTransitionProgress;
+		dbg.fftOutputFadeActive = fftDebugContext_.fftOutputFadeActive;
+		dbg.fftOutputFadeProgress = fftDebugContext_.fftOutputFadeProgress;
+		dbg.fftWetPreWindowFadeL = fftDebugContext_.fftWetPreWindowFadeL;
+		dbg.fftWetPostWindowFadeL = fftDebugContext_.fftWetPostWindowFadeL;
+		dbg.fftWetPreOutputFadeL = fftDebugContext_.fftWetPreOutputFadeL;
+		dbg.fftWetPostOutputFadeL = fftDebugContext_.fftWetPostOutputFadeL;
+		dbg.fftWetPreWindowDeltaL = fftDebugContext_.fftWetPreWindowDeltaL;
+		dbg.fftWetPostWindowDeltaL = fftDebugContext_.fftWetPostWindowDeltaL;
+		dbg.fftWetPostOutputDeltaL = fftDebugContext_.fftWetPostOutputDeltaL;
+		dbg.rawWindowChanged = fftDebugContext_.rawWindowChanged;
+		dbg.rawAmountChanged = fftDebugContext_.rawAmountChanged;
+		dbg.fftWindowMotionActive = fftDebugContext_.fftWindowMotionActive;
+		dbg.fftWindowApplyDelayRemaining = fftDebugContext_.fftWindowApplyDelayRemaining;
+		dbg.fftWindowCaptureRemaining = fftDebugContext_.fftWindowCaptureRemaining;
+		dbg.fftDuckGain = fftDebugContext_.fftDuckGain;
+		dbg.engineFadeOldOutL = fftDebugContext_.engineFadeOldOutL;
+		dbg.engineFadeOldMix = fftDebugContext_.engineFadeOldMix;
+		dbg.engineFadeNewMix = fftDebugContext_.engineFadeNewMix;
+		dbg.fftOutputFadeOldOutL = fftDebugContext_.fftOutputFadeOldOutL;
+		dbg.fftOutputFadeOldMix = fftDebugContext_.fftOutputFadeOldMix;
+		dbg.fftOutputFadeNewMix = fftDebugContext_.fftOutputFadeNewMix;
+		fftDebugTrace_.record (dbg);
 	}
-	dbg.spectralFluxL = debugSpectralFlux[0];
-	dbg.spectralFluxR = debugSpectralFlux[1];
-	dbg.phaseResetMixL = debugPhaseResetMix[0];
-	dbg.phaseResetMixR = debugPhaseResetMix[1];
-	dbg.lockStrengthMeanL = debugLockStrengthMean[0];
-	dbg.lockStrengthMeanR = debugLockStrengthMean[1];
-	const double cycleDurationUs = juce::Time::highResolutionTicksToSeconds (
-		juce::Time::getHighResolutionTicks() - cycleStartTicks) * 1000000.0;
-	const double cycleBudgetUs = (currentSampleRate > 0.0 && synthesisHop > 0)
-		? ((double) synthesisHop / currentSampleRate) * 1000000.0
-		: 0.0;
-	dbg.cycleDurationUs = (float) cycleDurationUs;
-	dbg.cycleRealtimeCpuPct = (cycleBudgetUs > 0.0)
-		? (float) ((cycleDurationUs / cycleBudgetUs) * 100.0)
-		: 0.0f;
-	dbg.forwardFftUs = (float) (juce::Time::highResolutionTicksToSeconds (forwardFftTicks) * 1000000.0);
-	dbg.binAnalysisUs = (float) (juce::Time::highResolutionTicksToSeconds (binAnalysisTicks) * 1000000.0);
-	dbg.pitchMapUs = (float) (juce::Time::highResolutionTicksToSeconds (pitchMapTicks) * 1000000.0);
-	dbg.phaseLockUs = (float) (juce::Time::highResolutionTicksToSeconds (phaseLockTicks) * 1000000.0);
-	dbg.ifftOlaUs = (float) (juce::Time::highResolutionTicksToSeconds (ifftOlaTicks) * 1000000.0);
-	dbg.analysisLagSamples = analysisLagSamples;
-	dbg.cyclesSinceReset = stft_.cyclesSinceReset;
-	dbg.alignOn = fftDebugContext_.alignOn;
-	dbg.pdcOn = fftDebugContext_.pdcOn;
-	dbg.reportedLatency = fftDebugContext_.reportedLatency;
-	dbg.dryDelayLen = fftDebugContext_.dryDelayLen;
-	dbg.fftOutputPadLen = fftDebugContext_.fftOutputPadLen;
-	dbg.smoothedWindow = fftDebugContext_.smoothedWindow;
-	dbg.targetWindow = fftDebugContext_.targetWindow;
-	dbg.windowTransitionActive = fftDebugContext_.windowTransitionActive;
-	dbg.windowTransitionProgress = fftDebugContext_.windowTransitionProgress;
-	dbg.fftOutputFadeActive = fftDebugContext_.fftOutputFadeActive;
-	dbg.fftOutputFadeProgress = fftDebugContext_.fftOutputFadeProgress;
-	dbg.fftWetPreWindowFadeL = fftDebugContext_.fftWetPreWindowFadeL;
-	dbg.fftWetPostWindowFadeL = fftDebugContext_.fftWetPostWindowFadeL;
-	dbg.fftWetPreOutputFadeL = fftDebugContext_.fftWetPreOutputFadeL;
-	dbg.fftWetPostOutputFadeL = fftDebugContext_.fftWetPostOutputFadeL;
-	dbg.fftWetPreWindowDeltaL = fftDebugContext_.fftWetPreWindowDeltaL;
-	dbg.fftWetPostWindowDeltaL = fftDebugContext_.fftWetPostWindowDeltaL;
-	dbg.fftWetPostOutputDeltaL = fftDebugContext_.fftWetPostOutputDeltaL;
-	dbg.rawWindowChanged = fftDebugContext_.rawWindowChanged;
-	dbg.rawAmountChanged = fftDebugContext_.rawAmountChanged;
-	dbg.fftWindowMotionActive = fftDebugContext_.fftWindowMotionActive;
-	dbg.fftWindowApplyDelayRemaining = fftDebugContext_.fftWindowApplyDelayRemaining;
-	dbg.fftWindowCaptureRemaining = fftDebugContext_.fftWindowCaptureRemaining;
-	dbg.fftDuckGain = fftDebugContext_.fftDuckGain;
-	dbg.fftWindowMuteFadeOutRemaining = fftDebugContext_.fftWindowMuteFadeOutRemaining;
-	dbg.fftWindowMuteFadeInRemaining = fftDebugContext_.fftWindowMuteFadeInRemaining;
-	dbg.engineFadeOldOutL = fftDebugContext_.engineFadeOldOutL;
-	dbg.engineFadeOldMix = fftDebugContext_.engineFadeOldMix;
-	dbg.engineFadeNewMix = fftDebugContext_.engineFadeNewMix;
-	dbg.fftOutputFadeOldOutL = fftDebugContext_.fftOutputFadeOldOutL;
-	dbg.fftOutputFadeOldMix = fftDebugContext_.fftOutputFadeOldMix;
-	dbg.fftOutputFadeNewMix = fftDebugContext_.fftOutputFadeNewMix;
-	fftDebugTrace_.record (dbg);
+   #endif
 	stft_.identityErrSqAccum[0] = 0.0;
 	stft_.identityErrSqAccum[1] = 0.0;
 	stft_.identityRefSqAccum[0] = 0.0;
@@ -1853,7 +1889,12 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
                                                           float pitchRateR, bool wideMode)
 {
 	if (fft_ == nullptr || inputBufLen_ <= 0 || fftSize <= 0) return;
-	const auto cycleStartTicks = juce::Time::getHighResolutionTicks();
+   #if JUCE_DEBUG
+	const bool fftDebugEnabled = DeveloperDiagnosticsConfig::kEnableFftTraceRecording;
+   #else
+	constexpr bool fftDebugEnabled = false;
+   #endif
+	const auto cycleStartTicks = fftDebugEnabled ? juce::Time::getHighResolutionTicks() : juce::int64 { 0 };
 
 	const int   numBins    = fftSize / 2 + 1;
 	const int   outBufLen  = kStftOutBufLen;
@@ -1877,7 +1918,7 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 			wrappedReadPos += (double) inputBufLen_;
 		readStart = ((int) std::floor (wrappedReadPos)) & inputBufMask_;
 	}
-	const double analysisLagSamples = (inputBufLen_ > 0)
+	const double analysisLagSamples = (fftDebugEnabled && inputBufLen_ > 0)
 		? std::fmod ((double) inputBufWritePos_ - analysisReadBefore + (double) inputBufLen_,
 		             (double) inputBufLen_)
 		: 0.0;
@@ -2118,92 +2159,95 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 			stft_.analysisReadPos += (double) inputBufLen_;
 	}
 
-	FftDebugEntry dbg {};
-	dbg.blockIndex = fftDebugContext_.blockIndex;
-	dbg.sampleIndex = fftDebugContext_.sampleIndex;
-	dbg.eventType = 0;
-	dbg.engine = fftDebugContext_.engine;
-	dbg.amount = fftDebugContext_.amount;
-	dbg.mod = fftDebugContext_.mod;
-	dbg.speed = fftDebugContext_.speed;
-	dbg.pitchRate = pitchRate;
-	dbg.windowSamples = fftDebugContext_.windowSamples;
-	dbg.fftSize = fftSize;
-	dbg.targetAnalysisHop = fftDebugContext_.targetAnalysisHop;
-	dbg.filteredAnalysisHop = fftDebugContext_.filteredAnalysisHop;
-	dbg.analysisHop = (fftDebugContext_.analysisHopDebug >= 0)
-		? fftDebugContext_.analysisHopDebug
-		: synthesisHop;
-	dbg.synthesisHop = synthesisHop;
-	dbg.style = fftDebugContext_.style;
-	dbg.reverseOn = reverseOn ? 1 : 0;
-	dbg.triggerOn = fftDebugContext_.triggerOn;
-	dbg.wideMode = wideMode ? 1 : 0;
-	dbg.passthrough = ((holdCoeff < 0.001f) && (std::abs (pitchRate - 1.0f) <= 0.001f)) ? 1 : 0;
-	dbg.analysisReadBefore = analysisReadBefore;
-	dbg.analysisReadAfter = stft_.analysisReadPos;
-	dbg.frameRmsL = debugFrameRms[0];
-	dbg.frameRmsR = debugFrameRms[1];
-	dbg.outputRmsL = debugOutputRms[0];
-	dbg.outputRmsR = debugOutputRms[1];
-	dbg.outputStartDeltaL = debugOutputStartDelta[0];
-	dbg.outputStartDeltaR = debugOutputStartDelta[1];
-	dbg.outputNormAtRead = normAtRead;
-	dbg.previewOutL = previewOutL;
-	dbg.previewOutR = previewOutR;
-	if (stft_.identitySampleCount > 0)
+   #if JUCE_DEBUG
+	if (fftDebugEnabled)
 	{
-		dbg.identityRefRmsL = std::sqrt ((float) (stft_.identityRefSqAccum[0] / (double) stft_.identitySampleCount));
-		dbg.identityRefRmsR = std::sqrt ((float) (stft_.identityRefSqAccum[1] / (double) stft_.identitySampleCount));
-		dbg.identityErrRmsL = std::sqrt ((float) (stft_.identityErrSqAccum[0] / (double) stft_.identitySampleCount));
-		dbg.identityErrRmsR = std::sqrt ((float) (stft_.identityErrSqAccum[1] / (double) stft_.identitySampleCount));
-	dbg.identityMaxAbsErrL = stft_.identityMaxAbsErr[0];
-	dbg.identityMaxAbsErrR = stft_.identityMaxAbsErr[1];
+		FftDebugEntry dbg {};
+		dbg.blockIndex = fftDebugContext_.blockIndex;
+		dbg.sampleIndex = fftDebugContext_.sampleIndex;
+		dbg.eventType = 0;
+		dbg.engine = fftDebugContext_.engine;
+		dbg.amount = fftDebugContext_.amount;
+		dbg.mod = fftDebugContext_.mod;
+		dbg.speed = fftDebugContext_.speed;
+		dbg.pitchRate = pitchRate;
+		dbg.windowSamples = fftDebugContext_.windowSamples;
+		dbg.fftSize = fftSize;
+		dbg.targetAnalysisHop = fftDebugContext_.targetAnalysisHop;
+		dbg.filteredAnalysisHop = fftDebugContext_.filteredAnalysisHop;
+		dbg.analysisHop = (fftDebugContext_.analysisHopDebug >= 0)
+			? fftDebugContext_.analysisHopDebug
+			: synthesisHop;
+		dbg.synthesisHop = synthesisHop;
+		dbg.style = fftDebugContext_.style;
+		dbg.reverseOn = reverseOn ? 1 : 0;
+		dbg.triggerOn = fftDebugContext_.triggerOn;
+		dbg.wideMode = wideMode ? 1 : 0;
+		dbg.passthrough = ((holdCoeff < 0.001f) && (std::abs (pitchRate - 1.0f) <= 0.001f)) ? 1 : 0;
+		dbg.analysisReadBefore = analysisReadBefore;
+		dbg.analysisReadAfter = stft_.analysisReadPos;
+		dbg.frameRmsL = debugFrameRms[0];
+		dbg.frameRmsR = debugFrameRms[1];
+		dbg.outputRmsL = debugOutputRms[0];
+		dbg.outputRmsR = debugOutputRms[1];
+		dbg.outputStartDeltaL = debugOutputStartDelta[0];
+		dbg.outputStartDeltaR = debugOutputStartDelta[1];
+		dbg.outputNormAtRead = normAtRead;
+		dbg.previewOutL = previewOutL;
+		dbg.previewOutR = previewOutR;
+		if (stft_.identitySampleCount > 0)
+		{
+			dbg.identityRefRmsL = std::sqrt ((float) (stft_.identityRefSqAccum[0] / (double) stft_.identitySampleCount));
+			dbg.identityRefRmsR = std::sqrt ((float) (stft_.identityRefSqAccum[1] / (double) stft_.identitySampleCount));
+			dbg.identityErrRmsL = std::sqrt ((float) (stft_.identityErrSqAccum[0] / (double) stft_.identitySampleCount));
+			dbg.identityErrRmsR = std::sqrt ((float) (stft_.identityErrSqAccum[1] / (double) stft_.identitySampleCount));
+			dbg.identityMaxAbsErrL = stft_.identityMaxAbsErr[0];
+			dbg.identityMaxAbsErrR = stft_.identityMaxAbsErr[1];
+		}
+		const double cycleDurationUs = juce::Time::highResolutionTicksToSeconds (
+			juce::Time::getHighResolutionTicks() - cycleStartTicks) * 1000000.0;
+		const double cycleBudgetUs = (currentSampleRate > 0.0 && synthesisHop > 0)
+			? ((double) synthesisHop / currentSampleRate) * 1000000.0
+			: 0.0;
+		dbg.cycleDurationUs = (float) cycleDurationUs;
+		dbg.cycleRealtimeCpuPct = (cycleBudgetUs > 0.0)
+			? (float) ((cycleDurationUs / cycleBudgetUs) * 100.0)
+			: 0.0f;
+		dbg.analysisLagSamples = analysisLagSamples;
+		dbg.cyclesSinceReset = stft_.cyclesSinceReset;
+		dbg.alignOn = fftDebugContext_.alignOn;
+		dbg.pdcOn = fftDebugContext_.pdcOn;
+		dbg.reportedLatency = fftDebugContext_.reportedLatency;
+		dbg.dryDelayLen = fftDebugContext_.dryDelayLen;
+		dbg.fftOutputPadLen = fftDebugContext_.fftOutputPadLen;
+		dbg.smoothedWindow = fftDebugContext_.smoothedWindow;
+		dbg.targetWindow = fftDebugContext_.targetWindow;
+		dbg.windowTransitionActive = fftDebugContext_.windowTransitionActive;
+		dbg.windowTransitionProgress = fftDebugContext_.windowTransitionProgress;
+		dbg.fftOutputFadeActive = fftDebugContext_.fftOutputFadeActive;
+		dbg.fftOutputFadeProgress = fftDebugContext_.fftOutputFadeProgress;
+		dbg.fftWetPreWindowFadeL = fftDebugContext_.fftWetPreWindowFadeL;
+		dbg.fftWetPostWindowFadeL = fftDebugContext_.fftWetPostWindowFadeL;
+		dbg.fftWetPreOutputFadeL = fftDebugContext_.fftWetPreOutputFadeL;
+		dbg.fftWetPostOutputFadeL = fftDebugContext_.fftWetPostOutputFadeL;
+		dbg.fftWetPreWindowDeltaL = fftDebugContext_.fftWetPreWindowDeltaL;
+		dbg.fftWetPostWindowDeltaL = fftDebugContext_.fftWetPostWindowDeltaL;
+		dbg.fftWetPostOutputDeltaL = fftDebugContext_.fftWetPostOutputDeltaL;
+		dbg.rawWindowChanged = fftDebugContext_.rawWindowChanged;
+		dbg.rawAmountChanged = fftDebugContext_.rawAmountChanged;
+		dbg.fftWindowMotionActive = fftDebugContext_.fftWindowMotionActive;
+		dbg.fftWindowApplyDelayRemaining = fftDebugContext_.fftWindowApplyDelayRemaining;
+		dbg.fftWindowCaptureRemaining = fftDebugContext_.fftWindowCaptureRemaining;
+		dbg.fftDuckGain = fftDebugContext_.fftDuckGain;
+		dbg.engineFadeOldOutL = fftDebugContext_.engineFadeOldOutL;
+		dbg.engineFadeOldMix = fftDebugContext_.engineFadeOldMix;
+		dbg.engineFadeNewMix = fftDebugContext_.engineFadeNewMix;
+		dbg.fftOutputFadeOldOutL = fftDebugContext_.fftOutputFadeOldOutL;
+		dbg.fftOutputFadeOldMix = fftDebugContext_.fftOutputFadeOldMix;
+		dbg.fftOutputFadeNewMix = fftDebugContext_.fftOutputFadeNewMix;
+		fftDebugTrace_.record (dbg);
 	}
-	const double cycleDurationUs = juce::Time::highResolutionTicksToSeconds (
-		juce::Time::getHighResolutionTicks() - cycleStartTicks) * 1000000.0;
-	const double cycleBudgetUs = (currentSampleRate > 0.0 && synthesisHop > 0)
-		? ((double) synthesisHop / currentSampleRate) * 1000000.0
-		: 0.0;
-	dbg.cycleDurationUs = (float) cycleDurationUs;
-	dbg.cycleRealtimeCpuPct = (cycleBudgetUs > 0.0)
-		? (float) ((cycleDurationUs / cycleBudgetUs) * 100.0)
-		: 0.0f;
-	dbg.analysisLagSamples = analysisLagSamples;
-	dbg.cyclesSinceReset = stft_.cyclesSinceReset;
-	dbg.alignOn = fftDebugContext_.alignOn;
-	dbg.pdcOn = fftDebugContext_.pdcOn;
-	dbg.reportedLatency = fftDebugContext_.reportedLatency;
-	dbg.dryDelayLen = fftDebugContext_.dryDelayLen;
-	dbg.fftOutputPadLen = fftDebugContext_.fftOutputPadLen;
-	dbg.smoothedWindow = fftDebugContext_.smoothedWindow;
-	dbg.targetWindow = fftDebugContext_.targetWindow;
-	dbg.windowTransitionActive = fftDebugContext_.windowTransitionActive;
-	dbg.windowTransitionProgress = fftDebugContext_.windowTransitionProgress;
-	dbg.fftOutputFadeActive = fftDebugContext_.fftOutputFadeActive;
-	dbg.fftOutputFadeProgress = fftDebugContext_.fftOutputFadeProgress;
-	dbg.fftWetPreWindowFadeL = fftDebugContext_.fftWetPreWindowFadeL;
-	dbg.fftWetPostWindowFadeL = fftDebugContext_.fftWetPostWindowFadeL;
-	dbg.fftWetPreOutputFadeL = fftDebugContext_.fftWetPreOutputFadeL;
-	dbg.fftWetPostOutputFadeL = fftDebugContext_.fftWetPostOutputFadeL;
-	dbg.fftWetPreWindowDeltaL = fftDebugContext_.fftWetPreWindowDeltaL;
-	dbg.fftWetPostWindowDeltaL = fftDebugContext_.fftWetPostWindowDeltaL;
-	dbg.fftWetPostOutputDeltaL = fftDebugContext_.fftWetPostOutputDeltaL;
-	dbg.rawWindowChanged = fftDebugContext_.rawWindowChanged;
-	dbg.rawAmountChanged = fftDebugContext_.rawAmountChanged;
-	dbg.fftWindowMotionActive = fftDebugContext_.fftWindowMotionActive;
-	dbg.fftWindowApplyDelayRemaining = fftDebugContext_.fftWindowApplyDelayRemaining;
-	dbg.fftWindowCaptureRemaining = fftDebugContext_.fftWindowCaptureRemaining;
-	dbg.fftDuckGain = fftDebugContext_.fftDuckGain;
-	dbg.fftWindowMuteFadeOutRemaining = fftDebugContext_.fftWindowMuteFadeOutRemaining;
-	dbg.fftWindowMuteFadeInRemaining = fftDebugContext_.fftWindowMuteFadeInRemaining;
-	dbg.engineFadeOldOutL = fftDebugContext_.engineFadeOldOutL;
-	dbg.engineFadeOldMix = fftDebugContext_.engineFadeOldMix;
-	dbg.engineFadeNewMix = fftDebugContext_.engineFadeNewMix;
-	dbg.fftOutputFadeOldOutL = fftDebugContext_.fftOutputFadeOldOutL;
-	dbg.fftOutputFadeOldMix = fftDebugContext_.fftOutputFadeOldMix;
-	dbg.fftOutputFadeNewMix = fftDebugContext_.fftOutputFadeNewMix;
-	fftDebugTrace_.record (dbg);
+   #endif
 	stft_.identityErrSqAccum[0] = 0.0;
 	stft_.identityErrSqAccum[1] = 0.0;
 	stft_.identityRefSqAccum[0] = 0.0;
@@ -2226,7 +2270,11 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 	float* channelL = buffer.getWritePointer (0);
 	float* channelR = numChannels >= 2 ? buffer.getWritePointer (1) : nullptr;
+#if JUCE_DEBUG
 	const int debugBlockIndex = stretchDebugBlockCounter_++;
+#else
+	constexpr int debugBlockIndex = 0;
+#endif
 
     // Read parameters
 	const float inputGainDb  = loadAtomicOrDefault (inputParam, kInputDefault);
@@ -2417,6 +2465,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 	// Granular read rate: how fast the grain spawn position advances
 	// Granular read rate computed per-sample from smoothedSpeed_ below
+   #if JUCE_DEBUG
+	const bool fftDebugEnabled = DeveloperDiagnosticsConfig::kEnableFftTraceRecording;
 
 	auto populateFftMotionTraceFields = [&] (FftDebugEntry& dbg)
 	{
@@ -2426,13 +2476,11 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		dbg.fftWindowApplyDelayRemaining = fftWindowApplyDelayRemaining_;
 		dbg.fftWindowCaptureRemaining = fftWindowCaptureRemaining_;
 		dbg.fftDuckGain = fftParamDuckGain_;
-		dbg.fftWindowMuteFadeOutRemaining = 0;
-		dbg.fftWindowMuteFadeInRemaining = 0;
 	};
 
 	auto recordFftReset = [&] (int eventType, double capturePos)
 	{
-		if (requestedFftSize <= 0)
+		if (! fftDebugEnabled || requestedFftSize <= 0)
 			return;
 
 		FftDebugEntry dbg {};
@@ -2471,7 +2519,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 	auto recordFftControlEvent = [&] (int eventType)
 	{
-		if (requestedFftSize <= 0)
+		if (! fftDebugEnabled || requestedFftSize <= 0)
 			return;
 
 		FftDebugEntry dbg {};
@@ -2502,9 +2550,17 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		populateFftMotionTraceFields (dbg);
 		fftDebugTrace_.record (dbg);
 	};
+   #else
+	constexpr bool fftDebugEnabled = false;
+	auto recordFftReset = [&] (int, double) {};
+	auto recordFftControlEvent = [&] (int) {};
+   #endif
 
 	auto populateFftDebugContextControlState = [&] (int reportedLatency, int fftOutputPadLen)
 	{
+		if (! fftDebugEnabled)
+			return;
+
 		fftDebugContext_.alignOn = alignOn ? 1 : 0;
 		fftDebugContext_.pdcOn = pdcOn ? 1 : 0;
 		fftDebugContext_.reportedLatency = reportedLatency;
@@ -2518,8 +2574,6 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		fftDebugContext_.fftWindowApplyDelayRemaining = fftWindowApplyDelayRemaining_;
 		fftDebugContext_.fftWindowCaptureRemaining = fftWindowCaptureRemaining_;
 		fftDebugContext_.fftDuckGain = fftParamDuckGain_;
-		fftDebugContext_.fftWindowMuteFadeOutRemaining = 0;
-		fftDebugContext_.fftWindowMuteFadeInRemaining = 0;
 		fftDebugContext_.windowTransitionActive = isWindowTransitionActiveForEngine (engineVal) ? 1 : 0;
 		fftDebugContext_.windowTransitionProgress = getWindowTransitionProgressForEngine (engineVal);
 		fftDebugContext_.fftOutputFadeActive = ((engineVal == 2 || engineVal == 3) && fftOutputFadePos_ > 0 && fftOutputFadeTotal_ > 0) ? 1 : 0;
@@ -2550,6 +2604,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const double captureAbsPos = currentCaptureAbsPos();
 		resetGrainAtCapturePos (captureAbsPos, grainSamples, targetPitchRate, reverseOn, styleVal == 2 && numChannels >= 2);
 
+#if JUCE_DEBUG
 		GrainDebugEntry dbg {};
 		dbg.blockIndex = debugBlockIndex;
 		dbg.sampleIndex = 0;
@@ -2571,6 +2626,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		dbg.lookBehind = computeGrainLookBehind (grainSamples, targetPitchRate, reverseOn, styleVal == 2 && numChannels >= 2);
 		dbg.futureMargin = captureAbsPos - (grainReadPos_ + dbg.lookBehind - 2.0);
 		grainDebugTrace_.record (dbg);
+#endif
 	}
 	triggerWasOn_ = triggerOn;
 
@@ -2594,6 +2650,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			const double captureAbsPos = currentCaptureAbsPos();
 			resetGrainAtCapturePos (captureAbsPos, grainSamples, targetPitchRate, reverseOn, styleVal == 2 && numChannels >= 2);
 
+#if JUCE_DEBUG
 			GrainDebugEntry dbg {};
 			dbg.blockIndex = debugBlockIndex;
 			dbg.sampleIndex = 0;
@@ -2615,6 +2672,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			dbg.lookBehind = computeGrainLookBehind (grainSamples, targetPitchRate, reverseOn, styleVal == 2 && numChannels >= 2);
 			dbg.futureMargin = captureAbsPos - (grainReadPos_ + dbg.lookBehind - 2.0);
 			grainDebugTrace_.record (dbg);
+#endif
 		}
 		else if (triggerOn && (engineVal == 2 || engineVal == 3) && requestedFftSize > 0)
 		{
@@ -2876,6 +2934,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 			auto accumulateIdentityMetrics = [&] (float actualWetL, float actualWetR)
 			{
+				if (! fftDebugEnabled)
+					return;
+
 				const float identityErrL = actualWetL - identityRefL;
 				const float identityErrR = actualWetR - identityRefR;
 				stft_.identityRefSqAccum[0] += (double) identityRefL * (double) identityRefL;
@@ -2889,20 +2950,23 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 			auto runFftCycle = [&] (float cycleSpeed, float cyclePitchRate, float cyclePitchRateR)
 			{
-				fftDebugContext_.blockIndex = debugBlockIndex;
-				fftDebugContext_.sampleIndex = i;
-				fftDebugContext_.engine = engineVal;
-				fftDebugContext_.amount = amountVal;
-				fftDebugContext_.mod = modVal;
-				fftDebugContext_.speed = cycleSpeed;
-				fftDebugContext_.pitchRate = cyclePitchRate;
-				fftDebugContext_.targetAnalysisHop = 0.0f;
-				fftDebugContext_.filteredAnalysisHop = 0.0f;
-				fftDebugContext_.analysisHopDebug = -1;
-				fftDebugContext_.windowSamples = (engineVal == 3) ? fft2GeometryWindowSamples : windowSamples;
-				fftDebugContext_.style = styleVal;
-				fftDebugContext_.reverseOn = reverseOn ? 1 : 0;
-				fftDebugContext_.triggerOn = triggerOn ? 1 : 0;
+				if (fftDebugEnabled)
+				{
+					fftDebugContext_.blockIndex = debugBlockIndex;
+					fftDebugContext_.sampleIndex = i;
+					fftDebugContext_.engine = engineVal;
+					fftDebugContext_.amount = amountVal;
+					fftDebugContext_.mod = modVal;
+					fftDebugContext_.speed = cycleSpeed;
+					fftDebugContext_.pitchRate = cyclePitchRate;
+					fftDebugContext_.targetAnalysisHop = 0.0f;
+					fftDebugContext_.filteredAnalysisHop = 0.0f;
+					fftDebugContext_.analysisHopDebug = -1;
+					fftDebugContext_.windowSamples = (engineVal == 3) ? fft2GeometryWindowSamples : windowSamples;
+					fftDebugContext_.style = styleVal;
+					fftDebugContext_.reverseOn = reverseOn ? 1 : 0;
+					fftDebugContext_.triggerOn = triggerOn ? 1 : 0;
+				}
 				populateFftDebugContextControlState (reportedLatency, fftOutputPadLen);
 
 				if (engineVal == 3)
@@ -3383,6 +3447,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 						stretchTransitionToUnity_ = false;
 					}
 
+#if JUCE_DEBUG
 					StretchDebugEntry dbg {};
 					dbg.blockIndex = debugBlockIndex;
 					dbg.sampleIndex = i;
@@ -3399,6 +3464,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					dbg.nearUnity = 1;
 					dbg.segInputStart = wsola_.segInputStart;
 					stretchDebugTrace_.record (dbg);
+#endif
 				}
 
 				if (stretchTransitionToUnity_ && stretchTransitionRemaining_ > 0)
@@ -3577,6 +3643,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 							readPosR += (double) readRateR;
 					}
 
+#if JUCE_DEBUG
 					StretchDebugEntry dbg {};
 					dbg.blockIndex = debugBlockIndex;
 					dbg.sampleIndex = i;
@@ -3607,6 +3674,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					dbg.overlapRmseL = match.overlapRmseL;
 					dbg.overlapRmseR = match.overlapRmseR;
 					stretchDebugTrace_.record (dbg);
+#endif
 
 					wsola_.nextSynthPos = (wsola_.nextSynthPos + synthesisHop) & outMask;
 					wsola_.samplesUntilNextSeg = synthesisHop;
@@ -3746,6 +3814,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					}
 				}
 
+#if JUCE_DEBUG
 				GrainDebugEntry dbg {};
 				dbg.blockIndex = debugBlockIndex;
 				dbg.sampleIndex = i;
@@ -3769,6 +3838,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				dbg.lookBehind = grainLookBehind;
 				dbg.futureMargin = grainCapturePos - (spawnPos + grainLookBehind - 2.0);
 				grainDebugTrace_.record (dbg);
+#endif
 			};
 
 			const auto mixGranularGrains = [&]()
@@ -4085,9 +4155,10 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		float* left = buffer.getWritePointer (0);
 		float* right = (numChannels >= 2) ? buffer.getWritePointer (1) : nullptr;
 
+	   #if JUCE_DEBUG
 		auto recordFftOutputTrace = [&] (int eventType, int sampleIndex, float preFadeL, float outL)
 		{
-			if (! triggerOn || (engineVal != 2 && engineVal != 3) || stft_.activeFftSize <= 0)
+			if (! fftDebugEnabled || ! triggerOn || (engineVal != 2 && engineVal != 3) || stft_.activeFftSize <= 0)
 				return;
 
 			FftDebugEntry dbg {};
@@ -4128,22 +4199,26 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			dbg.fftWindowApplyDelayRemaining = fftWindowApplyDelayRemaining_;
 			dbg.fftWindowCaptureRemaining = fftWindowCaptureRemaining_;
 			dbg.fftDuckGain = fftParamDuckGain_;
-			dbg.fftWindowMuteFadeOutRemaining = 0;
-			dbg.fftWindowMuteFadeInRemaining = 0;
 			fftDebugTrace_.record (dbg);
 		};
+	   #else
+		auto recordFftOutputTrace = [&] (int, int, float, float) {};
+	   #endif
 
 		for (int i = 0; i < numSamples; ++i)
 		{
 			float outL = left[i];
 			float outR = (right != nullptr) ? right[i] : outL;
 			const float preFadeL = outL;
-			fftDebugContext_.engineFadeOldOutL = 0.0f;
-			fftDebugContext_.engineFadeOldMix = 0.0f;
-			fftDebugContext_.engineFadeNewMix = 0.0f;
-			fftDebugContext_.fftOutputFadeOldOutL = 0.0f;
-			fftDebugContext_.fftOutputFadeOldMix = 0.0f;
-			fftDebugContext_.fftOutputFadeNewMix = 0.0f;
+			if (fftDebugEnabled)
+			{
+				fftDebugContext_.engineFadeOldOutL = 0.0f;
+				fftDebugContext_.engineFadeOldMix = 0.0f;
+				fftDebugContext_.engineFadeNewMix = 0.0f;
+				fftDebugContext_.fftOutputFadeOldOutL = 0.0f;
+				fftDebugContext_.fftOutputFadeOldMix = 0.0f;
+				fftDebugContext_.fftOutputFadeNewMix = 0.0f;
+			}
 
 			if (engineFadePos_ > 0 && engineFadeTotal_ > 0)
 			{
@@ -4159,9 +4234,12 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				const int histIdx = engineFadeReadPos_ & (kWetOutputHistoryLen - 1);
 				const float oldOutL = wetOutputHistory_[0][histIdx];
 				const float oldOutR = wetOutputHistory_[1][histIdx];
-				fftDebugContext_.engineFadeOldOutL = oldOutL;
-				fftDebugContext_.engineFadeOldMix = oldMix;
-				fftDebugContext_.engineFadeNewMix = newMix;
+				if (fftDebugEnabled)
+				{
+					fftDebugContext_.engineFadeOldOutL = oldOutL;
+					fftDebugContext_.engineFadeOldMix = oldMix;
+					fftDebugContext_.engineFadeNewMix = newMix;
+				}
 				outL = oldOutL * oldMix + outL * newMix;
 				outR = oldOutR * oldMix + outR * newMix;
 				engineFadeReadPos_ = (engineFadeReadPos_ + 1) & (kWetOutputHistoryLen - 1);
@@ -4183,9 +4261,12 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				const int histIdx = fftOutputFadeReadPos_ & (kWetOutputHistoryLen - 1);
 				const float oldOutL = wetOutputHistory_[0][histIdx];
 				const float oldOutR = wetOutputHistory_[1][histIdx];
-				fftDebugContext_.fftOutputFadeOldOutL = oldOutL;
-				fftDebugContext_.fftOutputFadeOldMix = oldMix;
-				fftDebugContext_.fftOutputFadeNewMix = newMix;
+				if (fftDebugEnabled)
+				{
+					fftDebugContext_.fftOutputFadeOldOutL = oldOutL;
+					fftDebugContext_.fftOutputFadeOldMix = oldMix;
+					fftDebugContext_.fftOutputFadeNewMix = newMix;
+				}
 				outL = oldOutL * oldMix + outL * newMix;
 				outR = oldOutR * oldMix + outR * newMix;
 				fftOutputFadeReadPos_ = (fftOutputFadeReadPos_ + 1) & (kWetOutputHistoryLen - 1);
@@ -4228,11 +4309,15 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				}
 			}
 
-			fftDebugContext_.fftWetPreOutputFadeL = preFadeL;
-			fftDebugContext_.fftWetPostOutputFadeL = outL;
+			if (fftDebugEnabled)
+			{
+				fftDebugContext_.fftWetPreOutputFadeL = preFadeL;
+				fftDebugContext_.fftWetPostOutputFadeL = outL;
+			}
 			if (engineVal == 2 || engineVal == 3)
 			{
-				fftDebugContext_.fftWetPostOutputDeltaL = outL - fftPrevWetPostOutputL_;
+				if (fftDebugEnabled)
+					fftDebugContext_.fftWetPostOutputDeltaL = outL - fftPrevWetPostOutputL_;
 				if (fftWindowTraceRemaining_ > 0)
 				{
 					recordFftOutputTrace (7, i, preFadeL, outL);
