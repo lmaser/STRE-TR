@@ -552,6 +552,14 @@ private:
 		float fftWetPreWindowDeltaL = 0.0f;
 		float fftWetPostWindowDeltaL = 0.0f;
 		float fftWetPostOutputDeltaL = 0.0f;
+		int   rawWindowChanged = 0;
+		int   rawAmountChanged = 0;
+		int   fftWindowMotionActive = 0;
+		int   fftWindowApplyDelayRemaining = 0;
+		int   fftWindowCaptureRemaining = 0;
+		float fftDuckGain = 1.0f;
+		int   fftWindowMuteFadeOutRemaining = 0;
+		int   fftWindowMuteFadeInRemaining = 0;
 		float engineFadeOldOutL = 0.0f;
 		float engineFadeOldMix = 0.0f;
 		float engineFadeNewMix = 0.0f;
@@ -564,7 +572,7 @@ private:
 	{
 		int    blockIndex         = 0;
 		int    sampleIndex        = 0;
-		int    eventType          = 0; // 0=cycle, 1=trigger_reset, 2=engine_reset, 3=size_reset, 4=unity_exit_reset
+		int    eventType          = 0; // 0=cycle, 1=trigger_reset, 2=engine_reset, 3=size_reset, 4=unity_exit_reset, 5=window_change, 6=amount_change, 7=window_trace, 8=amount_trace
 		int    engine             = 0;
 		float  amount             = 0.0f;
 		float  mod                = 0.0f;
@@ -635,6 +643,14 @@ private:
 		float  fftWetPreWindowDeltaL = 0.0f;
 		float  fftWetPostWindowDeltaL = 0.0f;
 		float  fftWetPostOutputDeltaL = 0.0f;
+		int    rawWindowChanged = 0;
+		int    rawAmountChanged = 0;
+		int    fftWindowMotionActive = 0;
+		int    fftWindowApplyDelayRemaining = 0;
+		int    fftWindowCaptureRemaining = 0;
+		float  fftDuckGain = 1.0f;
+		int    fftWindowMuteFadeOutRemaining = 0;
+		int    fftWindowMuteFadeInRemaining = 0;
 		float  engineFadeOldOutL = 0.0f;
 		float  engineFadeOldMix = 0.0f;
 		float  engineFadeNewMix = 0.0f;
@@ -682,6 +698,8 @@ private:
 					"fft_output_fade_active,fft_output_fade_progress,"
 					"fft_wet_pre_window_fade_l,fft_wet_post_window_fade_l,fft_wet_pre_output_fade_l,fft_wet_post_output_fade_l,"
 					"fft_wet_pre_window_delta_l,fft_wet_post_window_delta_l,fft_wet_post_output_delta_l,"
+					"raw_window_changed,raw_amount_changed,fft_window_motion_active,fft_window_apply_delay_remaining,fft_window_capture_remaining,"
+					"fft_duck_gain,fft_window_mute_fade_out_remaining,fft_window_mute_fade_in_remaining,"
 					"engine_fade_old_out_l,engine_fade_old_mix,engine_fade_new_mix,"
 					"fft_output_fade_old_out_l,fft_output_fade_old_mix,fft_output_fade_new_mix\n",
 					false, false, nullptr);
@@ -695,6 +713,10 @@ private:
 						: (e.eventType == 2) ? "engine_reset"
 						: (e.eventType == 3) ? "size_reset"
 						: (e.eventType == 4) ? "unity_exit_reset"
+						: (e.eventType == 5) ? "window_change"
+						: (e.eventType == 6) ? "amount_change"
+						: (e.eventType == 7) ? "window_trace"
+						: (e.eventType == 8) ? "amount_trace"
 						: "cycle";
 					juce::String line;
 					line << e.blockIndex << ","
@@ -770,6 +792,14 @@ private:
 					     << juce::String (e.fftWetPreWindowDeltaL, 6) << ","
 					     << juce::String (e.fftWetPostWindowDeltaL, 6) << ","
 					     << juce::String (e.fftWetPostOutputDeltaL, 6) << ","
+					     << e.rawWindowChanged << ","
+					     << e.rawAmountChanged << ","
+					     << e.fftWindowMotionActive << ","
+					     << e.fftWindowApplyDelayRemaining << ","
+					     << e.fftWindowCaptureRemaining << ","
+					     << juce::String (e.fftDuckGain, 6) << ","
+					     << e.fftWindowMuteFadeOutRemaining << ","
+					     << e.fftWindowMuteFadeInRemaining << ","
 					     << juce::String (e.engineFadeOldOutL, 6) << ","
 					     << juce::String (e.engineFadeOldMix, 6) << ","
 					     << juce::String (e.engineFadeNewMix, 6) << ","
@@ -873,21 +903,40 @@ private:
 	float fftPrevWetPreWindowL_ = 0.0f;
 	float fftPrevWetPostWindowL_ = 0.0f;
 	float fftPrevWetPostOutputL_ = 0.0f;
+	float fftParamDuckGain_ = 1.0f;
+	int   fftParamDuckHoldRemaining_ = 0;
+	int   fftWindowApplyDelayRemaining_ = 0;
+	int   fftWindowCaptureRemaining_ = 0;
+	int   fftCapturedWindowVal_ = (int) kWindowDefault;
+	int   fftPendingWindowVal_ = (int) kWindowDefault;
+	int   fftWindowTraceRemaining_ = 0;
+	int   fftAmountTraceRemaining_ = 0;
+	bool  fftWindowMuteWasActive_ = false;
+	int   fftWindowMuteFadeOutRemaining_ = 0;
+	int   fftWindowMuteFadeOutTotal_ = 0;
+	int   fftWindowMuteFadeInRemaining_ = 0;
+	int   fftWindowMuteFadeInTotal_ = 0;
+	float fftWindowMuteStartL_ = 0.0f;
+	float fftWindowMuteStartR_ = 0.0f;
+	float fft2HoldCoeffSmoothed_ = 0.0f;
+	int   prevFftDuckWindowVal_ = 0;
+	float prevFftDuckAmountVal_ = 0.0f;
+	int   prevFftDuckEngineVal_ = -1;
+	bool  prevFftDuckTriggerOn_ = false;
 	int   fft1WindowTransitionRemaining_ = 0;
 	int   fft1WindowTransitionTotal_ = 0;
-	int   fft1WindowTransitionReadPos_ = 0;
 	int   fftOutputPadWritePos_ = 0;
 	bool  fftUnityBypassActive_ = false;
 	int   fftStartupWarmupRemainingCycles_ = 0;
 	int   fftTransitionRemaining_ = 0;
 	int   fftTransitionTotal_ = 0;
+	int   fftTransitionHoldSamples_ = 0;
 	bool  fftTransitionToUnity_ = false;
 	int   fftFreezeTransitionRemaining_ = 0;
 	int   fftFreezeTransitionTotal_ = 0;
 	int   fftFreezeTransitionReadPos_ = 0;
 	int   fft2WindowTransitionRemaining_ = 0;
 	int   fft2WindowTransitionTotal_ = 0;
-	int   fft2WindowTransitionReadPos_ = 0;
 	bool  fftExplicitFreezeActive_ = false;
 	bool  fftExplicitFreezeCapturePending_ = false;
 
@@ -895,7 +944,9 @@ private:
 	float wetOutputHistory_[2][kWetOutputHistoryLen] = {};
 	int   wetOutputHistoryWritePos_ = 0;
 	int   engineFadeReadPos_ = 0;
+	int   engineFadeHoldSamples_ = 0;
 	int   fftOutputFadeReadPos_ = 0;
+	int   fftOutputFadeHoldSamples_ = 0;
 
 	void  ensureFft (int fftSize);
 	void  resetStftAtPos (double capturePos, int fftSize) noexcept;
@@ -904,6 +955,7 @@ private:
 	int   recommendedFftSynthHop (int fftSize) const noexcept;
 	int   samplesForMs (double ms) const noexcept;
 	int   recommendedFftWindowCrossfadeSamples() const noexcept;
+	int   recommendedFft2WindowCrossfadeSamples (int fromFftSize, int toFftSize) const noexcept;
 	int   recommendedEngineCrossfadeSamples() const noexcept;
 	void  performStftCycle (int fftSize, int analysisHop, int synthesisHop,
 	                        float pitchRate, bool reverseOn, float pitchRateR = -1.0f,
@@ -958,6 +1010,7 @@ private:
 	bool  filterPre_  = false;
 	bool  tiltPre_    = false;
 	float smoothedWindow_    = (float) kWindowDefault;  // smoothed window size in samples
+	float fft2GeometryLog2Window_ = 0.0f;               // FFT2-only geometry smoother in log2 domain
 	float smoothedSpeed_     = 1.0f;   // smoothed stretch speed (0=freeze, 1=normal)
 	float smoothedPitchRate_ = 1.0f;   // smoothed pitch ratio
 	float windowSmoothStep_  = 0.0045f;

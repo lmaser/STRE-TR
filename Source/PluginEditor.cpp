@@ -1209,9 +1209,9 @@ void STRETRAudioProcessorEditor::updateEngineControls()
     grainSlider.setAlpha (grainActive ? 1.0f : 0.35f);
     grainSlider.setEnabled (grainActive);
 
-    const bool reverseActive = (engineVal != 3);  // no reverse in Spectral Hold (FFT2)
-    reverseButton.setAlpha (reverseActive ? 1.0f : 0.35f);
-    reverseButton.setEnabled (reverseActive);
+	const bool reverseActive = true;
+	reverseButton.setAlpha (reverseActive ? 1.0f : 0.35f);
+	reverseButton.setEnabled (reverseActive);
 
     refreshLegendTextCache();
     repaint();
