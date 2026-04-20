@@ -935,7 +935,6 @@ private:
 	static constexpr int kWetOutputHistoryLen = 8192;
 	float wetOutputHistory_[2][kWetOutputHistoryLen] = {};
 	int   wetOutputHistoryWritePos_ = 0;
-	int   engineFadeReadPos_ = 0;
 	int   engineFadeHoldSamples_ = 0;
 	float engineFadeStartL_ = 0.0f;
 	float engineFadeStartR_ = 0.0f;
@@ -1132,6 +1131,7 @@ private:
 	int   engineFadeTotal_ = 0;
 	int   fftOutputFadePos_ = 0;
 	int   fftOutputFadeTotal_ = 0;
+	int   lastReportedLatency_ = -1;
 
 	// DC blocker state (1-pole HP ~5 Hz)
 	float dcBlockR_        = 0.9997f;

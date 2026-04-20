@@ -423,6 +423,7 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	// Engine crossfade
 	prevEngineVal_ = -1;
 	engineFadePos_ = 0;
+	lastReportedLatency_ = -1;
 
 	// DC blocker
 	dcBlockR_ = 1.0f - (juce::MathConstants<float>::twoPi * 5.0f / (float) sampleRate);
@@ -1081,7 +1082,6 @@ void STRETRAudioProcessor::clearEngineFadeState() noexcept
 
 void STRETRAudioProcessor::resetEngineFadeState() noexcept
 {
-	engineFadeReadPos_ = 0;
 	engineFadeStartL_ = 0.0f;
 	engineFadeStartR_ = 0.0f;
 	clearEngineFadeState();
@@ -2641,8 +2641,6 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const int lastOutIdx = (wetOutputHistoryWritePos_ - 1 + kWetOutputHistoryLen) & (kWetOutputHistoryLen - 1);
 		engineFadeStartL_ = wetOutputHistory_[0][lastOutIdx];
 		engineFadeStartR_ = wetOutputHistory_[1][lastOutIdx];
-		engineFadeReadPos_ = (wetOutputHistoryWritePos_ - engineFadeTotal_ + kWetOutputHistoryLen)
-			& (kWetOutputHistoryLen - 1);
 		clearFftOutputFadeState();
 		if (engineVal == 0 && inputBufLen_ > 0)
 		{
@@ -2733,7 +2731,11 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const int fftSynthHopForAlign = (fftLat > 0) ? recommendedFftSynthHop (fftLat) : 0;
 		const int fftWetLatency = (fftLat > 0) ? (fftLat + fftSynthHopForAlign) : 0;
 		reportedLatency = (pdcOn && fftLat > 0) ? kMaxFftSize : 0;
-		setLatencySamples (reportedLatency);
+		if (reportedLatency != lastReportedLatency_)
+		{
+			setLatencySamples (reportedLatency);
+			lastReportedLatency_ = reportedLatency;
+		}
 		dryDelayLen_ = (alignOn && fftWetLatency > 0)
 			? juce::jmin (fftWetLatency, kDryDelayBufLen - 1)
 			: 0;
