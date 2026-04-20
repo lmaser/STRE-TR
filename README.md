@@ -119,6 +119,7 @@ Grain length for the `GRAIN` engine.
 
 - Only active for `ENGINE = GRAIN`
 - Display is dimmed and disabled in other engines
+- In non-`GRAIN` engines, the label remains visible but the numeric value is hidden
 
 ### ENGINE
 
