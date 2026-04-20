@@ -11,6 +11,7 @@ namespace
 	struct DeveloperDiagnosticsConfig
 	{
 		static constexpr bool kEnableAutoDump = false;
+		static constexpr bool kEnableFftAutoDump = false;
 		static constexpr bool kEnableHeavyFftDebugTrace = false;
 #if JUCE_DEBUG
 		static constexpr bool kCompileStretchDebugTrace = true;
@@ -211,12 +212,18 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 	if constexpr (DeveloperDiagnosticsConfig::kEnableAutoDump)
 	{
 		perfTrace.enableDesktopAutoDump();
+	}
 #if JUCE_DEBUG
+	if constexpr (DeveloperDiagnosticsConfig::kEnableAutoDump)
+	{
 		stretchDebugTrace_.enableDesktopAutoDump();
 		grainDebugTrace_.enableDesktopAutoDump();
-		fftDebugTrace_.enableDesktopAutoDump();
-#endif
 	}
+	if constexpr (DeveloperDiagnosticsConfig::kEnableFftAutoDump)
+	{
+		fftDebugTrace_.enableDesktopAutoDump();
+	}
+#endif
 }
 
 STRETRAudioProcessor::~STRETRAudioProcessor() {}
@@ -358,6 +365,7 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	fft2WindowTransitionTotal_ = 0;
 	fftExplicitFreezeActive_ = false;
 	fftExplicitFreezeCapturePending_ = false;
+	clearFft1FreezeSnapshot();
 	std::memset (wetOutputHistory_, 0, sizeof (wetOutputHistory_));
 	wetOutputHistoryWritePos_ = 0;
 	resetEngineFadeState();
@@ -1057,6 +1065,7 @@ void STRETRAudioProcessor::resetFftWindowDuckPrepareState (int capturedWindowVal
 	fftPendingWindowVal_ = capturedWindowVal;
 	fftWindowTraceRemaining_ = 0;
 	fftAmountTraceRemaining_ = 0;
+	fft1ReentryTraceRemaining_ = 0;
 	prevFftDuckWindowVal_ = capturedWindowVal;
 	prevFftDuckAmountVal_ = amountVal;
 	prevFftDuckEngineVal_ = engineVal;
@@ -1071,6 +1080,7 @@ void STRETRAudioProcessor::clearFftWindowDuckRuntimeState() noexcept
 	fftWindowCaptureRemaining_ = 0;
 	fftWindowTraceRemaining_ = 0;
 	fftAmountTraceRemaining_ = 0;
+	fft1ReentryTraceRemaining_ = 0;
 }
 
 void STRETRAudioProcessor::clearEngineFadeState() noexcept
@@ -1098,6 +1108,109 @@ void STRETRAudioProcessor::resetFftOutputFadeState() noexcept
 {
 	fftOutputFadeReadPos_ = 0;
 	clearFftOutputFadeState();
+}
+
+void STRETRAudioProcessor::clearFft1FreezeSnapshot() noexcept
+{
+	fft1FreezeSnapshot_ = {};
+}
+
+void STRETRAudioProcessor::captureFft1FreezeSnapshot (int styleVal, bool reverseOn) noexcept
+{
+	const bool genericFreezeActive = stft_.hasFrame && (stft_.lastAnalysisHop == 0);
+	const bool explicitFreezeReady = fftExplicitFreezeActive_ && ! fftExplicitFreezeCapturePending_;
+	if (stft_.activeFftSize <= 0 || ! stft_.hasFrame || (! genericFreezeActive && ! explicitFreezeReady))
+	{
+		clearFft1FreezeSnapshot();
+		return;
+	}
+
+	fft1FreezeSnapshot_.fftSize = stft_.activeFftSize;
+	fft1FreezeSnapshot_.style = styleVal;
+	fft1FreezeSnapshot_.reverseOn = reverseOn;
+	fft1FreezeSnapshot_.explicitFreeze = explicitFreezeReady;
+	fft1FreezeSnapshot_.hasFrame = stft_.hasFrame;
+	fft1FreezeSnapshot_.valid = true;
+
+	for (int ch = 0; ch < 2; ++ch)
+	{
+		std::copy (std::begin (stft_.prevPhase[ch]), std::end (stft_.prevPhase[ch]),
+		           std::begin (fft1FreezeSnapshot_.prevPhase[ch]));
+		std::copy (std::begin (stft_.synthPhase[ch]), std::end (stft_.synthPhase[ch]),
+		           std::begin (fft1FreezeSnapshot_.synthPhase[ch]));
+		std::copy (std::begin (stft_.prevMag[ch]), std::end (stft_.prevMag[ch]),
+		           std::begin (fft1FreezeSnapshot_.prevMag[ch]));
+		std::copy (std::begin (stft_.lastMag[ch]), std::end (stft_.lastMag[ch]),
+		           std::begin (fft1FreezeSnapshot_.lastMag[ch]));
+		std::copy (std::begin (stft_.lastFreq[ch]), std::end (stft_.lastFreq[ch]),
+		           std::begin (fft1FreezeSnapshot_.lastFreq[ch]));
+		std::copy (std::begin (stft_.heldMag[ch]), std::end (stft_.heldMag[ch]),
+		           std::begin (fft1FreezeSnapshot_.heldMag[ch]));
+		std::copy (std::begin (stft_.heldFreq[ch]), std::end (stft_.heldFreq[ch]),
+		           std::begin (fft1FreezeSnapshot_.heldFreq[ch]));
+	}
+}
+
+bool STRETRAudioProcessor::canRestoreFft1FreezeSnapshot (int fftSize, int styleVal, bool reverseOn,
+                                                         bool triggerOn, bool targetFreeze,
+                                                         float targetSpeed) const noexcept
+{
+	if (! fft1FreezeSnapshot_.valid || ! triggerOn || ! fft1FreezeSnapshot_.hasFrame)
+		return false;
+
+	const bool reentryFreezeRequested = targetFreeze || (targetSpeed <= 0.0001f);
+	if (! reentryFreezeRequested)
+		return false;
+
+	if (fft1FreezeSnapshot_.fftSize != fftSize
+	    || fft1FreezeSnapshot_.style != styleVal
+	    || fft1FreezeSnapshot_.reverseOn != reverseOn)
+	{
+		return false;
+	}
+
+	if (fft1FreezeSnapshot_.explicitFreeze && ! targetFreeze)
+		return false;
+
+	return true;
+}
+
+void STRETRAudioProcessor::restoreFft1FreezeSnapshot (bool targetFreeze) noexcept
+{
+	if (! fft1FreezeSnapshot_.valid)
+		return;
+
+	for (int ch = 0; ch < 2; ++ch)
+	{
+		std::copy (std::begin (fft1FreezeSnapshot_.prevPhase[ch]), std::end (fft1FreezeSnapshot_.prevPhase[ch]),
+		           std::begin (stft_.prevPhase[ch]));
+		std::copy (std::begin (fft1FreezeSnapshot_.synthPhase[ch]), std::end (fft1FreezeSnapshot_.synthPhase[ch]),
+		           std::begin (stft_.synthPhase[ch]));
+		std::copy (std::begin (fft1FreezeSnapshot_.prevMag[ch]), std::end (fft1FreezeSnapshot_.prevMag[ch]),
+		           std::begin (stft_.prevMag[ch]));
+		std::copy (std::begin (fft1FreezeSnapshot_.lastMag[ch]), std::end (fft1FreezeSnapshot_.lastMag[ch]),
+		           std::begin (stft_.lastMag[ch]));
+		std::copy (std::begin (fft1FreezeSnapshot_.lastFreq[ch]), std::end (fft1FreezeSnapshot_.lastFreq[ch]),
+		           std::begin (stft_.lastFreq[ch]));
+		std::copy (std::begin (fft1FreezeSnapshot_.heldMag[ch]), std::end (fft1FreezeSnapshot_.heldMag[ch]),
+		           std::begin (stft_.heldMag[ch]));
+		std::copy (std::begin (fft1FreezeSnapshot_.heldFreq[ch]), std::end (fft1FreezeSnapshot_.heldFreq[ch]),
+		           std::begin (stft_.heldFreq[ch]));
+	}
+
+	stft_.hasFrame = fft1FreezeSnapshot_.hasFrame;
+	stft_.lastAnalysisHop = 0;
+	stft_.filteredAnalysisHop = -1.0;
+	stft_.analysisHopQuantError = 0.0;
+	stft_.freezeEntryWarmupCycles = 0;
+	stft_.analysisHopSlewNorm = 0.0f;
+	stft_.analysisHopStepNorm = 0.0f;
+	stft_.cyclesSinceReset = 0;
+	fftStartupWarmupRemainingCycles_ = 0;
+	fftFreezeTransitionRemaining_ = 0;
+	fftFreezeTransitionTotal_ = 0;
+	fftExplicitFreezeActive_ = targetFreeze && fft1FreezeSnapshot_.explicitFreeze;
+	fftExplicitFreezeCapturePending_ = false;
 }
 
 int STRETRAudioProcessor::getWindowTransitionRemainingForEngine (int engineVal) const noexcept
@@ -1788,6 +1901,13 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 		dbg.fftSize = fftSize;
 		dbg.targetAnalysisHop = fftDebugContext_.targetAnalysisHop;
 		dbg.filteredAnalysisHop = fftDebugContext_.filteredAnalysisHop;
+		dbg.analysisHopQuantError = fftDebugContext_.analysisHopQuantError;
+		dbg.lastAnalysisHop = fftDebugContext_.lastAnalysisHop;
+		dbg.freezeEntryWarmupCycles = fftDebugContext_.freezeEntryWarmupCycles;
+		dbg.fftStartupWarmupRemainingCycles = fftDebugContext_.fftStartupWarmupRemainingCycles;
+		dbg.fftExplicitFreezeActive = fftDebugContext_.fftExplicitFreezeActive;
+		dbg.fftExplicitFreezeCapturePending = fftDebugContext_.fftExplicitFreezeCapturePending;
+		dbg.fftTargetFreeze = fftDebugContext_.fftTargetFreeze;
 		dbg.analysisHop = analysisHop;
 		dbg.synthesisHop = synthesisHop;
 		dbg.style = fftDebugContext_.style;
@@ -2177,6 +2297,13 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 		dbg.fftSize = fftSize;
 		dbg.targetAnalysisHop = fftDebugContext_.targetAnalysisHop;
 		dbg.filteredAnalysisHop = fftDebugContext_.filteredAnalysisHop;
+		dbg.analysisHopQuantError = fftDebugContext_.analysisHopQuantError;
+		dbg.lastAnalysisHop = fftDebugContext_.lastAnalysisHop;
+		dbg.freezeEntryWarmupCycles = fftDebugContext_.freezeEntryWarmupCycles;
+		dbg.fftStartupWarmupRemainingCycles = fftDebugContext_.fftStartupWarmupRemainingCycles;
+		dbg.fftExplicitFreezeActive = fftDebugContext_.fftExplicitFreezeActive;
+		dbg.fftExplicitFreezeCapturePending = fftDebugContext_.fftExplicitFreezeCapturePending;
+		dbg.fftTargetFreeze = fftDebugContext_.fftTargetFreeze;
 		dbg.analysisHop = (fftDebugContext_.analysisHopDebug >= 0)
 			? fftDebugContext_.analysisHopDebug
 			: synthesisHop;
@@ -2635,6 +2762,14 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	// Engine crossfade: trigger fade-in on engine change
 	if (prevEngineVal_ >= 0 && engineVal != prevEngineVal_)
 	{
+		if (prevEngineVal_ == 2)
+		{
+			if (triggerOn && ! fftUnityBypassActive_ && ! fftTransitionToUnity_)
+				captureFft1FreezeSnapshot (styleVal, reverseOn);
+			else
+				clearFft1FreezeSnapshot();
+		}
+
 		engineFadeHoldSamples_ = samplesForMs (18.0);
 		engineFadeTotal_ = recommendedEngineCrossfadeSamples() + engineFadeHoldSamples_;
 		engineFadePos_ = engineFadeTotal_;
@@ -2642,6 +2777,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		engineFadeStartL_ = wetOutputHistory_[0][lastOutIdx];
 		engineFadeStartR_ = wetOutputHistory_[1][lastOutIdx];
 		clearFftOutputFadeState();
+		fft1ReentryTraceRemaining_ = (engineVal == 2 && triggerOn) ? samplesForMs (80.0) : 0;
 		if (engineVal == 0 && inputBufLen_ > 0)
 		{
 			const double capturePos = (double) ((inputBufWritePos_ - 1 + inputBufLen_) & inputBufMask_);
@@ -2681,6 +2817,22 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		{
 			const double capturePos = (double) ((inputBufWritePos_ - 1 + inputBufLen_) & inputBufMask_);
 			resetStftAtPos (capturePos, requestedFftSize);
+			if (engineVal == 2)
+			{
+				const bool reentryDual = (styleVal == 3 && numChannels >= 2);
+				const bool reentryWide = (styleVal == 2 && numChannels >= 2);
+				const bool fftExplicitFreezeCapable = ! reverseOn
+				                                  && ! reentryDual
+				                                  && ! reentryWide
+				                                  && (requestedFftSize >= 4096)
+				                                  && (std::abs (targetPitchRate - 1.0f) <= 0.0015f);
+				const bool fftTargetFreeze = fftExplicitFreezeCapable && (amountVal >= 99.9f);
+				if (canRestoreFft1FreezeSnapshot (requestedFftSize, styleVal, reverseOn,
+				                                 triggerOn, fftTargetFreeze, targetSpeed))
+				{
+					restoreFft1FreezeSnapshot (fftTargetFreeze);
+				}
+			}
 			recordFftReset (2, capturePos);
 			fftReseededThisBlock = true;
 		}
@@ -2863,6 +3015,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		}
 		if (! triggerOn || engineVal != 2)
 		{
+			fft1ReentryTraceRemaining_ = 0;
 			fftFreezeTransitionRemaining_ = 0;
 			fftFreezeTransitionTotal_ = 0;
 			clearWindowTransitionForEngine (2);
@@ -2968,6 +3121,13 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					fftDebugContext_.pitchRate = cyclePitchRate;
 					fftDebugContext_.targetAnalysisHop = 0.0f;
 					fftDebugContext_.filteredAnalysisHop = 0.0f;
+					fftDebugContext_.analysisHopQuantError = 0.0f;
+					fftDebugContext_.lastAnalysisHop = stft_.lastAnalysisHop;
+					fftDebugContext_.freezeEntryWarmupCycles = stft_.freezeEntryWarmupCycles;
+					fftDebugContext_.fftStartupWarmupRemainingCycles = fftStartupWarmupRemainingCycles_;
+					fftDebugContext_.fftExplicitFreezeActive = fftExplicitFreezeActive_ ? 1 : 0;
+					fftDebugContext_.fftExplicitFreezeCapturePending = fftExplicitFreezeCapturePending_ ? 1 : 0;
+					fftDebugContext_.fftTargetFreeze = 0;
 					fftDebugContext_.analysisHopDebug = -1;
 					fftDebugContext_.windowSamples = (engineVal == 3) ? fft2GeometryWindowSamples : windowSamples;
 					fftDebugContext_.style = styleVal;
@@ -2975,6 +3135,15 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					fftDebugContext_.triggerOn = triggerOn ? 1 : 0;
 				}
 				populateFftDebugContextControlState (reportedLatency, fftOutputPadLen);
+				if (fftDebugEnabled)
+				{
+					fftDebugContext_.lastAnalysisHop = stft_.lastAnalysisHop;
+					fftDebugContext_.freezeEntryWarmupCycles = stft_.freezeEntryWarmupCycles;
+					fftDebugContext_.fftStartupWarmupRemainingCycles = fftStartupWarmupRemainingCycles_;
+					fftDebugContext_.fftExplicitFreezeActive = fftExplicitFreezeActive_ ? 1 : 0;
+					fftDebugContext_.fftExplicitFreezeCapturePending = fftExplicitFreezeCapturePending_ ? 1 : 0;
+					fftDebugContext_.fftTargetFreeze = fftTargetFreeze ? 1 : 0;
+				}
 
 				if (engineVal == 3)
 				{
@@ -3082,6 +3251,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					}
 					fftDebugContext_.targetAnalysisHop = (float) targetAnalysisHop;
 					fftDebugContext_.filteredAnalysisHop = (float) filteredAnalysisHop;
+					fftDebugContext_.analysisHopQuantError = (float) stft_.analysisHopQuantError;
 
 					if (engineVal == 2)
 					{
@@ -3134,6 +3304,12 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 						}
 
 						stft_.lastAnalysisHop = fftAnalysisHop;
+						fftDebugContext_.lastAnalysisHop = stft_.lastAnalysisHop;
+						fftDebugContext_.freezeEntryWarmupCycles = stft_.freezeEntryWarmupCycles;
+						fftDebugContext_.fftStartupWarmupRemainingCycles = fftStartupWarmupRemainingCycles_;
+						fftDebugContext_.fftExplicitFreezeActive = fftExplicitFreezeActive_ ? 1 : 0;
+						fftDebugContext_.fftExplicitFreezeCapturePending = fftExplicitFreezeCapturePending_ ? 1 : 0;
+						fftDebugContext_.fftTargetFreeze = fftTargetFreeze ? 1 : 0;
 					}
 
 					const bool fft1FreezeHoldRoute = (engineVal == 2) && (fftAnalysisHop <= 0);
@@ -4180,6 +4356,13 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			dbg.windowSamples = (engineVal == 3) ? fft2GeometryWindowSamples : windowSamples;
 			dbg.fftSize = stft_.activeFftSize;
 			dbg.analysisHop = stft_.lastAnalysisHop;
+			dbg.analysisHopQuantError = fftDebugContext_.analysisHopQuantError;
+			dbg.lastAnalysisHop = fftDebugContext_.lastAnalysisHop;
+			dbg.freezeEntryWarmupCycles = fftDebugContext_.freezeEntryWarmupCycles;
+			dbg.fftStartupWarmupRemainingCycles = fftDebugContext_.fftStartupWarmupRemainingCycles;
+			dbg.fftExplicitFreezeActive = fftDebugContext_.fftExplicitFreezeActive;
+			dbg.fftExplicitFreezeCapturePending = fftDebugContext_.fftExplicitFreezeCapturePending;
+			dbg.fftTargetFreeze = fftDebugContext_.fftTargetFreeze;
 			dbg.synthesisHop = recommendedFftSynthHop (stft_.activeFftSize);
 			dbg.style = styleVal;
 			dbg.reverseOn = reverseOn ? 1 : 0;
@@ -4339,6 +4522,11 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				{
 					recordFftOutputTrace (8, i, preFadeL, outL);
 					--fftAmountTraceRemaining_;
+				}
+				if (engineVal == 2 && fft1ReentryTraceRemaining_ > 0)
+				{
+					recordFftOutputTrace (9, i, preFadeL, outL);
+					--fft1ReentryTraceRemaining_;
 				}
 				fftPrevWetPostOutputL_ = outL;
 			}

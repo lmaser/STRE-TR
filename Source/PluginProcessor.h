@@ -533,6 +533,13 @@ private:
 		float pitchRate     = 1.0f;
 		float targetAnalysisHop = 0.0f;
 		float filteredAnalysisHop = 0.0f;
+		float analysisHopQuantError = 0.0f;
+		int   lastAnalysisHop = -1;
+		int   freezeEntryWarmupCycles = 0;
+		int   fftStartupWarmupRemainingCycles = 0;
+		int   fftExplicitFreezeActive = 0;
+		int   fftExplicitFreezeCapturePending = 0;
+		int   fftTargetFreeze = 0;
 		int   analysisHopDebug = -1;
 		int   windowSamples = 0;
 		int   style         = 0;
@@ -575,7 +582,7 @@ private:
 	{
 		int    blockIndex         = 0;
 		int    sampleIndex        = 0;
-		int    eventType          = 0; // 0=cycle, 1=trigger_reset, 2=engine_reset, 3=size_reset, 4=unity_exit_reset, 5=window_change, 6=amount_change, 7=window_trace, 8=amount_trace
+		int    eventType          = 0; // 0=cycle, 1=trigger_reset, 2=engine_reset, 3=size_reset, 4=unity_exit_reset, 5=window_change, 6=amount_change, 7=window_trace, 8=amount_trace, 9=fft1_reentry_trace
 		int    engine             = 0;
 		float  amount             = 0.0f;
 		float  mod                = 0.0f;
@@ -585,6 +592,13 @@ private:
 		int    fftSize            = 0;
 		float  targetAnalysisHop  = 0.0f;
 		float  filteredAnalysisHop = 0.0f;
+		float  analysisHopQuantError = 0.0f;
+		int    lastAnalysisHop    = -1;
+		int    freezeEntryWarmupCycles = 0;
+		int    fftStartupWarmupRemainingCycles = 0;
+		int    fftExplicitFreezeActive = 0;
+		int    fftExplicitFreezeCapturePending = 0;
+		int    fftTargetFreeze = 0;
 		int    analysisHop        = 0;
 		int    synthesisHop       = 0;
 		int    style              = 0;
@@ -686,7 +700,7 @@ private:
 			{
 				stream->writeText (
 					"block_index,sample_index,event,engine,amount,mod,speed,pitch_rate,window_samples,fft_size,"
-					"target_analysis_hop,filtered_analysis_hop,analysis_hop,synthesis_hop,style,reverse_on,trigger_on,wide_mode,passthrough,peak_count_l,"
+					"target_analysis_hop,filtered_analysis_hop,analysis_hop_quant_error,last_analysis_hop,freeze_entry_warmup_cycles,fft_startup_warmup_remaining,fft_explicit_freeze_active,fft_explicit_freeze_capture_pending,fft_target_freeze,analysis_hop,synthesis_hop,style,reverse_on,trigger_on,wide_mode,passthrough,peak_count_l,"
 					"peak_count_r,locked_bins_l,locked_bins_r,analysis_read_before,analysis_read_after,frame_rms_l,"
 					"frame_rms_r,output_rms_l,output_rms_r,output_start_delta_l,output_start_delta_r,"
 					"output_norm_at_read,preview_out_l,preview_out_r,identity_ref_rms_l,identity_ref_rms_r,"
@@ -718,6 +732,7 @@ private:
 						: (e.eventType == 6) ? "amount_change"
 						: (e.eventType == 7) ? "window_trace"
 						: (e.eventType == 8) ? "amount_trace"
+						: (e.eventType == 9) ? "fft1_reentry_trace"
 						: "cycle";
 					juce::String line;
 					line << e.blockIndex << ","
@@ -732,6 +747,13 @@ private:
 					     << e.fftSize << ","
 					     << juce::String (e.targetAnalysisHop, 6) << ","
 					     << juce::String (e.filteredAnalysisHop, 6) << ","
+					     << juce::String (e.analysisHopQuantError, 6) << ","
+					     << e.lastAnalysisHop << ","
+					     << e.freezeEntryWarmupCycles << ","
+					     << e.fftStartupWarmupRemainingCycles << ","
+					     << e.fftExplicitFreezeActive << ","
+					     << e.fftExplicitFreezeCapturePending << ","
+					     << e.fftTargetFreeze << ","
 					     << e.analysisHop << ","
 					     << e.synthesisHop << ","
 					     << e.style << ","
@@ -888,8 +910,26 @@ private:
 		int   activeFftSize    = 0;
 		int   cyclesSinceReset = 0;
 	};
+
+	struct Fft1FreezeSnapshot
+	{
+		float prevPhase[2][kMaxFftBins] = {};
+		float synthPhase[2][kMaxFftBins] = {};
+		float prevMag[2][kMaxFftBins] = {};
+		float lastMag[2][kMaxFftBins] = {};
+		float lastFreq[2][kMaxFftBins] = {};
+		float heldMag[2][kMaxFftBins] = {};
+		float heldFreq[2][kMaxFftBins] = {};
+		int   fftSize = 0;
+		int   style = 0;
+		bool  reverseOn = false;
+		bool  explicitFreeze = false;
+		bool  hasFrame = false;
+		bool  valid = false;
+	};
 	StftState stft_;
 	StftState stftResizeScratch_;
+	Fft1FreezeSnapshot fft1FreezeSnapshot_;
 
 	std::unique_ptr<juce::dsp::FFT> fft_;
 	int   currentFftOrder_ = -1;
@@ -910,6 +950,7 @@ private:
 	int   fftPendingWindowVal_ = (int) kWindowDefault;
 	int   fftWindowTraceRemaining_ = 0;
 	int   fftAmountTraceRemaining_ = 0;
+	int   fft1ReentryTraceRemaining_ = 0;
 	float fft2HoldCoeffSmoothed_ = 0.0f;
 	int   prevFftDuckWindowVal_ = 0;
 	float prevFftDuckAmountVal_ = 0.0f;
@@ -957,6 +998,12 @@ private:
 	void  clearEngineFadeState() noexcept;
 	void  resetFftOutputFadeState() noexcept;
 	void  clearFftOutputFadeState() noexcept;
+	void  clearFft1FreezeSnapshot() noexcept;
+	void  captureFft1FreezeSnapshot (int styleVal, bool reverseOn) noexcept;
+	bool  canRestoreFft1FreezeSnapshot (int fftSize, int styleVal, bool reverseOn,
+	                                    bool triggerOn, bool targetFreeze,
+	                                    float targetSpeed) const noexcept;
+	void  restoreFft1FreezeSnapshot (bool targetFreeze) noexcept;
 	int   getWindowTransitionRemainingForEngine (int engineVal) const noexcept;
 	int   getWindowTransitionTotalForEngine (int engineVal) const noexcept;
 	bool  isWindowTransitionActiveForEngine (int engineVal) const noexcept;
