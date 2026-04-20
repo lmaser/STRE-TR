@@ -1087,6 +1087,82 @@ void STRETRAudioProcessor::resetFftOutputFadeState() noexcept
 	clearFftOutputFadeState();
 }
 
+int STRETRAudioProcessor::getWindowTransitionRemainingForEngine (int engineVal) const noexcept
+{
+	if (engineVal == 2)
+		return fft1WindowTransitionRemaining_;
+	if (engineVal == 3)
+		return fft2WindowTransitionRemaining_;
+	return 0;
+}
+
+int STRETRAudioProcessor::getWindowTransitionTotalForEngine (int engineVal) const noexcept
+{
+	if (engineVal == 2)
+		return fft1WindowTransitionTotal_;
+	if (engineVal == 3)
+		return fft2WindowTransitionTotal_;
+	return 0;
+}
+
+bool STRETRAudioProcessor::isWindowTransitionActiveForEngine (int engineVal) const noexcept
+{
+	return getWindowTransitionRemainingForEngine (engineVal) > 0
+		&& getWindowTransitionTotalForEngine (engineVal) > 0;
+}
+
+float STRETRAudioProcessor::getWindowTransitionProgressForEngine (int engineVal) const noexcept
+{
+	const int remaining = getWindowTransitionRemainingForEngine (engineVal);
+	const int total = getWindowTransitionTotalForEngine (engineVal);
+	if (remaining <= 0 || total <= 0)
+		return 1.0f;
+
+	return juce::jlimit (0.0f, 1.0f, 1.0f - (float) remaining / (float) total);
+}
+
+void STRETRAudioProcessor::startWindowTransitionForEngine (int engineVal, int totalSamples) noexcept
+{
+	if (engineVal == 2)
+	{
+		fft1WindowTransitionTotal_ = totalSamples;
+		fft1WindowTransitionRemaining_ = fft1WindowTransitionTotal_;
+	}
+	else if (engineVal == 3)
+	{
+		fft2WindowTransitionTotal_ = totalSamples;
+		fft2WindowTransitionRemaining_ = fft2WindowTransitionTotal_;
+	}
+}
+
+void STRETRAudioProcessor::clearWindowTransitionForEngine (int engineVal) noexcept
+{
+	if (engineVal == 2)
+	{
+		fft1WindowTransitionRemaining_ = 0;
+		fft1WindowTransitionTotal_ = 0;
+	}
+	else if (engineVal == 3)
+	{
+		fft2WindowTransitionRemaining_ = 0;
+		fft2WindowTransitionTotal_ = 0;
+	}
+}
+
+void STRETRAudioProcessor::decrementWindowTransitionForEngine (int engineVal) noexcept
+{
+	if (engineVal == 2)
+	{
+		if (fft1WindowTransitionRemaining_ > 0)
+			--fft1WindowTransitionRemaining_;
+	}
+	else if (engineVal == 3)
+	{
+		if (fft2WindowTransitionRemaining_ > 0)
+			--fft2WindowTransitionRemaining_;
+	}
+}
+
 int STRETRAudioProcessor::recommendedFftSynthHop (int fftSize) const noexcept
 {
 	if (fftSize <= 0)
@@ -2335,7 +2411,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		fftSizeChanged = triggerOn && ! delayWindowApply && (requestedFftSize != previousFftSize);
 		if (fftWindowApplyDelayRemaining_ > 0)
 			fftWindowApplyDelayRemaining_ = juce::jmax (0, fftWindowApplyDelayRemaining_ - numSamples);
-		const int windowTransitionRemaining = (engineVal == 2) ? fft1WindowTransitionRemaining_ : fft2WindowTransitionRemaining_;
+		const int windowTransitionRemaining = getWindowTransitionRemainingForEngine (engineVal);
 		fftWindowMotionActiveBlock = fftDuckEngineActive
 			&& (fftRawWindowChanged
 			    || fftWindowCaptureRemaining_ > 0
@@ -2374,6 +2450,18 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	// Granular read rate: how fast the grain spawn position advances
 	// Granular read rate computed per-sample from smoothedSpeed_ below
 
+	auto populateFftMotionTraceFields = [&] (FftDebugEntry& dbg)
+	{
+		dbg.rawWindowChanged = fftRawWindowChanged ? 1 : 0;
+		dbg.rawAmountChanged = fftRawAmountChanged ? 1 : 0;
+		dbg.fftWindowMotionActive = fftWindowMotionActiveBlock ? 1 : 0;
+		dbg.fftWindowApplyDelayRemaining = fftWindowApplyDelayRemaining_;
+		dbg.fftWindowCaptureRemaining = fftWindowCaptureRemaining_;
+		dbg.fftDuckGain = fftParamDuckGain_;
+		dbg.fftWindowMuteFadeOutRemaining = fftWindowMuteFadeOutRemaining_;
+		dbg.fftWindowMuteFadeInRemaining = fftWindowMuteFadeInRemaining_;
+	};
+
 	auto recordFftReset = [&] (int eventType, double capturePos)
 	{
 		if (requestedFftSize <= 0)
@@ -2409,14 +2497,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			: 0;
 		dbg.fftOutputPadLen = (pdcOn && requestedFftSize > 0)
 			? juce::jmax (0, kMaxFftSize - requestedFftSize) : 0;
-		dbg.rawWindowChanged = fftRawWindowChanged ? 1 : 0;
-		dbg.rawAmountChanged = fftRawAmountChanged ? 1 : 0;
-		dbg.fftWindowMotionActive = fftWindowMotionActiveBlock ? 1 : 0;
-		dbg.fftWindowApplyDelayRemaining = fftWindowApplyDelayRemaining_;
-		dbg.fftWindowCaptureRemaining = fftWindowCaptureRemaining_;
-		dbg.fftDuckGain = fftParamDuckGain_;
-		dbg.fftWindowMuteFadeOutRemaining = fftWindowMuteFadeOutRemaining_;
-		dbg.fftWindowMuteFadeInRemaining = fftWindowMuteFadeInRemaining_;
+		populateFftMotionTraceFields (dbg);
 		fftDebugTrace_.record (dbg);
 	};
 
@@ -2450,15 +2531,33 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		dbg.fftOutputPadLen = 0;
 		dbg.smoothedWindow = (engineVal == 3) ? (float) fft2GeometryWindowSamples : smoothedWindow_;
 		dbg.targetWindow = targetWindow;
-		dbg.rawWindowChanged = fftRawWindowChanged ? 1 : 0;
-		dbg.rawAmountChanged = fftRawAmountChanged ? 1 : 0;
-		dbg.fftWindowMotionActive = fftWindowMotionActiveBlock ? 1 : 0;
-		dbg.fftWindowApplyDelayRemaining = fftWindowApplyDelayRemaining_;
-		dbg.fftWindowCaptureRemaining = fftWindowCaptureRemaining_;
-		dbg.fftDuckGain = fftParamDuckGain_;
-		dbg.fftWindowMuteFadeOutRemaining = fftWindowMuteFadeOutRemaining_;
-		dbg.fftWindowMuteFadeInRemaining = fftWindowMuteFadeInRemaining_;
+		populateFftMotionTraceFields (dbg);
 		fftDebugTrace_.record (dbg);
+	};
+
+	auto populateFftDebugContextControlState = [&] (int reportedLatency, int fftOutputPadLen)
+	{
+		fftDebugContext_.alignOn = alignOn ? 1 : 0;
+		fftDebugContext_.pdcOn = pdcOn ? 1 : 0;
+		fftDebugContext_.reportedLatency = reportedLatency;
+		fftDebugContext_.dryDelayLen = dryDelayLen_;
+		fftDebugContext_.fftOutputPadLen = fftOutputPadLen;
+		fftDebugContext_.smoothedWindow = (engineVal == 3) ? (float) fft2GeometryWindowSamples : smoothedWindow_;
+		fftDebugContext_.targetWindow = targetWindow;
+		fftDebugContext_.rawWindowChanged = fftRawWindowChanged ? 1 : 0;
+		fftDebugContext_.rawAmountChanged = fftRawAmountChanged ? 1 : 0;
+		fftDebugContext_.fftWindowMotionActive = fftWindowMotionActiveBlock ? 1 : 0;
+		fftDebugContext_.fftWindowApplyDelayRemaining = fftWindowApplyDelayRemaining_;
+		fftDebugContext_.fftWindowCaptureRemaining = fftWindowCaptureRemaining_;
+		fftDebugContext_.fftDuckGain = fftParamDuckGain_;
+		fftDebugContext_.fftWindowMuteFadeOutRemaining = fftWindowMuteFadeOutRemaining_;
+		fftDebugContext_.fftWindowMuteFadeInRemaining = fftWindowMuteFadeInRemaining_;
+		fftDebugContext_.windowTransitionActive = isWindowTransitionActiveForEngine (engineVal) ? 1 : 0;
+		fftDebugContext_.windowTransitionProgress = getWindowTransitionProgressForEngine (engineVal);
+		fftDebugContext_.fftOutputFadeActive = ((engineVal == 2 || engineVal == 3) && fftOutputFadePos_ > 0 && fftOutputFadeTotal_ > 0) ? 1 : 0;
+		fftDebugContext_.fftOutputFadeProgress = (fftOutputFadePos_ > 0 && fftOutputFadeTotal_ > 0)
+			? juce::jlimit (0.0f, 1.0f, 1.0f - (float) fftOutputFadePos_ / (float) fftOutputFadeTotal_)
+			: 1.0f;
 	};
 
 	if (fftRawWindowChanged)
@@ -2581,14 +2680,12 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			& (kWetOutputHistoryLen - 1);
 		if (engineVal == 3)
 		{
-			fft2WindowTransitionTotal_ = fftWindowFadeSamples;
-			fft2WindowTransitionRemaining_ = fft2WindowTransitionTotal_;
+			startWindowTransitionForEngine (engineVal, fftWindowFadeSamples);
 			resizeFft2StateAtPos (capturePos, requestedFftSize);
 		}
 		else
 		{
-			fft1WindowTransitionTotal_ = fftWindowFadeSamples;
-			fft1WindowTransitionRemaining_ = fft1WindowTransitionTotal_;
+			startWindowTransitionForEngine (engineVal, fftWindowFadeSamples);
 			resizeStftAtPos (capturePos, requestedFftSize);
 		}
 		recordFftReset (3, capturePos);
@@ -2735,16 +2832,14 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		{
 			fftFreezeTransitionRemaining_ = 0;
 			fftFreezeTransitionTotal_ = 0;
-			fft1WindowTransitionRemaining_ = 0;
-			fft1WindowTransitionTotal_ = 0;
+			clearWindowTransitionForEngine (2);
 			fftExplicitFreezeActive_ = false;
 			fftExplicitFreezeCapturePending_ = false;
 			fftStartupWarmupRemainingCycles_ = 0;
 		}
 		if (! triggerOn || engineVal != 3)
 		{
-			fft2WindowTransitionRemaining_ = 0;
-			fft2WindowTransitionTotal_ = 0;
+			clearWindowTransitionForEngine (3);
 		}
 
 		if (! triggerOn)
@@ -2840,35 +2935,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				fftDebugContext_.style = styleVal;
 				fftDebugContext_.reverseOn = reverseOn ? 1 : 0;
 				fftDebugContext_.triggerOn = triggerOn ? 1 : 0;
-				fftDebugContext_.alignOn = alignOn ? 1 : 0;
-				fftDebugContext_.pdcOn = pdcOn ? 1 : 0;
-				fftDebugContext_.reportedLatency = reportedLatency;
-				fftDebugContext_.dryDelayLen = dryDelayLen_;
-				fftDebugContext_.fftOutputPadLen = fftOutputPadLen;
-				fftDebugContext_.smoothedWindow = (engineVal == 3) ? (float) fft2GeometryWindowSamples : smoothedWindow_;
-				fftDebugContext_.targetWindow = targetWindow;
-				fftDebugContext_.rawWindowChanged = fftRawWindowChanged ? 1 : 0;
-				fftDebugContext_.rawAmountChanged = fftRawAmountChanged ? 1 : 0;
-				fftDebugContext_.fftWindowMotionActive = fftWindowMotionActiveBlock ? 1 : 0;
-				fftDebugContext_.fftWindowApplyDelayRemaining = fftWindowApplyDelayRemaining_;
-				fftDebugContext_.fftWindowCaptureRemaining = fftWindowCaptureRemaining_;
-				fftDebugContext_.fftDuckGain = fftParamDuckGain_;
-				fftDebugContext_.fftWindowMuteFadeOutRemaining = fftWindowMuteFadeOutRemaining_;
-				fftDebugContext_.fftWindowMuteFadeInRemaining = fftWindowMuteFadeInRemaining_;
-				const int windowTransitionRemaining = (engineVal == 2)
-					? fft1WindowTransitionRemaining_
-					: (engineVal == 3 ? fft2WindowTransitionRemaining_ : 0);
-				const int windowTransitionTotal = (engineVal == 2)
-					? fft1WindowTransitionTotal_
-					: (engineVal == 3 ? fft2WindowTransitionTotal_ : 0);
-				fftDebugContext_.windowTransitionActive = (windowTransitionRemaining > 0 && windowTransitionTotal > 0) ? 1 : 0;
-				fftDebugContext_.windowTransitionProgress = (windowTransitionRemaining > 0 && windowTransitionTotal > 0)
-					? juce::jlimit (0.0f, 1.0f, 1.0f - (float) windowTransitionRemaining / (float) windowTransitionTotal)
-					: 1.0f;
-				fftDebugContext_.fftOutputFadeActive = ((engineVal == 2 || engineVal == 3) && fftOutputFadePos_ > 0 && fftOutputFadeTotal_ > 0) ? 1 : 0;
-				fftDebugContext_.fftOutputFadeProgress = (fftOutputFadePos_ > 0 && fftOutputFadeTotal_ > 0)
-					? juce::jlimit (0.0f, 1.0f, 1.0f - (float) fftOutputFadePos_ / (float) fftOutputFadeTotal_)
-					: 1.0f;
+				populateFftDebugContextControlState (reportedLatency, fftOutputPadLen);
 
 				if (engineVal == 3)
 				{
@@ -3247,17 +3314,11 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					fftFreezeTransitionReadPos_ = (fftFreezeTransitionReadPos_ + 1) & (kFftWetHistoryLen - 1);
 					--fftFreezeTransitionRemaining_;
 				}
-				else if (engineVal == 2 && fft1WindowTransitionRemaining_ > 0 && fft1WindowTransitionTotal_ > 0)
+				else if ((engineVal == 2 || engineVal == 3) && isWindowTransitionActiveForEngine (engineVal))
 				{
 					wetL = fftWetL;
 					wetR = fftWetR;
-					--fft1WindowTransitionRemaining_;
-				}
-				else if (engineVal == 3 && fft2WindowTransitionRemaining_ > 0 && fft2WindowTransitionTotal_ > 0)
-				{
-					wetL = fftWetL;
-					wetR = fftWetR;
-					--fft2WindowTransitionRemaining_;
+					decrementWindowTransitionForEngine (engineVal);
 				}
 				else
 				{
@@ -3304,15 +3365,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					fftFreezeTransitionRemaining_ = 0;
 					fftFreezeTransitionTotal_ = 0;
 				}
-				if (engineVal == 2 && fft1WindowTransitionRemaining_ <= 0)
+				if ((engineVal == 2 || engineVal == 3) && getWindowTransitionRemainingForEngine (engineVal) <= 0)
 				{
-					fft1WindowTransitionRemaining_ = 0;
-					fft1WindowTransitionTotal_ = 0;
-				}
-				if (engineVal == 3 && fft2WindowTransitionRemaining_ <= 0)
-				{
-					fft2WindowTransitionRemaining_ = 0;
-					fft2WindowTransitionTotal_ = 0;
+					clearWindowTransitionForEngine (engineVal);
 				}
 			}
 
@@ -4094,7 +4149,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			dbg.fftOutputPadLen = fftOutputPadLen;
 			dbg.smoothedWindow = (engineVal == 3) ? (float) fft2GeometryWindowSamples : smoothedWindow_;
 			dbg.targetWindow = targetWindow;
-			dbg.windowTransitionActive = ((engineVal == 2 ? fft1WindowTransitionRemaining_ : fft2WindowTransitionRemaining_) > 0) ? 1 : 0;
+			dbg.windowTransitionActive = isWindowTransitionActiveForEngine (engineVal) ? 1 : 0;
 			dbg.fftOutputFadeActive = (fftOutputFadePos_ > 0 && fftOutputFadeTotal_ > 0) ? 1 : 0;
 			dbg.fftWetPreOutputFadeL = preFadeL;
 			dbg.fftWetPostOutputFadeL = outL;

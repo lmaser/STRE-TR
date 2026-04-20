@@ -964,6 +964,13 @@ private:
 	void  clearEngineFadeState() noexcept;
 	void  resetFftOutputFadeState() noexcept;
 	void  clearFftOutputFadeState() noexcept;
+	int   getWindowTransitionRemainingForEngine (int engineVal) const noexcept;
+	int   getWindowTransitionTotalForEngine (int engineVal) const noexcept;
+	bool  isWindowTransitionActiveForEngine (int engineVal) const noexcept;
+	float getWindowTransitionProgressForEngine (int engineVal) const noexcept;
+	void  startWindowTransitionForEngine (int engineVal, int totalSamples) noexcept;
+	void  clearWindowTransitionForEngine (int engineVal) noexcept;
+	void  decrementWindowTransitionForEngine (int engineVal) noexcept;
 	void  performStftCycle (int fftSize, int analysisHop, int synthesisHop,
 	                        float pitchRate, bool reverseOn, float pitchRateR = -1.0f,
 	                        bool wideMode = false);
