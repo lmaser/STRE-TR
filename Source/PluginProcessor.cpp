@@ -1042,7 +1042,7 @@ int STRETRAudioProcessor::recommendedFft2WindowCrossfadeSamples (int fromFftSize
 
 int STRETRAudioProcessor::recommendedEngineCrossfadeSamples() const noexcept
 {
-	return juce::jlimit (64, kWetOutputHistoryLen - 1, samplesForMs (45.0));
+	return juce::jlimit (64, kWetOutputHistoryLen - 1, samplesForMs (60.0));
 }
 
 void STRETRAudioProcessor::resetFftWindowDuckPrepareState (int capturedWindowVal, float amountVal,
@@ -1082,6 +1082,8 @@ void STRETRAudioProcessor::clearEngineFadeState() noexcept
 void STRETRAudioProcessor::resetEngineFadeState() noexcept
 {
 	engineFadeReadPos_ = 0;
+	engineFadeStartL_ = 0.0f;
+	engineFadeStartR_ = 0.0f;
 	clearEngineFadeState();
 }
 
@@ -2633,9 +2635,12 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	// Engine crossfade: trigger fade-in on engine change
 	if (prevEngineVal_ >= 0 && engineVal != prevEngineVal_)
 	{
-		engineFadeHoldSamples_ = samplesForMs (12.0);
+		engineFadeHoldSamples_ = samplesForMs (18.0);
 		engineFadeTotal_ = recommendedEngineCrossfadeSamples() + engineFadeHoldSamples_;
 		engineFadePos_ = engineFadeTotal_;
+		const int lastOutIdx = (wetOutputHistoryWritePos_ - 1 + kWetOutputHistoryLen) & (kWetOutputHistoryLen - 1);
+		engineFadeStartL_ = wetOutputHistory_[0][lastOutIdx];
+		engineFadeStartR_ = wetOutputHistory_[1][lastOutIdx];
 		engineFadeReadPos_ = (wetOutputHistoryWritePos_ - engineFadeTotal_ + kWetOutputHistoryLen)
 			& (kWetOutputHistoryLen - 1);
 		clearFftOutputFadeState();
@@ -4224,16 +4229,22 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			{
 				const int fadeSamples = juce::jmax (1, engineFadeTotal_ - engineFadeHoldSamples_);
 				float newMix = 0.0f;
-				float oldMix = 1.0f;
-				if (engineFadePos_ <= fadeSamples)
+				float oldMix = 0.0f;
+				float oldOutL = engineFadeStartL_;
+				float oldOutR = engineFadeStartR_;
+				if (engineFadePos_ > fadeSamples && engineFadeHoldSamples_ > 0)
 				{
-					const float progress = 1.0f - (float) engineFadePos_ / (float) fadeSamples;
-					newMix = juce::jlimit (0.0f, 1.0f, progress);
-					oldMix = 1.0f - newMix;
+					const float holdProgress = juce::jlimit (0.0f, 1.0f,
+						1.0f - (float) (engineFadePos_ - fadeSamples) / (float) engineFadeHoldSamples_);
+					const float fadeOut = holdProgress * holdProgress * (3.0f - 2.0f * holdProgress);
+					oldMix = 1.0f - fadeOut;
 				}
-				const int histIdx = engineFadeReadPos_ & (kWetOutputHistoryLen - 1);
-				const float oldOutL = wetOutputHistory_[0][histIdx];
-				const float oldOutR = wetOutputHistory_[1][histIdx];
+				else if (engineFadePos_ <= fadeSamples)
+				{
+					const float progress = juce::jlimit (0.0f, 1.0f,
+						1.0f - (float) engineFadePos_ / (float) fadeSamples);
+					newMix = progress * progress * (3.0f - 2.0f * progress);
+				}
 				if (fftDebugEnabled)
 				{
 					fftDebugContext_.engineFadeOldOutL = oldOutL;
@@ -4242,7 +4253,6 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				}
 				outL = oldOutL * oldMix + outL * newMix;
 				outR = oldOutR * oldMix + outR * newMix;
-				engineFadeReadPos_ = (engineFadeReadPos_ + 1) & (kWetOutputHistoryLen - 1);
 				--engineFadePos_;
 				if (engineFadePos_ <= 0)
 				{

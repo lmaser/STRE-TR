@@ -937,6 +937,8 @@ private:
 	int   wetOutputHistoryWritePos_ = 0;
 	int   engineFadeReadPos_ = 0;
 	int   engineFadeHoldSamples_ = 0;
+	float engineFadeStartL_ = 0.0f;
+	float engineFadeStartR_ = 0.0f;
 	int   fftOutputFadeReadPos_ = 0;
 	int   fftOutputFadeHoldSamples_ = 0;
 
