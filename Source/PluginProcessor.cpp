@@ -299,10 +299,10 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	for (int i = 1; i <= kMaxGrains; ++i)
 		invSqrtLut_[i] = 1.0f / std::sqrt ((float) i);
 
-    // Initialize input buffer (power-of-2 for bitmask wrapping)
+	// Initialize input buffer (power-of-2 for bitmask wrapping)
 	{
-		const int desired = juce::jmin (kInputBufMaxLen, (int) (sampleRate * 5.5));
-		// Round up to next power of 2 (kInputBufMaxLen is already 2^18)
+		const int desired = juce::jmin (kInputBufMaxLen, (int) (sampleRate * 30.0));
+		// Round up to next power of 2 (kInputBufMaxLen is already a power of 2)
 		int po2 = 1;
 		while (po2 < desired) po2 <<= 1;
 		if (po2 > kInputBufMaxLen) po2 = kInputBufMaxLen;

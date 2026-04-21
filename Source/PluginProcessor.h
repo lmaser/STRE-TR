@@ -226,7 +226,7 @@ private:
 	double currentSampleRate = 44100.0;
 
     // Circular input buffer (shared by all engines)
-	static constexpr int kInputBufMaxLen = 262144;  // 2^18, ~5.9s @ 44100
+	static constexpr int kInputBufMaxLen = 2097152;  // 2^21, ~47.6s @ 44100
 	std::vector<float> inputBuf_[2];    // L, R
 	int inputBufWritePos_ = 0;
 	int inputBufLen_ = 0;
