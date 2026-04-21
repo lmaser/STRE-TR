@@ -2882,7 +2882,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 	// PDC and Align
 	{
-		const bool fftLatencyActive = triggerOn && (engineVal == 2 || engineVal == 3) && stft_.activeFftSize > 0;
+		// Keep FFT latency alignment stable while an FFT engine is selected.
+		// Tying this to TRG caused dry/pad timing to jump on trigger edges.
+		const bool fftLatencyActive = (engineVal == 2 || engineVal == 3) && stft_.activeFftSize > 0;
 		const int  fftLat  = fftLatencyActive
 		                     ? stft_.activeFftSize : 0;
 		const int fftSynthHopForAlign = (fftLat > 0) ? recommendedFftSynthHop (fftLat) : 0;
