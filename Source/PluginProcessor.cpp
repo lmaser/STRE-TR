@@ -3907,6 +3907,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // Engine 1: GRANULAR
 			const double grainCapturePos = currentCaptureAbsPos();
 			const double grainLookBehind = computeGrainLookBehind (grainSamples, pitchRate, reverseOn, isWide);
+			const bool grainFreezeHold = (targetSpeed <= 0.0001f);
 			const bool grainUnity = ! reverseOn
 				&& ! isDual
 				&& ! isWide
@@ -3915,7 +3916,17 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 			const auto spawnGranularGrains = [&]()
 			{
-				grainReadPos_ = clampGrainSpawnPos (grainReadPos_, grainCapturePos, grainLookBehind);
+				if (grainFreezeHold)
+				{
+					// In true freeze, keep the captured anchor stable when MOD changes so
+					// pitch returning to x1 does not pull the frozen grain toward newer audio.
+					const double minPos = grainCapturePos - (double) (inputBufLen_ - 4);
+					grainReadPos_ = juce::jmax (minPos, grainReadPos_);
+				}
+				else
+				{
+					grainReadPos_ = clampGrainSpawnPos (grainReadPos_, grainCapturePos, grainLookBehind);
+				}
 				if (--grainSpawnCountdown_ > 0)
 					return;
 
@@ -3927,7 +3938,15 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				const double spawnPos = grainReadPos_;
 				const float direction = reverseOn ? -1.0f : 1.0f;
 				const double nextReadPos = grainReadPos_ + (double) spawnInterval * (double) speed * (double) direction;
-				grainReadPos_ = clampGrainSpawnPos (nextReadPos, grainCapturePos, grainLookBehind);
+				if (grainFreezeHold)
+				{
+					const double minPos = grainCapturePos - (double) (inputBufLen_ - 4);
+					grainReadPos_ = juce::jmax (minPos, nextReadPos);
+				}
+				else
+				{
+					grainReadPos_ = clampGrainSpawnPos (nextReadPos, grainCapturePos, grainLookBehind);
+				}
 
 				if (isDual)
 				{
