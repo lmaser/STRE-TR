@@ -2775,7 +2775,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				clearFft1FreezeSnapshot();
 		}
 
-		engineFadeHoldSamples_ = samplesForMs (18.0);
+		engineFadeHoldSamples_ = samplesForMs ((engineVal == 2 || engineVal == 3) ? 80.0 : 25.0);
 		engineFadeTotal_ = recommendedEngineCrossfadeSamples() + engineFadeHoldSamples_;
 		engineFadePos_ = engineFadeTotal_;
 		const int lastOutIdx = (wetOutputHistoryWritePos_ - 1 + kWetOutputHistoryLen) & (kWetOutputHistoryLen - 1);
