@@ -1313,13 +1313,16 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
    #else
 	constexpr bool fftDebugEnabled = false;
    #endif
+   #if JUCE_DEBUG
 	const auto cycleStartTicks = fftDebugEnabled ? juce::Time::getHighResolutionTicks() : juce::int64 { 0 };
+   #endif
 
 	const int numBins    = fftSize / 2 + 1;
 	const int outBufLen  = kStftOutBufLen;
 	const float twoPi    = juce::MathConstants<float>::twoPi;
 	const float pi       = juce::MathConstants<float>::pi;
 	const float expBase  = twoPi / (float) fftSize;
+   #if JUCE_DEBUG
 	const double analysisReadBefore = stft_.analysisReadPos;
 	const float normAtRead = stft_.outputNormAccum[stft_.outputReadPos];
 	const float invNormAtRead = (normAtRead > 1.0e-6f) ? (1.0f / normAtRead) : 0.0f;
@@ -1329,6 +1332,7 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 		? std::fmod ((double) inputBufWritePos_ - analysisReadBefore + (double) inputBufLen_,
 		             (double) inputBufLen_)
 		: 0.0;
+   #endif
 	int debugPeakCount[2] = {};
 	int debugLockedBins[2] = {};
 	float debugFrameRms[2] = {};
@@ -2013,10 +2017,10 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 	if (fft_ == nullptr || inputBufLen_ <= 0 || fftSize <= 0) return;
    #if JUCE_DEBUG
 	const bool fftDebugEnabled = DeveloperDiagnosticsConfig::kEnableFftTraceRecording;
-   #else
-	constexpr bool fftDebugEnabled = false;
    #endif
+   #if JUCE_DEBUG
 	const auto cycleStartTicks = fftDebugEnabled ? juce::Time::getHighResolutionTicks() : juce::int64 { 0 };
+   #endif
 
 	const int   numBins    = fftSize / 2 + 1;
 	const int   outBufLen  = kStftOutBufLen;
@@ -2024,11 +2028,6 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 	const float pi         = juce::MathConstants<float>::pi;
 	const float expBase    = twoPi / (float) fftSize;
 	const float blend      = 1.0f - holdCoeff;  // 1 = transparent, 0 = full freeze
-	const float normAtRead = stft_.outputNormAccum[stft_.outputReadPos];
-	const float invNormAtRead = (normAtRead > 1.0e-6f) ? (1.0f / normAtRead) : 0.0f;
-	const float previewOutL = stft_.outputAccum[0][stft_.outputReadPos] * invNormAtRead;
-	const float previewOutR = stft_.outputAccum[1][stft_.outputReadPos] * invNormAtRead;
-
 	const double analysisReadBefore = stft_.analysisReadPos;
 	int readStart = 0;
 	if (inputBufLen_ > 0)
@@ -2040,10 +2039,16 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 			wrappedReadPos += (double) inputBufLen_;
 		readStart = ((int) std::floor (wrappedReadPos)) & inputBufMask_;
 	}
+   #if JUCE_DEBUG
+	const float normAtRead = stft_.outputNormAccum[stft_.outputReadPos];
+	const float invNormAtRead = (normAtRead > 1.0e-6f) ? (1.0f / normAtRead) : 0.0f;
+	const float previewOutL = stft_.outputAccum[0][stft_.outputReadPos] * invNormAtRead;
+	const float previewOutR = stft_.outputAccum[1][stft_.outputReadPos] * invNormAtRead;
 	const double analysisLagSamples = (fftDebugEnabled && inputBufLen_ > 0)
 		? std::fmod ((double) inputBufWritePos_ - analysisReadBefore + (double) inputBufLen_,
 		             (double) inputBufLen_)
 		: 0.0;
+   #endif
 	float debugFrameRms[2] = {};
 	float debugOutputRms[2] = {};
 	float debugOutputStartDelta[2] = {};
@@ -4198,12 +4203,20 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		if (chaosDelayEnabled_ && chaosAmtD_ > 0.01f)
 			applyChaosDelay (wetL, wetR);
 
-		// Mode Out: M/S encode wet output
+		// Mode Out: MID stays dual-mono, SIDE becomes true stereo (+S / -S)
 		if (numChannels >= 2 && modeOutVal != 0)
 		{
-			const float l = wetL, r = wetR;
-			if (modeOutVal == 1)      { const float mid  = (l + r) * kSqrt2Over2; wetL = wetR = mid; }
-			else /* modeOutVal==2 */   { const float side = (l - r) * kSqrt2Over2; wetL = wetR = side; }
+			const float mono = (wetL + wetR) * 0.5f;
+			if (modeOutVal == 1)
+			{
+				wetL = mono;
+				wetR = mono;
+			}
+			else /* modeOutVal == 2 */
+			{
+				wetL = mono;
+				wetR = -mono;
+			}
 		}
 
 		// DC blocker (1-pole HP ~5 Hz)
