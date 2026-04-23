@@ -991,6 +991,7 @@ private:
 	int   samplesForMs (double ms) const noexcept;
 	int   recommendedFftWindowCrossfadeSamples() const noexcept;
 	int   recommendedFft2WindowCrossfadeSamples (int fromFftSize, int toFftSize) const noexcept;
+	int   recommendedFftTriggerDuckHoldSamples (int fftSize) const noexcept;
 	int   recommendedEngineCrossfadeSamples() const noexcept;
 	void  resetFftWindowDuckPrepareState (int capturedWindowVal, float amountVal,
 	                                     int engineVal, bool triggerOn) noexcept;

@@ -1054,6 +1054,12 @@ int STRETRAudioProcessor::recommendedFft2WindowCrossfadeSamples (int fromFftSize
 	                     juce::jmax (baseSamples, geometrySamples));
 }
 
+int STRETRAudioProcessor::recommendedFftTriggerDuckHoldSamples (int fftSize) const noexcept
+{
+	const int safeFft = juce::jmax (1, fftSize);
+	return safeFft + recommendedFftSynthHop (safeFft);
+}
+
 int STRETRAudioProcessor::recommendedEngineCrossfadeSamples() const noexcept
 {
 	return juce::jlimit (64, kWetOutputHistoryLen - 1, samplesForMs (60.0));
@@ -2739,6 +2745,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		wsolaUnityBypassActive_ = false;
 		if ((engineVal == 2 || engineVal == 3) && requestedFftSize > 0)
 		{
+			const int triggerDuckHoldSamples = recommendedFftTriggerDuckHoldSamples (requestedFftSize);
+			fftParamDuckHoldRemaining_ = juce::jmax (fftParamDuckHoldRemaining_, triggerDuckHoldSamples);
 			resetStftAtPos (capturePos, requestedFftSize);
 			recordFftReset (1, capturePos);
 			fftReseededThisBlock = true;
