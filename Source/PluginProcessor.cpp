@@ -2892,25 +2892,24 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	{
 		// PDC should only report the engine's real wet latency to the host.
 		// ALIGN can then use that same latency internally for the dry path.
-		const bool fftLatencyActive = (engineVal == 2 || engineVal == 3) && stft_.activeFftSize > 0;
-		const int  fftLat  = fftLatencyActive
-		                     ? stft_.activeFftSize : 0;
-		const int fftSynthHopForAlign = (fftLat > 0) ? recommendedFftSynthHop (fftLat) : 0;
-		const int fftWetLatency = (fftLat > 0) ? (fftLat + fftSynthHopForAlign) : 0;
+		const int fftLatencySize = (engineVal == 2 || engineVal == 3)
+			? ((requestedFftSize > 0) ? requestedFftSize : stft_.activeFftSize)
+			: 0;
+		const int fftSynthHopForAlign = (fftLatencySize > 0) ? recommendedFftSynthHop (fftLatencySize) : 0;
+		const int fftWetLatency = (fftLatencySize > 0) ? (fftLatencySize + fftSynthHopForAlign) : 0;
 
 		const bool grainWideMode = (styleVal == 2 && numChannels >= 2);
-		const int grainWetLatency = (engineVal == 1 && triggerOn)
+		const int grainWetLatency = (engineVal == 1)
 			? juce::jlimit (0, kDryDelayBufLen - 1,
 			                (int) std::lround (computeGrainLookBehind (grainSamples, targetPitchRate,
 			                                                                 reverseOn, grainWideMode)))
 			: 0;
 
 		int stretchWetLatency = 0;
-		if (engineVal == 0 && triggerOn && inputBufLen_ > 0)
+		if (engineVal == 0 && inputBufLen_ > 0)
 		{
 			const bool stretchWideMode = (styleVal == 2 && numChannels >= 2);
-			const int stretchWindowSamples = juce::jlimit (kWindowMin, kWindowMax,
-				(int) std::round (smoothedWindow_));
+			const int stretchWindowSamples = windowSamples;
 			const int segLen = juce::jmax (64, stretchWindowSamples);
 			const int overlapLen = wsolaRecommendedOverlapLen (segLen, currentSampleRate);
 			const bool nearUnity = std::abs (targetSpeed - 1.0f) <= 0.05f
@@ -2931,7 +2930,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const int engineWetLatency = (fftWetLatency > 0) ? fftWetLatency
 			: (grainWetLatency > 0) ? grainWetLatency
 			: stretchWetLatency;
-		reportedLatency = pdcOn ? engineWetLatency : 0;
+		const bool outputLatencyActive = triggerOn || alignOn;
+		reportedLatency = (pdcOn && outputLatencyActive) ? engineWetLatency : 0;
 		if (reportedLatency != lastReportedLatency_)
 		{
 			setLatencySamples (reportedLatency);
@@ -3037,6 +3037,15 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			inputBufWriteAbsPos_ += 1.0;
 		}
 
+		float unityRefL = inL;
+		float unityRefR = inR;
+		if (alignOn && dryDelayLen_ > 0 && inputBufLen_ > 0)
+		{
+			const int unityRefPos = (inputBufWritePos_ - dryDelayLen_ + inputBufLen_) & inputBufMask_;
+			unityRefL = inputBuf_[0][unityRefPos];
+			unityRefR = inputBuf_[1][unityRefPos];
+		}
+
 		float wetL = 0.0f;
 		float wetR = 0.0f;
 
@@ -3084,9 +3093,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 		if (! triggerOn)
 		{
-            // Trigger OFF -> passthrough (all engines)
-			wetL = inL;
-			wetR = inR;
+            // Trigger OFF -> unity path, aligned if requested
+			wetL = unityRefL;
+			wetR = unityRefR;
 		}
 		else if ((engineVal == 2 || engineVal == 3) && inputBufLen_ > 0 && stft_.activeFftSize > 0)
 		{
@@ -3719,8 +3728,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 						- ((float) stretchTransitionRemaining_ / (float) stretchTransitionTotal_);
 					const float dryMix = std::sin (progress * juce::MathConstants<float>::halfPi);
 					const float wetMix = std::cos (progress * juce::MathConstants<float>::halfPi);
-					wetL = stretchOutL * wetMix + inL * dryMix;
-					wetR = stretchOutR * wetMix + inR * dryMix;
+					wetL = stretchOutL * wetMix + unityRefL * dryMix;
+					wetR = stretchOutR * wetMix + unityRefR * dryMix;
 					--stretchTransitionRemaining_;
 
 					if (stretchTransitionRemaining_ <= 0)
@@ -3746,8 +3755,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					stretchTransitionRemaining_ = 0;
 					stretchTransitionTotal_ = 0;
 					stretchTransitionToUnity_ = false;
-					wetL = inL;
-					wetR = inR;
+					wetL = unityRefL;
+					wetR = unityRefR;
 				}
 			}
 			else
@@ -3945,8 +3954,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 						- ((float) stretchTransitionRemaining_ / (float) stretchTransitionTotal_);
 					const float wetMix = std::sin (progress * juce::MathConstants<float>::halfPi);
 					const float dryMix = std::cos (progress * juce::MathConstants<float>::halfPi);
-					wetL = inL * dryMix + wetL * wetMix;
-					wetR = inR * dryMix + wetR * wetMix;
+					wetL = unityRefL * dryMix + wetL * wetMix;
+					wetR = unityRefR * dryMix + wetR * wetMix;
 					--stretchTransitionRemaining_;
 				}
 			}
@@ -4179,8 +4188,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 						- ((float) grainTransitionRemaining_ / (float) grainTransitionTotal_);
 					const float dryMix = std::sin (progress * juce::MathConstants<float>::halfPi);
 					const float wetMix = std::cos (progress * juce::MathConstants<float>::halfPi);
-					wetL = wetL * wetMix + inL * dryMix;
-					wetR = wetR * wetMix + inR * dryMix;
+					wetL = wetL * wetMix + unityRefL * dryMix;
+					wetR = wetR * wetMix + unityRefR * dryMix;
 					--grainTransitionRemaining_;
 
 					if (grainTransitionRemaining_ <= 0 || countActiveGrains() <= 0)
@@ -4199,8 +4208,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					grainTransitionRemaining_ = 0;
 					grainTransitionTotal_ = 0;
 					grainTransitionToUnity_ = false;
-					wetL = inL;
-					wetR = inR;
+					wetL = unityRefL;
+					wetR = unityRefR;
 				}
 			}
 			else
@@ -4227,16 +4236,16 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 						- ((float) grainTransitionRemaining_ / (float) grainTransitionTotal_);
 					const float wetMix = std::sin (progress * juce::MathConstants<float>::halfPi);
 					const float dryMix = std::cos (progress * juce::MathConstants<float>::halfPi);
-					wetL = inL * dryMix + wetL * wetMix;
-					wetR = inR * dryMix + wetR * wetMix;
+					wetL = unityRefL * dryMix + wetL * wetMix;
+					wetR = unityRefR * dryMix + wetR * wetMix;
 					--grainTransitionRemaining_;
 				}
 			}
 		}
 		else
 		{
-			wetL = inL;
-			wetR = inR;
+			wetL = unityRefL;
+			wetR = unityRefR;
 		}
 
 		// Style processing (WIDE / DUAL)
