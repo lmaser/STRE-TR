@@ -876,7 +876,7 @@ private:
 	int   grainTransitionTotal_ = 0;
 	bool  grainTransitionToUnity_ = false;
 
-    // FFT / phase vocoder engine state
+	// FFT / phase vocoder engine state
 	static constexpr int kMaxFftSize    = 8192;
 	static constexpr int kMaxFftBins    = kMaxFftSize / 2 + 1;
 	static constexpr int kStftOutBufLen = kMaxFftSize * 2;
@@ -985,6 +985,7 @@ private:
 	void  ensureFft (int fftSize);
 	void  resetStftAtPos (double capturePos, int fftSize) noexcept;
 	void  resizeStftAtPos (double capturePos, int fftSize) noexcept;
+	void  clearStftOutputResidueForResize() noexcept;
 	void  resizeFft2StateAtPos (double capturePos, int fftSize) noexcept;
 	int   recommendedFftSynthHop (int fftSize) const noexcept;
 	int   samplesForMs (double ms) const noexcept;
@@ -1022,7 +1023,7 @@ private:
     // Precomputed 1/sqrt(n) for granular normalization
 	float invSqrtLut_[kMaxGrains + 1] = {};
 
-    // Dry delay buffer for ALIGN when FFT latency is active
+	// Dry delay buffer for ALIGN when FFT latency is active
 	float dryDelayBuf_[2][kDryDelayBufLen] = {};
 	int   dryDelayWritePos_ = 0;
 	int   dryDelayLen_       = 0;

@@ -971,6 +971,30 @@ void STRETRAudioProcessor::resizeStftAtPos (double capturePos, int fftSize) noex
 	fresh.analysisHopStepNorm = previous.analysisHopStepNorm;
 	fresh.hasFrame = previous.hasFrame;
 	fresh.cyclesSinceReset = previous.cyclesSinceReset;
+
+	// Window/geometry changes should keep the spectral state, but not the
+	// old overlap-add residue. Reusing outputAccum/outputNormAccum across
+	// incompatible windows/hops leaks clicks through the active path.
+	clearStftOutputResidueForResize();
+}
+
+void STRETRAudioProcessor::clearStftOutputResidueForResize() noexcept
+{
+	for (int ch = 0; ch < 2; ++ch)
+		std::fill (std::begin (stft_.outputAccum[ch]), std::end (stft_.outputAccum[ch]), 0.0f);
+	std::fill (std::begin (stft_.outputNormAccum), std::end (stft_.outputNormAccum), 0.0f);
+
+	stft_.identityErrSqAccum[0] = 0.0;
+	stft_.identityErrSqAccum[1] = 0.0;
+	stft_.identityRefSqAccum[0] = 0.0;
+	stft_.identityRefSqAccum[1] = 0.0;
+	stft_.identityMaxAbsErr[0] = 0.0f;
+	stft_.identityMaxAbsErr[1] = 0.0f;
+	stft_.identitySampleCount = 0;
+	stft_.cyclesSinceReset = 0;
+
+	const int newHop = juce::jmax (1, recommendedFftSynthHop (stft_.activeFftSize));
+	stft_.synthCounter = juce::jmax (0, newHop - 1);
 }
 
 void STRETRAudioProcessor::resizeFft2StateAtPos (double capturePos, int fftSize) noexcept
@@ -1004,25 +1028,6 @@ void STRETRAudioProcessor::resizeFft2StateAtPos (double capturePos, int fftSize)
 		}
 	}
 
-	// FFT2 window changes should keep the retained cloud, but not the old
-	// overlap-add residue. Reusing outputAccum/outputNormAccum across
-	// geometries mixes incompatible windows/hops and leaks clicks through the
-	// active state even when the external fade is clean.
-	for (int ch = 0; ch < 2; ++ch)
-		std::fill (std::begin (stft_.outputAccum[ch]), std::end (stft_.outputAccum[ch]), 0.0f);
-	std::fill (std::begin (stft_.outputNormAccum), std::end (stft_.outputNormAccum), 0.0f);
-
-	stft_.identityErrSqAccum[0] = 0.0;
-	stft_.identityErrSqAccum[1] = 0.0;
-	stft_.identityRefSqAccum[0] = 0.0;
-	stft_.identityRefSqAccum[1] = 0.0;
-	stft_.identityMaxAbsErr[0] = 0.0f;
-	stft_.identityMaxAbsErr[1] = 0.0f;
-	stft_.identitySampleCount = 0;
-	stft_.cyclesSinceReset = 0;
-
-	const int newHop = juce::jmax (1, recommendedFftSynthHop (fftSize));
-	stft_.synthCounter = juce::jmax (0, newHop - 1);
 }
 
 int STRETRAudioProcessor::samplesForMs (double ms) const noexcept
@@ -2470,6 +2475,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const bool  triggerOn  = loadBoolParamOrDefault (triggerParam, false);
 	const bool  alignOn    = loadBoolParamOrDefault (alignParam, false);
 	const bool  pdcOn      = loadBoolParamOrDefault (pdcParam, false);
+	const int previousEngineVal = prevEngineVal_;
+	const bool engineChangedThisBlock = previousEngineVal >= 0 && engineVal != previousEngineVal;
 	int effectiveWindowVal = windowVal;
 	bool fftCapturedWindowChanged = false;
 	if (engineVal == 2 || engineVal == 3)
@@ -2641,12 +2648,13 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		dbg.cyclesSinceReset = stft_.cyclesSinceReset;
 		dbg.alignOn = alignOn ? 1 : 0;
 		dbg.pdcOn = pdcOn ? 1 : 0;
-		dbg.reportedLatency = (pdcOn && requestedFftSize > 0) ? kMaxFftSize : 0;
+		const int requestedFftSynthHop = recommendedFftSynthHop (requestedFftSize);
+		const int requestedFftWetLatency = requestedFftSize + requestedFftSynthHop;
+		dbg.reportedLatency = (pdcOn && requestedFftSize > 0) ? requestedFftWetLatency : 0;
 		dbg.dryDelayLen = (alignOn && requestedFftSize > 0)
-			? juce::jmin (requestedFftSize + recommendedFftSynthHop (requestedFftSize), kDryDelayBufLen - 1)
+			? juce::jmin (requestedFftWetLatency, kDryDelayBufLen - 1)
 			: 0;
-		dbg.fftOutputPadLen = (pdcOn && requestedFftSize > 0)
-			? juce::jmax (0, kMaxFftSize - requestedFftSize) : 0;
+		dbg.fftOutputPadLen = 0;
 		populateFftMotionTraceFields (dbg);
 		fftDebugTrace_.record (dbg);
 	};
@@ -2765,9 +2773,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	triggerWasOn_ = triggerOn;
 
 	// Engine crossfade: trigger fade-in on engine change
-	if (prevEngineVal_ >= 0 && engineVal != prevEngineVal_)
+	if (engineChangedThisBlock)
 	{
-		if (prevEngineVal_ == 2)
+		if (previousEngineVal == 2)
 		{
 			if (triggerOn && ! fftUnityBypassActive_ && ! fftTransitionToUnity_)
 				captureFft1FreezeSnapshot (styleVal, reverseOn);
@@ -2882,23 +2890,57 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 	// PDC and Align
 	{
-		// Keep FFT latency alignment stable while an FFT engine is selected.
-		// Tying this to TRG caused dry/pad timing to jump on trigger edges.
+		// PDC should only report the engine's real wet latency to the host.
+		// ALIGN can then use that same latency internally for the dry path.
 		const bool fftLatencyActive = (engineVal == 2 || engineVal == 3) && stft_.activeFftSize > 0;
 		const int  fftLat  = fftLatencyActive
 		                     ? stft_.activeFftSize : 0;
 		const int fftSynthHopForAlign = (fftLat > 0) ? recommendedFftSynthHop (fftLat) : 0;
 		const int fftWetLatency = (fftLat > 0) ? (fftLat + fftSynthHopForAlign) : 0;
-		reportedLatency = (pdcOn && fftLat > 0) ? kMaxFftSize : 0;
+
+		const bool grainWideMode = (styleVal == 2 && numChannels >= 2);
+		const int grainWetLatency = (engineVal == 1 && triggerOn)
+			? juce::jlimit (0, kDryDelayBufLen - 1,
+			                (int) std::lround (computeGrainLookBehind (grainSamples, targetPitchRate,
+			                                                                 reverseOn, grainWideMode)))
+			: 0;
+
+		int stretchWetLatency = 0;
+		if (engineVal == 0 && triggerOn && inputBufLen_ > 0)
+		{
+			const bool stretchWideMode = (styleVal == 2 && numChannels >= 2);
+			const int stretchWindowSamples = juce::jlimit (kWindowMin, kWindowMax,
+				(int) std::round (smoothedWindow_));
+			const int segLen = juce::jmax (64, stretchWindowSamples);
+			const int overlapLen = wsolaRecommendedOverlapLen (segLen, currentSampleRate);
+			const bool nearUnity = std::abs (targetSpeed - 1.0f) <= 0.05f
+				&& std::abs (targetPitchRate - 1.0f) <= 0.05f;
+			const int seekCap = juce::jlimit (24, 128, (int) std::round (currentSampleRate * 0.0025));
+			const int baseSeek = juce::jmin (juce::jmax (8, overlapLen / 3), inputBufLen_ / 4);
+			const int seekRadius = nearUnity
+				? juce::jmin (baseSeek, juce::jmax (8, seekCap / 2))
+				: juce::jmin (baseSeek, seekCap);
+			const double wideExtra = stretchWideMode ? (double) (segLen / 2) : 0.0;
+			stretchWetLatency = juce::jlimit (0, kDryDelayBufLen - 1,
+				(int) std::lround ((double) seekRadius
+					+ wideExtra
+					+ ((double) (segLen - 1) * std::abs ((double) targetPitchRate))
+					+ 8.0));
+		}
+
+		const int engineWetLatency = (fftWetLatency > 0) ? fftWetLatency
+			: (grainWetLatency > 0) ? grainWetLatency
+			: stretchWetLatency;
+		reportedLatency = pdcOn ? engineWetLatency : 0;
 		if (reportedLatency != lastReportedLatency_)
 		{
 			setLatencySamples (reportedLatency);
 			lastReportedLatency_ = reportedLatency;
 		}
-		dryDelayLen_ = (alignOn && fftWetLatency > 0)
-			? juce::jmin (fftWetLatency, kDryDelayBufLen - 1)
+		dryDelayLen_ = (alignOn && engineWetLatency > 0)
+			? juce::jmin (engineWetLatency, kDryDelayBufLen - 1)
 			: 0;
-		fftOutputPadLen = (pdcOn && fftLat > 0) ? juce::jmax (0, kMaxFftSize - fftLat) : 0;
+		fftOutputPadLen = 0;
 	}
 
 	if (chaosFilterEnabled_)
@@ -2954,20 +2996,25 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 		// Save dry signal (with Align delay for FFT engine PDC)
 		float dryOrigL, dryOrigR;
+		const float dryInL = channelL[i];
+		const float dryInR = (channelR != nullptr) ? channelR[i] : dryInL;
+
+		dryDelayBuf_[0][dryDelayWritePos_] = dryInL;
+		dryDelayBuf_[1][dryDelayWritePos_] = dryInR;
+
 		if (dryDelayLen_ > 0)
 		{
-			dryDelayBuf_[0][dryDelayWritePos_] = channelL[i];
-			dryDelayBuf_[1][dryDelayWritePos_] = (channelR != nullptr) ? channelR[i] : channelL[i];
 			const int rdp = (dryDelayWritePos_ - dryDelayLen_ + kDryDelayBufLen) & (kDryDelayBufLen - 1);
 			dryOrigL = dryDelayBuf_[0][rdp];
 			dryOrigR = dryDelayBuf_[1][rdp];
-			dryDelayWritePos_ = (dryDelayWritePos_ + 1) & (kDryDelayBufLen - 1);
 		}
 		else
 		{
-			dryOrigL = channelL[i];
-			dryOrigR = (channelR != nullptr) ? channelR[i] : dryOrigL;
+			dryOrigL = dryInL;
+			dryOrigR = dryInR;
 		}
+
+		dryDelayWritePos_ = (dryDelayWritePos_ + 1) & (kDryDelayBufLen - 1);
 
 		// Mode In: M/S encode input
 		if (numChannels >= 2 && modeInVal != 0)
