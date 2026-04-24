@@ -93,10 +93,8 @@ private:
             // Mod (0-1 → x0.25 to x4.0)
             if (owner != nullptr && this == &owner->modSlider)
             {
-                const double mult = 1.0 / (4.0 - 6.0 * juce::jmin (v, 0.4999));
-                const double multAbove = 1.0 + ((v - 0.5) * 6.0);
-                const double m = (v < 0.5) ? mult : multAbove;
-                return "x" + juce::String (m, 2);
+                const double m = std::exp2 ((juce::jlimit (0.0, 1.0, v) - 0.5) * 4.0);
+                return "x" + juce::String (m, 3);
             }
 
             // Pan (0-1 → L/C/R)

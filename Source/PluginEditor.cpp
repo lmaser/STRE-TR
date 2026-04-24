@@ -25,27 +25,24 @@ namespace UiStateKeys
 static constexpr int   kCrtTimerHz   = 10;
 static constexpr int   kIdleTimerHz  = 4;
 static constexpr float kSilenceDb    = -80.0f;
-static constexpr float kMultEpsilon  = 0.01f;
+static constexpr float kMultEpsilon  = 0.0005f;
 
 // ── Mod slider ↔ multiplier conversion ──
 static constexpr double kModCenter  = 0.5;
-static constexpr double kModScale   = 3.0;
+static constexpr double kModOctaves = 4.0;
 static constexpr double kModMaxMult = 4.0;
 static constexpr double kModMinMult = 0.25;
 
 static double modSliderToMultiplier (double v)
 {
-    if (v < kModCenter)
-        return 1.0 / (kModMaxMult - kModScale * (v / kModCenter));
-    return 1.0 + kModScale * ((v - kModCenter) / kModCenter);
+    v = juce::jlimit (0.0, 1.0, v);
+    return std::exp2 ((v - kModCenter) * kModOctaves);
 }
 
 static double multiplierToModSlider (double mult)
 {
     mult = juce::jlimit (kModMinMult, kModMaxMult, mult);
-    if (mult < 1.0)
-        return (kModMaxMult - 1.0 / mult) * kModCenter / kModScale;
-    return kModCenter + (mult - 1.0) * kModCenter / kModScale;
+    return juce::jlimit (0.0, 1.0, kModCenter + (std::log2 (mult) / kModOctaves));
 }
 
 // ── Parameter listener IDs ──
@@ -557,9 +554,9 @@ namespace
     constexpr const char* kAmountLegendShort  = "100.0% AMT";
     constexpr const char* kAmountLegendInt    = "100%";
 
-    constexpr const char* kModLegendFull   = "X4.00 MOD";
-    constexpr const char* kModLegendShort  = "X4.00";
-    constexpr const char* kModLegendInt    = "X4.00";
+    constexpr const char* kModLegendFull   = "X4.000 MOD";
+    constexpr const char* kModLegendShort  = "X4.000";
+    constexpr const char* kModLegendInt    = "X4.000";
 
     constexpr const char* kGrainLegendFull  = "500.0 ms GRAIN";
     constexpr const char* kGrainLegendShort = "500.0ms GRN";
@@ -733,7 +730,7 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
     }
 
     amountSlider.setNumDecimalPlacesToDisplay (1);
-    modSlider.setNumDecimalPlacesToDisplay (2);
+    modSlider.setNumDecimalPlacesToDisplay (3);
     grainSlider.setNumDecimalPlacesToDisplay (1);
     engineSlider.setNumDecimalPlacesToDisplay (0);
     windowSlider.setNumDecimalPlacesToDisplay (0);
@@ -1289,13 +1286,13 @@ juce::String STRETRAudioProcessorEditor::getModText() const
 {
     const float mult = (float) modSliderToMultiplier (modSlider.getValue());
     if (std::abs (mult - 1.0f) < kMultEpsilon) return "X1 MOD";
-    return "X" + juce::String (mult, 2) + " MOD";
+    return "X" + juce::String (mult, 3) + " MOD";
 }
 juce::String STRETRAudioProcessorEditor::getModTextShort() const
 {
     const float mult = (float) modSliderToMultiplier (modSlider.getValue());
     if (std::abs (mult - 1.0f) < kMultEpsilon) return "X1";
-    return "X" + juce::String (mult, 2);
+    return "X" + juce::String (mult, 3);
 }
 
 juce::String STRETRAudioProcessorEditor::getGrainText() const
@@ -1536,7 +1533,7 @@ bool STRETRAudioProcessorEditor::refreshLegendTextCache()
     {
         const float mult = (float) modSliderToMultiplier (modSlider.getValue());
         cachedModIntOnly = (std::abs (mult - 1.0f) < kMultEpsilon)
-                           ? "X1" : ("X" + juce::String (mult, 2));
+                           ? "X1" : ("X" + juce::String (mult, 3));
     }
     cachedGrainIntOnly   = (getCurrentEngineValue() == 1)
                            ? juce::String ((int) std::lround (grainSlider.getValue())) + "ms"
@@ -2455,7 +2452,7 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
 
     juce::String currentDisplay;
     if (&s == &modSlider)
-        currentDisplay = juce::String (modSliderToMultiplier (s.getValue()), 2);
+        currentDisplay = juce::String (modSliderToMultiplier (s.getValue()), 3);
     else if (&s == &panSlider)
         currentDisplay = juce::String (juce::jlimit (0.0, 100.0, s.getValue() * 100.0), 0);
     else if (&s == &windowSlider)
@@ -2489,7 +2486,7 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
 
         juce::String worstCaseText;
         if (&s == &amountSlider)       worstCaseText = "100.0";
-        else if (&s == &modSlider)     worstCaseText = "16.00";
+        else if (&s == &modSlider)     worstCaseText = "4.000";
         else if (&s == &grainSlider)   worstCaseText = "1000.0";
         else if (&s == &windowSlider)  worstCaseText = "8192";
         else if (&s == &inputSlider)   worstCaseText = "-100.0";
@@ -2636,7 +2633,10 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
 
             double val = txt.getDoubleValue();
             if (targetSlider == &safeThis->modSlider)
+            {
+                val = std::round (val * 1000.0) / 1000.0;
                 val = multiplierToModSlider (val);
+            }
             else if (targetSlider == &safeThis->panSlider)
                 val = juce::jlimit (0.0, 1.0, val / 100.0);
             else if (targetSlider == &safeThis->windowSlider)

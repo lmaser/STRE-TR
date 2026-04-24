@@ -1185,11 +1185,11 @@ bool STRETRAudioProcessor::canRestoreFft1FreezeSnapshot (int fftSize, int styleV
                                                          bool triggerOn, bool targetFreeze,
                                                          float targetSpeed) const noexcept
 {
+	juce::ignoreUnused (targetSpeed);
 	if (! fft1FreezeSnapshot_.valid || ! triggerOn || ! fft1FreezeSnapshot_.hasFrame)
 		return false;
 
-	const bool reentryFreezeRequested = targetFreeze || (targetSpeed <= 0.0001f);
-	if (! reentryFreezeRequested)
+	if (! targetFreeze)
 		return false;
 
 	if (fft1FreezeSnapshot_.fftSize != fftSize
@@ -3038,7 +3038,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const bool fft1AmountFreezeDumpActiveBlock = DeveloperDiagnosticsConfig::kEnableFft1AmountFreezeDump
 		&& (engineVal == 2)
 		&& triggerOn
-		&& (amountVal >= 95.0f);
+		&& ((amountVal <= 5.0f) || (amountVal >= 95.0f));
 	const int fft1AmountFreezeDumpBlockIndex = ++fft1AmountFreezeDumpBlockCounter_;
 	double fft1AmountFreezeEngineWetSqL = 0.0;
 	double fft1AmountFreezeEngineWetSqR = 0.0;
@@ -3332,24 +3332,26 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				{
 					double targetAnalysisHop = 0.0;
 					double filteredAnalysisHop = 0.0;
-					const bool fft1DisableFullAmountFreeze = (engineVal == 2) && (cycleSpeed <= 0.0001f);
+					const int freezeHopThreshold = juce::jmax (1, fftSynthHop / 8);
+					const bool fft1FullAmount = (engineVal == 2) && (amountVal >= (kAmountMax - 0.0005f));
+					const int minAnalysisHop = fft1FullAmount
+						? juce::jmax (1, fftSynthHop / 4)
+						: 1;
 					if (cycleSpeed > 0.0001f)
-						targetAnalysisHop = juce::jlimit (1.0, (double) fftSynthHop,
+						targetAnalysisHop = juce::jlimit ((double) minAnalysisHop, (double) fftSynthHop,
 						                                  (double) fftSynthHop * (double) cycleSpeed);
-					else if (fft1DisableFullAmountFreeze)
-						targetAnalysisHop = 1.0;
+					else if (engineVal == 2)
+						targetAnalysisHop = (double) minAnalysisHop;
 					int fftAnalysisHop = (targetAnalysisHop > 0.0001)
-						? juce::jlimit (1, fftSynthHop, (int) std::lround (targetAnalysisHop))
+						? juce::jlimit (minAnalysisHop, fftSynthHop, (int) std::lround (targetAnalysisHop))
 						: 0;
 					stft_.analysisHopSlewNorm = 0.0f;
 					stft_.analysisHopStepNorm = 0.0f;
-					const int freezeHopThreshold = juce::jmax (1, fftSynthHop / 8);
 					bool enteringFreeze = false;
 					bool freezeImmediatelyAfterReset = false;
 					const bool useContinuousAnalysisHop = (engineVal == 2)
 						&& (stft_.activeFftSize == 2048);
 					const bool resetContinuousForFreeze = (engineVal == 2)
-						&& ! fft1DisableFullAmountFreeze
 						&& (targetAnalysisHop <= (double) freezeHopThreshold);
 					if (useContinuousAnalysisHop)
 					{
@@ -3408,7 +3410,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					fftDebugContext_.filteredAnalysisHop = (float) filteredAnalysisHop;
 					fftDebugContext_.analysisHopQuantError = (float) stft_.analysisHopQuantError;
 
-					if (engineVal == 2 && ! fft1DisableFullAmountFreeze)
+					if (engineVal == 2)
 					{
 						if (stft_.activeFftSize >= 4096
 						    && stft_.freezeEntryWarmupCycles > 0
@@ -3467,7 +3469,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 						fftDebugContext_.fftTargetFreeze = fftTargetFreeze ? 1 : 0;
 					}
 
-					const bool fft1FreezeHoldRoute = (engineVal == 2) && ! fft1DisableFullAmountFreeze && (fftAnalysisHop <= 0);
+					const bool fft1FreezeHoldRoute = (engineVal == 2) && (fftAnalysisHop <= 0);
 					if (fft1FreezeHoldRoute)
 					{
 						fftDebugContext_.analysisHopDebug = 0;
