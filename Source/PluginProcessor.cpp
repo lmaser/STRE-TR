@@ -13,6 +13,7 @@ namespace
 		static constexpr bool kEnableAutoDump = false;
 		static constexpr bool kEnableFftAutoDump = false;
 		static constexpr bool kEnableHeavyFftDebugTrace = false;
+		static constexpr bool kEnableFft1AmountFreezeDump = true;
 #if JUCE_DEBUG
 		static constexpr bool kCompileStretchDebugTrace = true;
 		static constexpr bool kCompileGrainDebugTrace = true;
@@ -212,6 +213,10 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 	if constexpr (DeveloperDiagnosticsConfig::kEnableAutoDump)
 	{
 		perfTrace.enableDesktopAutoDump();
+	}
+	if constexpr (DeveloperDiagnosticsConfig::kEnableFft1AmountFreezeDump)
+	{
+		fft1AmountFreezeDumpTrace_.enableDesktopAutoDump();
 	}
 #if JUCE_DEBUG
 	if constexpr (DeveloperDiagnosticsConfig::kEnableAutoDump)
@@ -1058,6 +1063,14 @@ int STRETRAudioProcessor::recommendedFftTriggerDuckHoldSamples (int fftSize) con
 {
 	const int safeFft = juce::jmax (1, fftSize);
 	return safeFft + recommendedFftSynthHop (safeFft);
+}
+
+int STRETRAudioProcessor::recommendedFftFreezeTransitionSamples (int fftSize) const noexcept
+{
+	const int safeFft = juce::jmax (1, fftSize);
+	const int safeHop = recommendedFftSynthHop (safeFft);
+	return juce::jlimit (96, kFftWetHistoryLen - 1,
+	                     juce::jmax (samplesForMs (10.0), safeHop));
 }
 
 int STRETRAudioProcessor::recommendedEngineCrossfadeSamples() const noexcept
@@ -2840,14 +2853,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			resetStftAtPos (capturePos, requestedFftSize);
 			if (engineVal == 2)
 			{
-				const bool reentryDual = (styleVal == 3 && numChannels >= 2);
-				const bool reentryWide = (styleVal == 2 && numChannels >= 2);
-				const bool fftExplicitFreezeCapable = ! reverseOn
-				                                  && ! reentryDual
-				                                  && ! reentryWide
-				                                  && (requestedFftSize >= 4096)
-				                                  && (std::abs (targetPitchRate - 1.0f) <= 0.0015f);
-				const bool fftTargetFreeze = fftExplicitFreezeCapable && (amountVal >= 99.9f);
+				const bool fftTargetFreeze = false;
 				if (canRestoreFft1FreezeSnapshot (requestedFftSize, styleVal, reverseOn,
 				                                 triggerOn, fftTargetFreeze, targetSpeed))
 				{
@@ -2971,6 +2977,24 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		chaosParamSmoothCoeff_ = cachedChaosParamSmoothCoeff_;
 
 	chaosStereo_ = (styleVal >= 1);
+	const bool fft1AmountFreezeDumpActiveBlock = DeveloperDiagnosticsConfig::kEnableFft1AmountFreezeDump
+		&& (engineVal == 2)
+		&& triggerOn
+		&& (amountVal >= 95.0f);
+	const int fft1AmountFreezeDumpBlockIndex = ++fft1AmountFreezeDumpBlockCounter_;
+	double fft1AmountFreezeEngineWetSqL = 0.0;
+	double fft1AmountFreezeEngineWetSqR = 0.0;
+	double fft1AmountFreezeFinalWetSqL = 0.0;
+	double fft1AmountFreezeFinalWetSqR = 0.0;
+	double fft1AmountFreezeOutSqL = 0.0;
+	double fft1AmountFreezeOutSqR = 0.0;
+	float fft1AmountFreezeEngineWetPeakL = 0.0f;
+	float fft1AmountFreezeEngineWetPeakR = 0.0f;
+	float fft1AmountFreezeFinalWetPeakL = 0.0f;
+	float fft1AmountFreezeFinalWetPeakR = 0.0f;
+	float fft1AmountFreezeOutPeakL = 0.0f;
+	float fft1AmountFreezeOutPeakR = 0.0f;
+
     // Per-sample processing
 	for (int i = 0; i < numSamples; ++i)
 	{
@@ -3118,10 +3142,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			                          && ! reverseOn
 			                          && ! isDual
 			                          && ! isWide;
-			const bool fftExplicitFreezeCapable = fftUnityCapable
-			                                  && (stft_.activeFftSize >= 4096)
-			                                  && (std::abs (targetPitchRate - 1.0f) <= 0.0015f);
-			const bool fftTargetFreeze = fftExplicitFreezeCapable && (amountVal >= 99.9f);
+			const bool fftExplicitFreezeCapable = false;
+			const bool fftTargetFreeze = fftExplicitFreezeCapable && (amountVal >= (kAmountMax - 0.0005f));
 			const bool fftUnityStateActive = fftUnityBypassActive_ || fftTransitionToUnity_;
 			const bool fftLargeFftNearUnity = (engineVal == 2) && (stft_.activeFftSize >= 4096);
 			const float unityEnterSpeedTol = 0.0005f;
@@ -3242,7 +3264,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					if (fftExplicitFreezeCapturePending_)
 					{
 						fftExplicitFreezeCapturePending_ = false;
-						fftFreezeTransitionTotal_ = (stft_.activeFftSize >= 8192) ? 160 : 96;
+						fftFreezeTransitionTotal_ = recommendedFftFreezeTransitionSamples (stft_.activeFftSize);
 						fftFreezeTransitionRemaining_ = fftFreezeTransitionTotal_;
 						fftFreezeTransitionReadPos_ = (fftWetHistoryWritePos_ - fftFreezeTransitionTotal_
 							+ kFftWetHistoryLen) & (kFftWetHistoryLen - 1);
@@ -3252,9 +3274,12 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				{
 					double targetAnalysisHop = 0.0;
 					double filteredAnalysisHop = 0.0;
+					const bool fft1DisableFullAmountFreeze = (engineVal == 2) && (cycleSpeed <= 0.0001f);
 					if (cycleSpeed > 0.0001f)
 						targetAnalysisHop = juce::jlimit (1.0, (double) fftSynthHop,
 						                                  (double) fftSynthHop * (double) cycleSpeed);
+					else if (fft1DisableFullAmountFreeze)
+						targetAnalysisHop = 1.0;
 					int fftAnalysisHop = (targetAnalysisHop > 0.0001)
 						? juce::jlimit (1, fftSynthHop, (int) std::lround (targetAnalysisHop))
 						: 0;
@@ -3266,6 +3291,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					const bool useContinuousAnalysisHop = (engineVal == 2)
 						&& (stft_.activeFftSize == 2048);
 					const bool resetContinuousForFreeze = (engineVal == 2)
+						&& ! fft1DisableFullAmountFreeze
 						&& (targetAnalysisHop <= (double) freezeHopThreshold);
 					if (useContinuousAnalysisHop)
 					{
@@ -3324,7 +3350,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					fftDebugContext_.filteredAnalysisHop = (float) filteredAnalysisHop;
 					fftDebugContext_.analysisHopQuantError = (float) stft_.analysisHopQuantError;
 
-					if (engineVal == 2)
+					if (engineVal == 2 && ! fft1DisableFullAmountFreeze)
 					{
 						if (stft_.activeFftSize >= 4096
 						    && stft_.freezeEntryWarmupCycles > 0
@@ -3349,7 +3375,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 							                                                                   : 3;
 							if (stft_.activeFftSize >= 4096)
 							{
-								fftFreezeTransitionTotal_ = (stft_.activeFftSize >= 8192) ? 160 : 96;
+								fftFreezeTransitionTotal_ = recommendedFftFreezeTransitionSamples (stft_.activeFftSize);
 								fftFreezeTransitionRemaining_ = fftFreezeTransitionTotal_;
 								fftFreezeTransitionReadPos_ = (fftWetHistoryWritePos_ - fftFreezeTransitionTotal_
 									+ kFftWetHistoryLen) & (kFftWetHistoryLen - 1);
@@ -3383,7 +3409,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 						fftDebugContext_.fftTargetFreeze = fftTargetFreeze ? 1 : 0;
 					}
 
-					const bool fft1FreezeHoldRoute = (engineVal == 2) && (fftAnalysisHop <= 0);
+					const bool fft1FreezeHoldRoute = (engineVal == 2) && ! fft1DisableFullAmountFreeze && (fftAnalysisHop <= 0);
 					if (fft1FreezeHoldRoute)
 					{
 						fftDebugContext_.analysisHopDebug = 0;
@@ -3426,7 +3452,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			{
 				fftExplicitFreezeActive_ = false;
 				fftExplicitFreezeCapturePending_ = false;
-				fftFreezeTransitionTotal_ = (stft_.activeFftSize >= 8192) ? 160 : 96;
+				fftFreezeTransitionTotal_ = recommendedFftFreezeTransitionSamples (stft_.activeFftSize);
 				fftFreezeTransitionRemaining_ = fftFreezeTransitionTotal_;
 				fftFreezeTransitionReadPos_ = (fftWetHistoryWritePos_ - fftFreezeTransitionTotal_
 					+ kFftWetHistoryLen) & (kFftWetHistoryLen - 1);
@@ -3456,37 +3482,17 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					fftFreezeTransitionTotal_ = 0;
 					fftExplicitFreezeActive_ = false;
 					fftExplicitFreezeCapturePending_ = false;
-					const bool nearUnityPitch = std::abs (bootstrapPitchRate - 1.0f) <= 0.0015f;
-					const bool unityPitchHandoff = std::abs (targetSpeed - 1.0f) <= 0.0005f
-						&& ! nearUnityPitch;
-					if ((fftSizeForReset == 1024 || fftSizeForReset == 2048) && nearUnityPitch)
+					fftStartupWarmupRemainingCycles_ = 0;
+					if (fftTargetFreeze)
 					{
-						fftStartupWarmupRemainingCycles_ = (fftSizeForReset == 1024) ? 3 : 4;
-						fftTransitionTotal_ = 0;
-						fftTransitionRemaining_ = 0;
-					}
-					else if (unityPitchHandoff)
-					{
-						fftStartupWarmupRemainingCycles_ = (fftSizeForReset >= 8192) ? 4
-						                               : (fftSizeForReset >= 2048) ? 3
-						                                                          : 2;
 						fftTransitionTotal_ = 0;
 						fftTransitionRemaining_ = 0;
 					}
 					else
 					{
-						fftStartupWarmupRemainingCycles_ = 0;
-						if (fftTargetFreeze)
-						{
-							fftTransitionTotal_ = 0;
-							fftTransitionRemaining_ = 0;
-						}
-						else
-						{
-							fftTransitionTotal_ = fftTransitionSamples;
-							fftTransitionRemaining_ = fftTransitionTotal_;
-							fftTransitionHoldSamples_ = 0;
-						}
+						fftTransitionTotal_ = fftTransitionSamples;
+						fftTransitionRemaining_ = fftTransitionTotal_;
+						fftTransitionHoldSamples_ = 0;
 					}
 				}
 				else
@@ -4313,6 +4319,13 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			wetL = outL;
 			wetR = outR;
 		}
+		if (fft1AmountFreezeDumpActiveBlock)
+		{
+			fft1AmountFreezeEngineWetSqL += (double) wetL * (double) wetL;
+			fft1AmountFreezeEngineWetSqR += (double) wetR * (double) wetR;
+			fft1AmountFreezeEngineWetPeakL = juce::jmax (fft1AmountFreezeEngineWetPeakL, std::abs (wetL));
+			fft1AmountFreezeEngineWetPeakR = juce::jmax (fft1AmountFreezeEngineWetPeakR, std::abs (wetR));
+		}
 
 		// Mix dry/wet with Sum Bus routing
 		float dG, wG;
@@ -4331,6 +4344,13 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 		wL *= wG;
 		wR *= wG;
+		if (fft1AmountFreezeDumpActiveBlock)
+		{
+			fft1AmountFreezeFinalWetSqL += (double) wL * (double) wL;
+			fft1AmountFreezeFinalWetSqR += (double) wR * (double) wR;
+			fft1AmountFreezeFinalWetPeakL = juce::jmax (fft1AmountFreezeFinalWetPeakL, std::abs (wL));
+			fft1AmountFreezeFinalWetPeakR = juce::jmax (fft1AmountFreezeFinalWetPeakR, std::abs (wR));
+		}
 		if (sumBusVal == 0) // ST
 		{
 			channelL[i] = dL + wL;
@@ -4348,6 +4368,62 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			channelL[i] = dL + sideBus;
 			if (channelR != nullptr) channelR[i] = dR - sideBus;
 		}
+		if (fft1AmountFreezeDumpActiveBlock)
+		{
+			const float outDumpL = channelL[i];
+			const float outDumpR = (channelR != nullptr) ? channelR[i] : outDumpL;
+			fft1AmountFreezeOutSqL += (double) outDumpL * (double) outDumpL;
+			fft1AmountFreezeOutSqR += (double) outDumpR * (double) outDumpR;
+			fft1AmountFreezeOutPeakL = juce::jmax (fft1AmountFreezeOutPeakL, std::abs (outDumpL));
+			fft1AmountFreezeOutPeakR = juce::jmax (fft1AmountFreezeOutPeakR, std::abs (outDumpR));
+		}
+	}
+
+	if (fft1AmountFreezeDumpActiveBlock)
+	{
+		const float invCount = 1.0f / (float) juce::jmax (1, numSamples);
+		const bool fftExplicitFreezeCapable = ! reverseOn
+		                                  && ! (styleVal == 3 && numChannels >= 2)
+		                                  && ! (styleVal == 2 && numChannels >= 2)
+		                                  && (stft_.activeFftSize >= 4096)
+		                                  && (std::abs (targetPitchRate - 1.0f) <= 0.0015f);
+		const bool fftTargetFreeze = fftExplicitFreezeCapable && (amountVal >= (kAmountMax - 0.0005f));
+		Fft1AmountFreezeDumpEntry dbg {};
+		dbg.blockIndex = fft1AmountFreezeDumpBlockIndex;
+		dbg.engine = engineVal;
+		dbg.triggerOn = triggerOn ? 1 : 0;
+		dbg.alignOn = alignOn ? 1 : 0;
+		dbg.pdcOn = pdcOn ? 1 : 0;
+		dbg.amount = amountVal;
+		dbg.mod = modVal;
+		dbg.speed = targetSpeed;
+		dbg.pitchRate = targetPitchRate;
+		dbg.windowSamples = windowSamples;
+		dbg.fftSize = stft_.activeFftSize;
+		dbg.reportedLatency = reportedLatency;
+		dbg.dryDelayLen = dryDelayLen_;
+		dbg.fftTargetFreeze = fftTargetFreeze ? 1 : 0;
+		dbg.fftExplicitFreezeActive = fftExplicitFreezeActive_ ? 1 : 0;
+		dbg.fftExplicitFreezeCapturePending = fftExplicitFreezeCapturePending_ ? 1 : 0;
+		dbg.lastAnalysisHop = stft_.lastAnalysisHop;
+		dbg.freezeEntryWarmupCycles = stft_.freezeEntryWarmupCycles;
+		dbg.fftTransitionRemaining = fftTransitionRemaining_;
+		dbg.fftTransitionTotal = fftTransitionTotal_;
+		dbg.fftFreezeTransitionRemaining = fftFreezeTransitionRemaining_;
+		dbg.fftFreezeTransitionTotal = fftFreezeTransitionTotal_;
+		dbg.engineWetRmsL = std::sqrt ((float) (fft1AmountFreezeEngineWetSqL * invCount));
+		dbg.engineWetRmsR = std::sqrt ((float) (fft1AmountFreezeEngineWetSqR * invCount));
+		dbg.engineWetPeakL = fft1AmountFreezeEngineWetPeakL;
+		dbg.engineWetPeakR = fft1AmountFreezeEngineWetPeakR;
+		dbg.finalWetRmsL = std::sqrt ((float) (fft1AmountFreezeFinalWetSqL * invCount));
+		dbg.finalWetRmsR = std::sqrt ((float) (fft1AmountFreezeFinalWetSqR * invCount));
+		dbg.finalWetPeakL = fft1AmountFreezeFinalWetPeakL;
+		dbg.finalWetPeakR = fft1AmountFreezeFinalWetPeakR;
+		dbg.outRmsL = std::sqrt ((float) (fft1AmountFreezeOutSqL * invCount));
+		dbg.outRmsR = std::sqrt ((float) (fft1AmountFreezeOutSqR * invCount));
+		dbg.outPeakL = fft1AmountFreezeOutPeakL;
+		dbg.outPeakR = fft1AmountFreezeOutPeakR;
+		fft1AmountFreezeDumpTrace_.record (dbg);
 	}
 
 	smoothedDryLevel = dryLevelState;

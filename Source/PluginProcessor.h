@@ -852,6 +852,140 @@ private:
 #endif
 	FftDebugContext fftDebugContext_;
 
+	struct Fft1AmountFreezeDumpEntry
+	{
+		int   blockIndex = 0;
+		int   engine = 0;
+		int   triggerOn = 0;
+		int   alignOn = 0;
+		int   pdcOn = 0;
+		float amount = 0.0f;
+		float mod = 0.0f;
+		float speed = 0.0f;
+		float pitchRate = 1.0f;
+		int   windowSamples = 0;
+		int   fftSize = 0;
+		int   reportedLatency = 0;
+		int   dryDelayLen = 0;
+		int   fftTargetFreeze = 0;
+		int   fftExplicitFreezeActive = 0;
+		int   fftExplicitFreezeCapturePending = 0;
+		int   lastAnalysisHop = -1;
+		int   freezeEntryWarmupCycles = 0;
+		int   fftTransitionRemaining = 0;
+		int   fftTransitionTotal = 0;
+		int   fftFreezeTransitionRemaining = 0;
+		int   fftFreezeTransitionTotal = 0;
+		float engineWetRmsL = 0.0f;
+		float engineWetRmsR = 0.0f;
+		float engineWetPeakL = 0.0f;
+		float engineWetPeakR = 0.0f;
+		float finalWetRmsL = 0.0f;
+		float finalWetRmsR = 0.0f;
+		float finalWetPeakL = 0.0f;
+		float finalWetPeakR = 0.0f;
+		float outRmsL = 0.0f;
+		float outRmsR = 0.0f;
+		float outPeakL = 0.0f;
+		float outPeakR = 0.0f;
+	};
+
+	class Fft1AmountFreezeDumpTrace
+	{
+	public:
+		static constexpr int kRingSize = 8192;
+
+		void record (const Fft1AmountFreezeDumpEntry& entry) noexcept
+		{
+			const int idx = writeIndex.fetch_add (1, std::memory_order_relaxed) & (kRingSize - 1);
+			ring[idx] = entry;
+		}
+
+		void setAutoDumpPath (const juce::String& path) { autoDumpPath = path; }
+
+		void enableDesktopAutoDump (const juce::String& filename = "stretr_fft1_amount_freeze_dump.csv")
+		{
+			auto desktop = juce::File::getSpecialLocation (juce::File::userDesktopDirectory);
+			setAutoDumpPath (desktop.getChildFile (filename).getFullPathName());
+		}
+
+		bool dumpToFile (const juce::String& filePath) const
+		{
+			juce::File f (filePath);
+			if (auto stream = f.createOutputStream())
+			{
+				stream->writeText (
+					"block_index,engine,trigger_on,align_on,pdc_on,amount,mod,speed,pitch_rate,window_samples,fft_size,"
+					"reported_latency,dry_delay_len,fft_target_freeze,fft_explicit_freeze_active,"
+					"fft_explicit_freeze_capture_pending,last_analysis_hop,freeze_entry_warmup_cycles,"
+					"fft_transition_remaining,fft_transition_total,fft_freeze_transition_remaining,"
+					"fft_freeze_transition_total,engine_wet_rms_l,engine_wet_rms_r,engine_wet_peak_l,engine_wet_peak_r,"
+					"final_wet_rms_l,final_wet_rms_r,final_wet_peak_l,final_wet_peak_r,out_rms_l,out_rms_r,out_peak_l,out_peak_r\n",
+					false, false, nullptr);
+
+				const int total = juce::jmin (writeIndex.load (std::memory_order_relaxed), kRingSize);
+				const int startIdx = writeIndex.load (std::memory_order_relaxed) - total;
+				for (int i = 0; i < total; ++i)
+				{
+					const auto& e = ring[(startIdx + i) & (kRingSize - 1)];
+					juce::String line;
+					line << e.blockIndex << ","
+					     << e.engine << ","
+					     << e.triggerOn << ","
+					     << e.alignOn << ","
+					     << e.pdcOn << ","
+					     << e.amount << ","
+					     << e.mod << ","
+					     << e.speed << ","
+					     << e.pitchRate << ","
+					     << e.windowSamples << ","
+					     << e.fftSize << ","
+					     << e.reportedLatency << ","
+					     << e.dryDelayLen << ","
+					     << e.fftTargetFreeze << ","
+					     << e.fftExplicitFreezeActive << ","
+					     << e.fftExplicitFreezeCapturePending << ","
+					     << e.lastAnalysisHop << ","
+					     << e.freezeEntryWarmupCycles << ","
+					     << e.fftTransitionRemaining << ","
+					     << e.fftTransitionTotal << ","
+					     << e.fftFreezeTransitionRemaining << ","
+					     << e.fftFreezeTransitionTotal << ","
+					     << e.engineWetRmsL << ","
+					     << e.engineWetRmsR << ","
+					     << e.engineWetPeakL << ","
+					     << e.engineWetPeakR << ","
+					     << e.finalWetRmsL << ","
+					     << e.finalWetRmsR << ","
+					     << e.finalWetPeakL << ","
+					     << e.finalWetPeakR << ","
+					     << e.outRmsL << ","
+					     << e.outRmsR << ","
+					     << e.outPeakL << ","
+					     << e.outPeakR << "\n";
+					stream->writeText (line, false, false, nullptr);
+				}
+				stream->flush();
+				return true;
+			}
+			return false;
+		}
+
+		~Fft1AmountFreezeDumpTrace()
+		{
+			if (autoDumpPath.isNotEmpty() && writeIndex.load (std::memory_order_relaxed) > 0)
+				dumpToFile (autoDumpPath);
+		}
+
+	private:
+		Fft1AmountFreezeDumpEntry ring[kRingSize] {};
+		std::atomic<int> writeIndex { 0 };
+		juce::String autoDumpPath;
+	};
+
+	Fft1AmountFreezeDumpTrace fft1AmountFreezeDumpTrace_;
+	int fft1AmountFreezeDumpBlockCounter_ = 0;
+
     // Granular engine state
 	struct Grain
 	{
@@ -992,6 +1126,7 @@ private:
 	int   recommendedFftWindowCrossfadeSamples() const noexcept;
 	int   recommendedFft2WindowCrossfadeSamples (int fromFftSize, int toFftSize) const noexcept;
 	int   recommendedFftTriggerDuckHoldSamples (int fftSize) const noexcept;
+	int   recommendedFftFreezeTransitionSamples (int fftSize) const noexcept;
 	int   recommendedEngineCrossfadeSamples() const noexcept;
 	void  resetFftWindowDuckPrepareState (int capturedWindowVal, float amountVal,
 	                                     int engineVal, bool triggerOn) noexcept;
