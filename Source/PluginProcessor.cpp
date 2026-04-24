@@ -330,6 +330,9 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	stretchTransitionTotal_ = 0;
 	stretchTransitionToUnity_ = false;
 	triggerWasOn_ = false;
+	transportWasPlaying_ = false;
+	transportHasSamplePos_ = false;
+	transportLastSamplePos_ = 0;
 
     // Initialize Granular state
 	for (int g = 0; g < kMaxGrains; ++g)
@@ -449,6 +452,9 @@ void STRETRAudioProcessor::releaseResources()
 	for (int ch = 0; ch < 2; ++ch)
 		inputBuf_[ch].clear();
 	inputBufLen_ = 0;
+	transportWasPlaying_ = false;
+	transportHasSamplePos_ = false;
+	transportLastSamplePos_ = 0;
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -2748,6 +2754,49 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	if (fftRawAmountChanged)
 		recordFftControlEvent (6);
 
+	bool fftTransportRestartedThisBlock = false;
+	if (auto* audioPlayHead = getPlayHead())
+	{
+		if (auto position = audioPlayHead->getPosition())
+		{
+			const bool isPlayingNow = position->getIsPlaying();
+			const auto timeInSamples = position->getTimeInSamples();
+			const bool hasSamplePos = timeInSamples.hasValue();
+			const juce::int64 samplePos = hasSamplePos ? *timeInSamples : 0;
+			const bool transportStartedThisBlock = isPlayingNow && ! transportWasPlaying_;
+			const bool transportJumpedBackwardThisBlock = isPlayingNow
+				&& transportHasSamplePos_
+				&& hasSamplePos
+				&& (samplePos + (juce::int64) numSamples < transportLastSamplePos_);
+			fftTransportRestartedThisBlock = triggerOn
+				&& (engineVal == 2 || engineVal == 3)
+				&& (transportStartedThisBlock || transportJumpedBackwardThisBlock);
+			transportWasPlaying_ = isPlayingNow;
+			if (hasSamplePos)
+			{
+				transportLastSamplePos_ = samplePos;
+				transportHasSamplePos_ = true;
+			}
+			else if (! isPlayingNow)
+			{
+				transportHasSamplePos_ = false;
+				transportLastSamplePos_ = 0;
+			}
+		}
+		else
+		{
+			transportWasPlaying_ = false;
+			transportHasSamplePos_ = false;
+			transportLastSamplePos_ = 0;
+		}
+	}
+	else
+	{
+		transportWasPlaying_ = false;
+		transportHasSamplePos_ = false;
+		transportLastSamplePos_ = 0;
+	}
+
     // Trigger edge detection: reset engines on trigger press
 	bool fftReseededThisBlock = false;
 	if (triggerOn && ! triggerWasOn_)
@@ -2790,6 +2839,15 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		dbg.futureMargin = captureAbsPos - (grainReadPos_ + dbg.lookBehind - 2.0);
 		grainDebugTrace_.record (dbg);
 #endif
+	}
+	else if (fftTransportRestartedThisBlock && requestedFftSize > 0)
+	{
+		const double capturePos = (double) ((inputBufWritePos_ - 1 + inputBufLen_) & inputBufMask_);
+		const int triggerDuckHoldSamples = recommendedFftTriggerDuckHoldSamples (requestedFftSize);
+		fftParamDuckHoldRemaining_ = juce::jmax (fftParamDuckHoldRemaining_, triggerDuckHoldSamples);
+		resetStftAtPos (capturePos, requestedFftSize);
+		recordFftReset (1, capturePos);
+		fftReseededThisBlock = true;
 	}
 	triggerWasOn_ = triggerOn;
 

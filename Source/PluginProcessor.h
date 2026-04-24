@@ -234,6 +234,9 @@ private:
 	double inputBufWriteAbsPos_ = 0.0;
 
 	bool  triggerWasOn_ = false;  // tracks previous trigger state for edge detection
+	bool  transportWasPlaying_ = false;
+	bool  transportHasSamplePos_ = false;
+	juce::int64 transportLastSamplePos_ = 0;
 
 	static constexpr int kWsolaOutBufLen = 32768; // 2^15, enough for max segment + overlap scheduling
 
