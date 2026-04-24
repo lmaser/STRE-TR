@@ -2453,6 +2453,8 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     juce::String currentDisplay;
     if (&s == &modSlider)
         currentDisplay = juce::String (modSliderToMultiplier (s.getValue()), 3);
+    else if (&s == &grainSlider)
+        currentDisplay = juce::String (s.getValue(), 3);
     else if (&s == &panSlider)
         currentDisplay = juce::String (juce::jlimit (0.0, 100.0, s.getValue() * 100.0), 0);
     else if (&s == &windowSlider)
@@ -2487,7 +2489,7 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         juce::String worstCaseText;
         if (&s == &amountSlider)       worstCaseText = "100.0";
         else if (&s == &modSlider)     worstCaseText = "4.000";
-        else if (&s == &grainSlider)   worstCaseText = "1000.0";
+        else if (&s == &grainSlider)   worstCaseText = "500.000";
         else if (&s == &windowSlider)  worstCaseText = "8192";
         else if (&s == &inputSlider)   worstCaseText = "-100.0";
         else if (&s == &outputSlider)  worstCaseText = "-100.0";

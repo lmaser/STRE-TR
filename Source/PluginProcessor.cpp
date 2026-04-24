@@ -4892,7 +4892,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 		juce::NormalisableRange<float> (kModMin, kModMax, 0.0f, 1.0f), kModDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamGrain, "Grain",
-		juce::NormalisableRange<float> (kGrainMin, kGrainMax, 0.01f, 0.25f), kGrainDefault));
+		juce::NormalisableRange<float> (kGrainMin, kGrainMax, 0.001f, 0.25f), kGrainDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamEngine, "Engine",
 		juce::NormalisableRange<float> ((float) kEngineMin, (float) kEngineMax, 1.0f, 1.0f), kEngineDefault));
