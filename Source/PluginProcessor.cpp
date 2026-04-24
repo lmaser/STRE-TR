@@ -2757,6 +2757,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		recordFftControlEvent (6);
 
 	bool fftTransportRestartedThisBlock = false;
+	bool grainTransportRestartedThisBlock = false;
 	if (auto* audioPlayHead = getPlayHead())
 	{
 		if (auto position = audioPlayHead->getPosition())
@@ -2770,9 +2771,12 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				&& transportHasSamplePos_
 				&& hasSamplePos
 				&& (samplePos + (juce::int64) numSamples < transportLastSamplePos_);
-			fftTransportRestartedThisBlock = triggerOn
-				&& (engineVal == 2 || engineVal == 3)
+			const bool triggerTransportRestartedThisBlock = triggerOn
 				&& (transportStartedThisBlock || transportJumpedBackwardThisBlock);
+			fftTransportRestartedThisBlock = triggerTransportRestartedThisBlock
+				&& (engineVal == 2 || engineVal == 3);
+			grainTransportRestartedThisBlock = triggerTransportRestartedThisBlock
+				&& (engineVal == 1);
 			transportWasPlaying_ = isPlayingNow;
 			if (hasSamplePos)
 			{
@@ -2850,6 +2854,35 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		resetStftAtPos (capturePos, requestedFftSize);
 		recordFftReset (1, capturePos);
 		fftReseededThisBlock = true;
+	}
+	else if (grainTransportRestartedThisBlock && inputBufLen_ > 0)
+	{
+		const double captureAbsPos = currentCaptureAbsPos();
+		resetGrainAtCapturePos (captureAbsPos, grainSamples, targetPitchRate, reverseOn, styleVal == 2 && numChannels >= 2);
+
+#if JUCE_DEBUG
+		GrainDebugEntry dbg {};
+		dbg.blockIndex = debugBlockIndex;
+		dbg.sampleIndex = 0;
+		dbg.eventType = 3;
+		dbg.amount = amountVal;
+		dbg.mod = modVal;
+		dbg.speed = targetSpeed;
+		dbg.pitchRate = targetPitchRate;
+		dbg.windowSamples = windowSamples;
+		dbg.grainSamples = grainSamples;
+		dbg.style = styleVal;
+		dbg.reverseOn = reverseOn ? 1 : 0;
+		dbg.triggerOn = 1;
+		dbg.activeGrains = 0;
+		dbg.capturePos = captureAbsPos;
+		dbg.readPosBefore = captureAbsPos;
+		dbg.spawnPos = grainReadPos_;
+		dbg.readPosAfter = grainReadPos_;
+		dbg.lookBehind = computeGrainLookBehind (grainSamples, targetPitchRate, reverseOn, styleVal == 2 && numChannels >= 2);
+		dbg.futureMargin = captureAbsPos - (grainReadPos_ + dbg.lookBehind - 2.0);
+		grainDebugTrace_.record (dbg);
+#endif
 	}
 	triggerWasOn_ = triggerOn;
 

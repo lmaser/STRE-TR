@@ -420,7 +420,7 @@ private:
 	{
 		int    blockIndex     = 0;
 		int    sampleIndex    = 0;
-		int    eventType      = 0; // 0=spawn, 1=trigger_reset, 2=engine_reset
+		int    eventType      = 0; // 0=spawn, 1=trigger_reset, 2=engine_reset, 3=transport_reset
 		float  amount         = 0.0f;
 		float  mod            = 0.0f;
 		float  speed          = 0.0f;
@@ -478,6 +478,7 @@ private:
 					const auto& e = ring[(startIdx + i) & (kRingSize - 1)];
 					const juce::String eventName = (e.eventType == 1) ? "trigger_reset"
 						: (e.eventType == 2) ? "engine_reset"
+						: (e.eventType == 3) ? "transport_reset"
 						: "spawn";
 					juce::String line;
 					line << e.blockIndex << ","
