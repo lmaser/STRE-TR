@@ -3002,15 +3002,15 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const int engineWetLatency = (fftWetLatency > 0) ? fftWetLatency
 			: (grainWetLatency > 0) ? grainWetLatency
 			: stretchWetLatency;
-		const bool outputLatencyActive = triggerOn || alignOn;
-		reportedLatency = (pdcOn && outputLatencyActive) ? engineWetLatency : 0;
+		const int activeEngineWetLatency = triggerOn ? engineWetLatency : 0;
+		reportedLatency = (pdcOn && activeEngineWetLatency > 0) ? activeEngineWetLatency : 0;
 		if (reportedLatency != lastReportedLatency_)
 		{
 			setLatencySamples (reportedLatency);
 			lastReportedLatency_ = reportedLatency;
 		}
-		dryDelayLen_ = (alignOn && engineWetLatency > 0)
-			? juce::jmin (engineWetLatency, kDryDelayBufLen - 1)
+		dryDelayLen_ = (alignOn && activeEngineWetLatency > 0)
+			? juce::jmin (activeEngineWetLatency, kDryDelayBufLen - 1)
 			: 0;
 		fftOutputPadLen = 0;
 	}
@@ -3131,7 +3131,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		float unityRefR = inR;
 		if (alignOn && dryDelayLen_ > 0 && inputBufLen_ > 0)
 		{
-			const int unityRefPos = (inputBufWritePos_ - dryDelayLen_ + inputBufLen_) & inputBufMask_;
+			const int unityRefPos = (inputBufWritePos_ - 1 - dryDelayLen_ + inputBufLen_) & inputBufMask_;
 			unityRefL = inputBuf_[0][unityRefPos];
 			unityRefR = inputBuf_[1][unityRefPos];
 		}
