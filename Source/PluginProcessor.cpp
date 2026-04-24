@@ -3196,13 +3196,18 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			const int identityRefPos = (inputBufWritePos_ - fftWetLatency + inputBufLen_) & inputBufMask_;
 			const float identityRefL = inputBuf_[0][identityRefPos];
 			const float identityRefR = inputBuf_[1][identityRefPos];
-			const bool fftUnityCapable = (engineVal == 2 || engineVal == 3)
-			                          && ! reverseOn
-			                          && ! isDual
-			                          && ! isWide;
+			const bool fftStandardUnityCapable = (engineVal == 2 || engineVal == 3)
+			                              && ! reverseOn
+			                              && ! isDual
+			                              && ! isWide;
 			const bool fftExplicitFreezeCapable = false;
 			const bool fftTargetFreeze = fftExplicitFreezeCapable && (amountVal >= (kAmountMax - 0.0005f));
 			const bool fftUnityStateActive = fftUnityBypassActive_ || fftTransitionToUnity_;
+			const float fft1UnityAmountTol = fftUnityStateActive ? 0.05f : 0.02f;
+			const bool fft1AmountUnity = (engineVal == 2) && (amountVal <= fft1UnityAmountTol);
+			const bool fftUnityPathActive = fftUnityStateActive
+			                             || (fftTransitionRemaining_ > 0 && fftTransitionTotal_ > 0);
+			const bool fftUnityCapable = fftStandardUnityCapable || fft1AmountUnity || fftUnityPathActive;
 			const bool fftLargeFftNearUnity = (engineVal == 2) && (stft_.activeFftSize >= 4096);
 			const float unityEnterSpeedTol = 0.0005f;
 			const float unityExitSpeedTol  = 0.0035f;
@@ -3218,10 +3223,10 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				? (amountVal <= (fftUnityStateActive ? unityExitAmountTol : unityEnterAmountTol))
 				: (std::abs (targetSpeed - 1.0f)
 				       <= (fftUnityStateActive ? unityExitSpeedTol : unityEnterSpeedTol));
-			const bool fftUnity = fftUnityCapable
-			                   && fftUnitySpeedOk
-			                   && std::abs (targetPitchRate - 1.0f)
+			const bool fftUnityPitchOk = std::abs (targetPitchRate - 1.0f)
 			                          <= (fftUnityStateActive ? unityExitPitchTol : unityEnterPitchTol);
+			const bool fftUnity = fft1AmountUnity
+			                   || (fftStandardUnityCapable && fftUnitySpeedOk && fftUnityPitchOk);
 			const int fftTransitionSamples = juce::jlimit (32,
 			                                               (int) std::round (currentSampleRate * 0.08),
 			                                               juce::jmax ((int) std::round (currentSampleRate * 0.02),
@@ -3333,10 +3338,16 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					double targetAnalysisHop = 0.0;
 					double filteredAnalysisHop = 0.0;
 					const int freezeHopThreshold = juce::jmax (1, fftSynthHop / 8);
-					const bool fft1FullAmount = (engineVal == 2) && (amountVal >= (kAmountMax - 0.0005f));
-					const int minAnalysisHop = fft1FullAmount
-						? juce::jmax (1, fftSynthHop / 4)
-						: 1;
+					const int fft1FullAmountStableHop = juce::jmax (1, fftSynthHop / 4);
+					int minAnalysisHop = 1;
+					if (engineVal == 2)
+					{
+						const float fullAmountNorm = juce::jlimit (0.0f, 1.0f,
+							(amountVal - (kAmountMax - 0.25f)) / 0.25f);
+						const float fullAmountRamp = fullAmountNorm * fullAmountNorm * (3.0f - 2.0f * fullAmountNorm);
+						minAnalysisHop = juce::jlimit (1, fftSynthHop,
+							1 + (int) std::lround ((float) (fft1FullAmountStableHop - 1) * fullAmountRamp));
+					}
 					if (cycleSpeed > 0.0001f)
 						targetAnalysisHop = juce::jlimit ((double) minAnalysisHop, (double) fftSynthHop,
 						                                  (double) fftSynthHop * (double) cycleSpeed);
