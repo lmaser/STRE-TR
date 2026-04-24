@@ -362,6 +362,7 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	fft1WindowTransitionTotal_ = 0;
 	fftOutputPadWritePos_ = 0;
 	fftUnityBypassActive_ = false;
+	fft1AmountUnityBypassActive_ = false;
 	fftTransitionRemaining_ = 0;
 	fftTransitionTotal_ = 0;
 	fftTransitionHoldSamples_ = 0;
@@ -3161,6 +3162,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		if (! triggerOn || (engineVal != 2 && engineVal != 3))
 		{
 			fftUnityBypassActive_ = false;
+			fft1AmountUnityBypassActive_ = false;
 			fftTransitionRemaining_ = 0;
 			fftTransitionTotal_ = 0;
 			fftTransitionHoldSamples_ = 0;
@@ -3168,6 +3170,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		}
 		if (! triggerOn || engineVal != 2)
 		{
+			fft1AmountUnityBypassActive_ = false;
 			fft1ReentryTraceRemaining_ = 0;
 			fftFreezeTransitionRemaining_ = 0;
 			fftFreezeTransitionTotal_ = 0;
@@ -3506,6 +3509,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			if (fftUnityCapable && ! fftUnity && fftTransitionToUnity_)
 			{
 				fftTransitionToUnity_ = false;
+				fft1AmountUnityBypassActive_ = false;
 				fftTransitionRemaining_ = 0;
 				fftTransitionTotal_ = 0;
 				fftTransitionHoldSamples_ = 0;
@@ -3537,6 +3541,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 			if (fftUnityCapable && ! fftUnity && fftUnityBypassActive_)
 			{
+				const bool leavingFft1AmountUnityBypass = (engineVal == 2) && fft1AmountUnityBypassActive_;
 				const int fftSizeForReset = (requestedFftSize > 0) ? requestedFftSize : stft_.activeFftSize;
 				const double capturePos = (double) ((inputBufWritePos_ - 1 + inputBufLen_) & inputBufMask_);
 				resetStftAtPos (capturePos, fftSizeForReset);
@@ -3553,11 +3558,20 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					fftFreezeTransitionTotal_ = 0;
 					fftExplicitFreezeActive_ = false;
 					fftExplicitFreezeCapturePending_ = false;
-					fftStartupWarmupRemainingCycles_ = 0;
+					fftStartupWarmupRemainingCycles_ = leavingFft1AmountUnityBypass
+						? juce::jmax (1, (stft_.activeFftSize + fftSynthHop - 1) / fftSynthHop)
+						: 0;
+					fft1AmountUnityBypassActive_ = false;
 					if (fftTargetFreeze)
 					{
 						fftTransitionTotal_ = 0;
 						fftTransitionRemaining_ = 0;
+					}
+					else if (fftStartupWarmupRemainingCycles_ > 0)
+					{
+						fftTransitionTotal_ = 0;
+						fftTransitionRemaining_ = 0;
+						fftTransitionHoldSamples_ = 0;
 					}
 					else
 					{
@@ -3580,6 +3594,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				{
 					fftStartupWarmupRemainingCycles_ = 0;
 					fftUnityBypassActive_ = true;
+					fft1AmountUnityBypassActive_ = fft1AmountUnity;
 					fftTransitionRemaining_ = 0;
 					fftTransitionTotal_ = 0;
 					fftTransitionHoldSamples_ = 0;
@@ -3594,6 +3609,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					if (stft_.hasFrame)
 					{
 						fftTransitionToUnity_ = true;
+						fft1AmountUnityBypassActive_ = fft1AmountUnity;
 						fftTransitionTotal_ = fftTransitionSamples;
 						fftTransitionRemaining_ = fftTransitionTotal_;
 						fftTransitionHoldSamples_ = 0;
@@ -3601,6 +3617,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					else
 					{
 						fftUnityBypassActive_ = true;
+						fft1AmountUnityBypassActive_ = fft1AmountUnity;
 						fftTransitionRemaining_ = 0;
 						fftTransitionTotal_ = 0;
 						fftTransitionHoldSamples_ = 0;

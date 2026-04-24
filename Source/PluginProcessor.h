@@ -1097,6 +1097,7 @@ private:
 	int   fft1WindowTransitionTotal_ = 0;
 	int   fftOutputPadWritePos_ = 0;
 	bool  fftUnityBypassActive_ = false;
+	bool  fft1AmountUnityBypassActive_ = false;
 	int   fftStartupWarmupRemainingCycles_ = 0;
 	int   fftTransitionRemaining_ = 0;
 	int   fftTransitionTotal_ = 0;
