@@ -296,7 +296,7 @@ private:
 		int    prevBestOffset  = 0;
 		int    bestOffset      = 0;
 		int    style           = 0;
-		int    eventType       = 0; // 0=segment, 1=unity_bypass
+		int    eventType       = 0; // 0=segment, 1=unity_bypass, 2=transport_reset
 		int    reverseOn       = 0;
 		int    triggerOn       = 0;
 		int    hasPrevTail     = 0;
@@ -347,7 +347,9 @@ private:
 				for (int i = 0; i < total; ++i)
 				{
 					const auto& e = ring[(startIdx + i) & (kRingSize - 1)];
-					const juce::String eventName = (e.eventType == 1) ? "unity_bypass" : "segment";
+					const juce::String eventName = (e.eventType == 1) ? "unity_bypass"
+						: (e.eventType == 2) ? "transport_reset"
+						: "segment";
 					juce::String line;
 					line << e.blockIndex << ","
 					     << e.sampleIndex << ","

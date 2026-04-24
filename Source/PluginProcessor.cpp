@@ -2758,6 +2758,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	if (fftRawAmountChanged)
 		recordFftControlEvent (6);
 
+	bool stretchTransportRestartedThisBlock = false;
 	bool fftTransportRestartedThisBlock = false;
 	bool grainTransportRestartedThisBlock = false;
 	if (auto* audioPlayHead = getPlayHead())
@@ -2775,6 +2776,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				&& (samplePos + (juce::int64) numSamples < transportLastSamplePos_);
 			const bool triggerTransportRestartedThisBlock = triggerOn
 				&& (transportStartedThisBlock || transportJumpedBackwardThisBlock);
+			stretchTransportRestartedThisBlock = triggerTransportRestartedThisBlock
+				&& (engineVal == 0);
 			fftTransportRestartedThisBlock = triggerTransportRestartedThisBlock
 				&& (engineVal == 2 || engineVal == 3);
 			grainTransportRestartedThisBlock = triggerTransportRestartedThisBlock
@@ -2856,6 +2859,35 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		resetStftAtPos (capturePos, requestedFftSize);
 		recordFftReset (1, capturePos);
 		fftReseededThisBlock = true;
+	}
+	else if (stretchTransportRestartedThisBlock && inputBufLen_ > 0)
+	{
+		const double capturePos = (double) ((inputBufWritePos_ - 1 + inputBufLen_) & inputBufMask_);
+		resetWsolaAtPos (capturePos);
+		wsolaUnityBypassActive_ = false;
+		stretchBootstrapSegments_ = 0;
+		stretchTransitionRemaining_ = 0;
+		stretchTransitionTotal_ = 0;
+		stretchTransitionToUnity_ = false;
+
+#if JUCE_DEBUG
+		StretchDebugEntry dbg {};
+		dbg.blockIndex = debugBlockIndex;
+		dbg.sampleIndex = 0;
+		dbg.eventType = 2;
+		dbg.amount = amountVal;
+		dbg.mod = modVal;
+		dbg.speed = targetSpeed;
+		dbg.pitchRate = targetPitchRate;
+		dbg.windowSamples = windowSamples;
+		dbg.style = styleVal;
+		dbg.reverseOn = reverseOn ? 1 : 0;
+		dbg.triggerOn = 1;
+		dbg.hasPrevTail = 0;
+		dbg.nearUnity = 0;
+		dbg.segInputStart = wsola_.segInputStart;
+		stretchDebugTrace_.record (dbg);
+#endif
 	}
 	else if (grainTransportRestartedThisBlock && inputBufLen_ > 0)
 	{
