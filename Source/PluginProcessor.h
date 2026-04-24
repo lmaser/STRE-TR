@@ -862,9 +862,14 @@ private:
 		int   triggerOn = 0;
 		int   alignOn = 0;
 		int   pdcOn = 0;
+		int   style = 0;
+		int   reverseOn = 0;
+		int   wideMode = 0;
+		int   dualMode = 0;
 		float amount = 0.0f;
 		float mod = 0.0f;
 		float speed = 0.0f;
+		float smoothedSpeed = 0.0f;
 		float pitchRate = 1.0f;
 		int   windowSamples = 0;
 		int   fftSize = 0;
@@ -879,6 +884,13 @@ private:
 		int   fftTransitionTotal = 0;
 		int   fftFreezeTransitionRemaining = 0;
 		int   fftFreezeTransitionTotal = 0;
+		int   windowTransitionRemaining = 0;
+		int   windowTransitionTotal = 0;
+		int   fftUnityBypassActive = 0;
+		int   fftTransitionToUnity = 0;
+		int   fft1AmountUnityBypassActive = 0;
+		float fft2HoldCoeff = 0.0f;
+		float fft2TargetHoldCoeff = 0.0f;
 		float engineWetRmsL = 0.0f;
 		float engineWetRmsR = 0.0f;
 		float engineWetPeakL = 0.0f;
@@ -922,7 +934,10 @@ private:
 					"reported_latency,dry_delay_len,fft_target_freeze,fft_explicit_freeze_active,"
 					"fft_explicit_freeze_capture_pending,last_analysis_hop,freeze_entry_warmup_cycles,"
 					"fft_transition_remaining,fft_transition_total,fft_freeze_transition_remaining,"
-					"fft_freeze_transition_total,engine_wet_rms_l,engine_wet_rms_r,engine_wet_peak_l,engine_wet_peak_r,"
+					"fft_freeze_transition_total,style,reverse_on,wide_mode,dual_mode,smoothed_speed,"
+					"window_transition_remaining,window_transition_total,fft_unity_bypass_active,fft_transition_to_unity,"
+					"fft1_amount_unity_bypass_active,fft2_hold_coeff,fft2_target_hold_coeff,"
+					"engine_wet_rms_l,engine_wet_rms_r,engine_wet_peak_l,engine_wet_peak_r,"
 					"final_wet_rms_l,final_wet_rms_r,final_wet_peak_l,final_wet_peak_r,out_rms_l,out_rms_r,out_peak_l,out_peak_r\n",
 					false, false, nullptr);
 
@@ -954,6 +969,18 @@ private:
 					     << e.fftTransitionTotal << ","
 					     << e.fftFreezeTransitionRemaining << ","
 					     << e.fftFreezeTransitionTotal << ","
+					     << e.style << ","
+					     << e.reverseOn << ","
+					     << e.wideMode << ","
+					     << e.dualMode << ","
+					     << e.smoothedSpeed << ","
+					     << e.windowTransitionRemaining << ","
+					     << e.windowTransitionTotal << ","
+					     << e.fftUnityBypassActive << ","
+					     << e.fftTransitionToUnity << ","
+					     << e.fft1AmountUnityBypassActive << ","
+					     << e.fft2HoldCoeff << ","
+					     << e.fft2TargetHoldCoeff << ","
 					     << e.engineWetRmsL << ","
 					     << e.engineWetRmsR << ","
 					     << e.engineWetPeakL << ","
@@ -1089,6 +1116,7 @@ private:
 	int   fftAmountTraceRemaining_ = 0;
 	int   fft1ReentryTraceRemaining_ = 0;
 	float fft2HoldCoeffSmoothed_ = 0.0f;
+	bool  fft2AmountZeroHoldBypassActive_ = false;
 	int   prevFftDuckWindowVal_ = 0;
 	float prevFftDuckAmountVal_ = 0.0f;
 	int   prevFftDuckEngineVal_ = -1;

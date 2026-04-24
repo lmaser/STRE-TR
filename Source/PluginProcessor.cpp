@@ -374,6 +374,7 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	fft2WindowTransitionTotal_ = 0;
 	fftExplicitFreezeActive_ = false;
 	fftExplicitFreezeCapturePending_ = false;
+	fft2AmountZeroHoldBypassActive_ = false;
 	clearFft1FreezeSnapshot();
 	std::memset (wetOutputHistory_, 0, sizeof (wetOutputHistory_));
 	wetOutputHistoryWritePos_ = 0;
@@ -3037,7 +3038,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 	chaosStereo_ = (styleVal >= 1);
 	const bool fft1AmountFreezeDumpActiveBlock = DeveloperDiagnosticsConfig::kEnableFft1AmountFreezeDump
-		&& (engineVal == 2)
+		&& (engineVal == 2 || engineVal == 3)
 		&& triggerOn
 		&& ((amountVal <= 5.0f) || (amountVal >= 95.0f));
 	const int fft1AmountFreezeDumpBlockIndex = ++fft1AmountFreezeDumpBlockCounter_;
@@ -3072,12 +3073,32 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const float pitchRate = smoothedPitchRate_;
 		if (engineVal == 3 && triggerOn)
 		{
-			const float fft2TargetHoldCoeff = std::sqrt (std::sqrt (juce::jlimit (0.0f, 1.0f, 1.0f - speed)));
-			const float fft2HoldCoeffStep = 1.0f - std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.022f));
-			fft2HoldCoeffSmoothed_ += (fft2TargetHoldCoeff - fft2HoldCoeffSmoothed_) * fft2HoldCoeffStep;
+			const float fft2ZeroAmountTol = fft2AmountZeroHoldBypassActive_ ? 0.05f : 0.02f;
+			const bool fft2AmountZero = amountVal <= fft2ZeroAmountTol;
+			if (fft2AmountZero)
+			{
+				if (! fft2AmountZeroHoldBypassActive_)
+				{
+					for (int ch = 0; ch < 2; ++ch)
+					{
+						std::fill (std::begin (stft_.heldMag[ch]), std::end (stft_.heldMag[ch]), 0.0f);
+						std::fill (std::begin (stft_.heldFreq[ch]), std::end (stft_.heldFreq[ch]), 0.0f);
+					}
+				}
+				fft2AmountZeroHoldBypassActive_ = true;
+				fft2HoldCoeffSmoothed_ = 0.0f;
+			}
+			else
+			{
+				fft2AmountZeroHoldBypassActive_ = false;
+				const float fft2TargetHoldCoeff = std::sqrt (std::sqrt (juce::jlimit (0.0f, 1.0f, 1.0f - speed)));
+				const float fft2HoldCoeffStep = 1.0f - std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.022f));
+				fft2HoldCoeffSmoothed_ += (fft2TargetHoldCoeff - fft2HoldCoeffSmoothed_) * fft2HoldCoeffStep;
+			}
 		}
 		else
 		{
+			fft2AmountZeroHoldBypassActive_ = false;
 			const float fft2TargetHoldCoeff = std::sqrt (std::sqrt (juce::jlimit (0.0f, 1.0f, 1.0f - speed)));
 			fft2HoldCoeffSmoothed_ = fft2TargetHoldCoeff;
 		}
@@ -3208,9 +3229,12 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			const bool fftUnityStateActive = fftUnityBypassActive_ || fftTransitionToUnity_;
 			const float fft1UnityAmountTol = fftUnityStateActive ? 0.05f : 0.02f;
 			const bool fft1AmountUnity = (engineVal == 2) && (amountVal <= fft1UnityAmountTol);
+			const bool fft2HardAmountUnity = (engineVal == 3) && (amountVal <= fft1UnityAmountTol);
+			const float fft2UnityAmountTol = fftUnityStateActive ? 5.50f : 5.00f;
+			const bool fft2AmountUnity = (engineVal == 3) && (amountVal <= fft2UnityAmountTol);
 			const bool fftUnityPathActive = fftUnityStateActive
 			                             || (fftTransitionRemaining_ > 0 && fftTransitionTotal_ > 0);
-			const bool fftUnityCapable = fftStandardUnityCapable || fft1AmountUnity || fftUnityPathActive;
+			const bool fftUnityCapable = fftStandardUnityCapable || fft1AmountUnity || fft2AmountUnity || fftUnityPathActive;
 			const bool fftLargeFftNearUnity = (engineVal == 2) && (stft_.activeFftSize >= 4096);
 			const float unityEnterSpeedTol = 0.0005f;
 			const float unityExitSpeedTol  = 0.0035f;
@@ -3229,6 +3253,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			const bool fftUnityPitchOk = std::abs (targetPitchRate - 1.0f)
 			                          <= (fftUnityStateActive ? unityExitPitchTol : unityEnterPitchTol);
 			const bool fftUnity = fft1AmountUnity
+			                   || fft2AmountUnity
 			                   || (fftStandardUnityCapable && fftUnitySpeedOk && fftUnityPitchOk);
 			const int fftTransitionSamples = juce::jlimit (32,
 			                                               (int) std::round (currentSampleRate * 0.08),
@@ -3537,6 +3562,15 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			{
 				fftExplicitFreezeActive_ = true;
 				fftExplicitFreezeCapturePending_ = true;
+			}
+
+			if (fft2HardAmountUnity && ! fftUnityBypassActive_ && ! fftTransitionToUnity_)
+			{
+				fftUnityBypassActive_ = true;
+				fftTransitionToUnity_ = false;
+				fftTransitionRemaining_ = 0;
+				fftTransitionTotal_ = 0;
+				fftTransitionHoldSamples_ = 0;
 			}
 
 			if (fftUnityCapable && ! fftUnity && fftUnityBypassActive_)
@@ -4482,9 +4516,14 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		dbg.triggerOn = triggerOn ? 1 : 0;
 		dbg.alignOn = alignOn ? 1 : 0;
 		dbg.pdcOn = pdcOn ? 1 : 0;
+		dbg.style = styleVal;
+		dbg.reverseOn = reverseOn ? 1 : 0;
+		dbg.wideMode = (styleVal == 2 && numChannels >= 2) ? 1 : 0;
+		dbg.dualMode = (styleVal == 3 && numChannels >= 2) ? 1 : 0;
 		dbg.amount = amountVal;
 		dbg.mod = modVal;
 		dbg.speed = targetSpeed;
+		dbg.smoothedSpeed = smoothedSpeed_;
 		dbg.pitchRate = targetPitchRate;
 		dbg.windowSamples = windowSamples;
 		dbg.fftSize = stft_.activeFftSize;
@@ -4499,6 +4538,13 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		dbg.fftTransitionTotal = fftTransitionTotal_;
 		dbg.fftFreezeTransitionRemaining = fftFreezeTransitionRemaining_;
 		dbg.fftFreezeTransitionTotal = fftFreezeTransitionTotal_;
+		dbg.windowTransitionRemaining = getWindowTransitionRemainingForEngine (engineVal);
+		dbg.windowTransitionTotal = getWindowTransitionTotalForEngine (engineVal);
+		dbg.fftUnityBypassActive = fftUnityBypassActive_ ? 1 : 0;
+		dbg.fftTransitionToUnity = fftTransitionToUnity_ ? 1 : 0;
+		dbg.fft1AmountUnityBypassActive = fft1AmountUnityBypassActive_ ? 1 : 0;
+		dbg.fft2HoldCoeff = fft2HoldCoeffSmoothed_;
+		dbg.fft2TargetHoldCoeff = std::sqrt (std::sqrt (juce::jlimit (0.0f, 1.0f, 1.0f - targetSpeed)));
 		dbg.engineWetRmsL = std::sqrt ((float) (fft1AmountFreezeEngineWetSqL * invCount));
 		dbg.engineWetRmsR = std::sqrt ((float) (fft1AmountFreezeEngineWetSqR * invCount));
 		dbg.engineWetPeakL = fft1AmountFreezeEngineWetPeakL;
