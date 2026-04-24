@@ -1040,6 +1040,7 @@ private:
 	int   grainTransitionRemaining_ = 0;
 	int   grainTransitionTotal_ = 0;
 	bool  grainTransitionToUnity_ = false;
+	bool  grainFreezeHoldActive_ = false;
 
 	// FFT / phase vocoder engine state
 	static constexpr int kMaxFftSize    = 8192;

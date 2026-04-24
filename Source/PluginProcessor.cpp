@@ -346,6 +346,7 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	grainTransitionRemaining_ = 0;
 	grainTransitionTotal_ = 0;
 	grainTransitionToUnity_ = false;
+	grainFreezeHoldActive_ = false;
 
     // Initialize STFT state
 	std::memset (&stft_, 0, sizeof (stft_));
@@ -728,6 +729,7 @@ void STRETRAudioProcessor::resetGrainAtCapturePos (double capturePos, int grainS
 	grainSpawnCountdown_ = 0;
 	grainPrevOutL_ = 0.0f;
 	grainPrevOutR_ = 0.0f;
+	grainFreezeHoldActive_ = false;
 
 	const double lookBehind = computeGrainLookBehind (grainSamples, pitchRate, reverseOn, wideMode);
 	grainReadPos_ = clampGrainSpawnPos (capturePos - lookBehind, capturePos, lookBehind);
@@ -3212,6 +3214,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			grainTransitionRemaining_ = 0;
 			grainTransitionTotal_ = 0;
 			grainTransitionToUnity_ = false;
+			grainFreezeHoldActive_ = false;
 		}
 		if (! triggerOn || (engineVal != 2 && engineVal != 3))
 		{
@@ -4134,7 +4137,12 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // Engine 1: GRANULAR
 			const double grainCapturePos = currentCaptureAbsPos();
 			const double grainLookBehind = computeGrainLookBehind (grainSamples, pitchRate, reverseOn, isWide);
-			const bool grainFreezeHold = (targetSpeed <= 0.0001f);
+			const bool grainFreezeTarget = (targetSpeed <= 0.0001f);
+			if (grainFreezeTarget)
+				grainFreezeHoldActive_ = true;
+			else if (grainFreezeHoldActive_ && speed > 0.0035f)
+				grainFreezeHoldActive_ = false;
+			const bool grainFreezeHold = grainFreezeHoldActive_;
 			const bool grainUnity = ! reverseOn
 				&& ! isDual
 				&& ! isWide
