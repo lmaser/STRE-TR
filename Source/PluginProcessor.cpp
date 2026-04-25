@@ -3362,6 +3362,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 			auto runFftCycle = [&] (float cycleSpeed, float cyclePitchRate, float cyclePitchRateR)
 			{
+				const bool fftRuntimeFreezeTarget = fftTargetFreeze
+					|| ((engineVal == 2) && (cycleSpeed <= 0.0001f));
 				if (fftDebugEnabled)
 				{
 					fftDebugContext_.blockIndex = debugBlockIndex;
@@ -3379,7 +3381,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					fftDebugContext_.fftStartupWarmupRemainingCycles = fftStartupWarmupRemainingCycles_;
 					fftDebugContext_.fftExplicitFreezeActive = fftExplicitFreezeActive_ ? 1 : 0;
 					fftDebugContext_.fftExplicitFreezeCapturePending = fftExplicitFreezeCapturePending_ ? 1 : 0;
-					fftDebugContext_.fftTargetFreeze = 0;
+					fftDebugContext_.fftTargetFreeze = fftRuntimeFreezeTarget ? 1 : 0;
 					fftDebugContext_.analysisHopDebug = -1;
 					fftDebugContext_.windowSamples = (engineVal == 3) ? fft2GeometryWindowSamples : windowSamples;
 					fftDebugContext_.style = styleVal;
@@ -3394,7 +3396,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					fftDebugContext_.fftStartupWarmupRemainingCycles = fftStartupWarmupRemainingCycles_;
 					fftDebugContext_.fftExplicitFreezeActive = fftExplicitFreezeActive_ ? 1 : 0;
 					fftDebugContext_.fftExplicitFreezeCapturePending = fftExplicitFreezeCapturePending_ ? 1 : 0;
-					fftDebugContext_.fftTargetFreeze = fftTargetFreeze ? 1 : 0;
+					fftDebugContext_.fftTargetFreeze = fftRuntimeFreezeTarget ? 1 : 0;
 				}
 
 				if (engineVal == 3)
@@ -3434,21 +3436,12 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					double targetAnalysisHop = 0.0;
 					double filteredAnalysisHop = 0.0;
 					const int freezeHopThreshold = juce::jmax (1, fftSynthHop / 8);
-					const int fft1FullAmountStableHop = juce::jmax (1, fftSynthHop / 4);
-					int minAnalysisHop = 1;
-					if (engineVal == 2)
-					{
-						const float fullAmountNorm = juce::jlimit (0.0f, 1.0f,
-							(amountVal - (kAmountMax - 0.25f)) / 0.25f);
-						const float fullAmountRamp = fullAmountNorm * fullAmountNorm * (3.0f - 2.0f * fullAmountNorm);
-						minAnalysisHop = juce::jlimit (1, fftSynthHop,
-							1 + (int) std::lround ((float) (fft1FullAmountStableHop - 1) * fullAmountRamp));
-					}
+					const int minAnalysisHop = 1;
 					if (cycleSpeed > 0.0001f)
 						targetAnalysisHop = juce::jlimit ((double) minAnalysisHop, (double) fftSynthHop,
 						                                  (double) fftSynthHop * (double) cycleSpeed);
 					else if (engineVal == 2)
-						targetAnalysisHop = (double) minAnalysisHop;
+						targetAnalysisHop = 0.0;
 					int fftAnalysisHop = (targetAnalysisHop > 0.0001)
 						? juce::jlimit (minAnalysisHop, fftSynthHop, (int) std::lround (targetAnalysisHop))
 						: 0;
@@ -3521,6 +3514,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					{
 						if (stft_.activeFftSize >= 4096
 						    && stft_.freezeEntryWarmupCycles > 0
+						    && targetAnalysisHop > 0.0001
 						    && targetAnalysisHop <= (double) freezeHopThreshold)
 						{
 							const float warmupDivisor = (stft_.activeFftSize >= 8192) ? 8.0f : 6.0f;
@@ -4577,12 +4571,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	if (fft1AmountFreezeDumpActiveBlock)
 	{
 		const float invCount = 1.0f / (float) juce::jmax (1, numSamples);
-		const bool fftExplicitFreezeCapable = ! reverseOn
-		                                  && ! (styleVal == 3 && numChannels >= 2)
-		                                  && ! (styleVal == 2 && numChannels >= 2)
-		                                  && (stft_.activeFftSize >= 4096)
-		                                  && (std::abs (targetPitchRate - 1.0f) <= 0.0015f);
-		const bool fftTargetFreeze = fftExplicitFreezeCapable && (amountVal >= (kAmountMax - 0.0005f));
+		const bool fftTargetFreeze = (engineVal == 2) && (targetSpeed <= 0.0001f);
 		Fft1AmountFreezeDumpEntry dbg {};
 		dbg.blockIndex = fft1AmountFreezeDumpBlockIndex;
 		dbg.engine = engineVal;
