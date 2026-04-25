@@ -2686,7 +2686,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		fftCapturedWindowVal_ = windowVal;
 		fftPendingWindowVal_ = windowVal;
 	}
-	const bool  fftDuckEngineActive = triggerOn && (engineVal == 2 || engineVal == 3);
+	const bool  fftEngineSelected = (engineVal == 2 || engineVal == 3);
+	const bool  fftDuckEngineActive = triggerOn && fftEngineSelected;
+	const bool  fftTriggerReleasedThisBlock = (! triggerOn) && triggerWasOn_ && fftEngineSelected;
 	const bool  fftRawWindowChanged = fftDuckEngineActive
 		&& prevFftDuckTriggerOn_
 		&& (prevFftDuckEngineVal_ == engineVal)
@@ -2712,9 +2714,18 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		fftAmountTraceRemaining_ = juce::jmax (fftAmountTraceRemaining_,
 			engineVal == 3 ? samplesForMs (18.0) : samplesForMs (14.0));
 	}
-	else if (! fftDuckEngineActive)
+	else if (! fftEngineSelected)
 	{
 		clearFftWindowDuckRuntimeState();
+	}
+	else if (! triggerOn)
+	{
+		fftWindowApplyDelayRemaining_ = 0;
+		fftWindowCaptureRemaining_ = 0;
+		fftWindowTraceRemaining_ = 0;
+		fftAmountTraceRemaining_ = 0;
+		fft1ReentryTraceRemaining_ = 0;
+		fftParamDuckHoldRemaining_ = 0;
 	}
 	prevFftDuckWindowVal_ = windowVal;
 	prevFftDuckAmountVal_ = amountVal;
@@ -2954,6 +2965,11 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     // Trigger edge detection: reset engines on trigger press
 	bool fftReseededThisBlock = false;
+	auto armFftTriggerDuck = [this] (int holdSamples) noexcept
+	{
+		fftParamDuckHoldRemaining_ = juce::jmax (fftParamDuckHoldRemaining_, holdSamples);
+		fftParamDuckGain_ = 0.0f;
+	};
 	if (triggerOn && ! triggerWasOn_)
 	{
         // Trigger just pressed - capture current write position as starting read point
@@ -2963,7 +2979,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		if ((engineVal == 2 || engineVal == 3) && requestedFftSize > 0)
 		{
 			const int triggerDuckHoldSamples = recommendedFftTriggerDuckHoldSamples (requestedFftSize);
-			fftParamDuckHoldRemaining_ = juce::jmax (fftParamDuckHoldRemaining_, triggerDuckHoldSamples);
+			armFftTriggerDuck (triggerDuckHoldSamples);
 			resetStftAtPos (capturePos, requestedFftSize);
 			recordFftReset (1, capturePos);
 			fftReseededThisBlock = true;
@@ -2999,7 +3015,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	{
 		const double capturePos = (double) ((inputBufWritePos_ - 1 + inputBufLen_) & inputBufMask_);
 		const int triggerDuckHoldSamples = recommendedFftTriggerDuckHoldSamples (requestedFftSize);
-		fftParamDuckHoldRemaining_ = juce::jmax (fftParamDuckHoldRemaining_, triggerDuckHoldSamples);
+		armFftTriggerDuck (triggerDuckHoldSamples);
 		resetStftAtPos (capturePos, requestedFftSize);
 		recordFftReset (1, capturePos);
 		fftReseededThisBlock = true;
@@ -3062,6 +3078,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		grainDebugTrace_.record (dbg);
 #endif
 	}
+	if (fftTriggerReleasedThisBlock && requestedFftSize > 0)
+		armFftTriggerDuck (samplesForMs (2.0));
 	triggerWasOn_ = triggerOn;
 
 	// Engine crossfade: trigger fade-in on engine change
@@ -5009,28 +5027,25 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				fftOutputFadeHoldSamples_ = 0;
 			}
 
-			if (fftDuckEngineActive)
+			const bool fftDuckRuntimeActive = (engineVal == 2 || engineVal == 3)
+				&& ((triggerOn && fftWindowMotionActiveBlock)
+				    || fftParamDuckHoldRemaining_ > 0
+				    || fftParamDuckGain_ < 0.9999f);
+			if (fftDuckRuntimeActive)
 			{
-				const bool fftWindowDuckActive = (engineVal == 2 || engineVal == 3)
-					&& (fftWindowMotionActiveBlock
-					    || fftParamDuckHoldRemaining_ > 0
-					    || fftParamDuckGain_ < 0.9999f);
-				if (fftWindowDuckActive)
-				{
-					const float attackMs = 4.0f;
-					const float releaseSeconds = (engineVal == 3) ? 0.320f : 0.250f;
-					const float fftDuckAttackStep = 1.0f - std::exp (-1.0f / (static_cast<float> (currentSampleRate) * attackMs * 0.001f));
-					const float fftDuckReleaseStep = 1.0f - std::exp (-1.0f / (static_cast<float> (currentSampleRate) * releaseSeconds));
-					const float fftDuckTarget = (fftParamDuckHoldRemaining_ > 0) ? 0.0f : 1.0f;
-					const float fftDuckStep = (fftDuckTarget < fftParamDuckGain_)
-						? fftDuckAttackStep
-						: fftDuckReleaseStep;
-					fftParamDuckGain_ += (fftDuckTarget - fftParamDuckGain_) * fftDuckStep;
-					outL *= fftParamDuckGain_;
-					outR *= fftParamDuckGain_;
-					if (fftParamDuckHoldRemaining_ > 0)
-						--fftParamDuckHoldRemaining_;
-				}
+				const float attackMs = 4.0f;
+				const float releaseSeconds = (engineVal == 3) ? 0.320f : 0.250f;
+				const float fftDuckAttackStep = 1.0f - std::exp (-1.0f / (static_cast<float> (currentSampleRate) * attackMs * 0.001f));
+				const float fftDuckReleaseStep = 1.0f - std::exp (-1.0f / (static_cast<float> (currentSampleRate) * releaseSeconds));
+				const float fftDuckTarget = (fftParamDuckHoldRemaining_ > 0) ? 0.0f : 1.0f;
+				const float fftDuckStep = (fftDuckTarget < fftParamDuckGain_)
+					? fftDuckAttackStep
+					: fftDuckReleaseStep;
+				fftParamDuckGain_ += (fftDuckTarget - fftParamDuckGain_) * fftDuckStep;
+				outL *= fftParamDuckGain_;
+				outR *= fftParamDuckGain_;
+				if (fftParamDuckHoldRemaining_ > 0)
+					--fftParamDuckHoldRemaining_;
 			}
 
 			if (fftDebugEnabled)
