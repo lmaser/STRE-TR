@@ -15,7 +15,8 @@ STRE-TR is designed as a playable stretch instrument rather than a clinical offl
 - `AMOUNT` controls engine advance or hold intensity. It is not a fixed "1x to 4x" ratio.
 - `MOD` controls pitch-rate independently of `AMOUNT`.
 - `TRG` arms the engine. With `TRG` off, the wet path is dry passthrough.
-- `ALIGN` and `PDC` are only meaningful when an FFT engine is active, because that is where latency exists.
+- `ALIGN` delays the dry path to match the active engine latency when alignment is useful.
+- `PDC` only reports that active engine latency to the host; it does not change the DSP path.
 
 ## Engines
 
@@ -45,6 +46,7 @@ Phase-vocoder engine with overlap-add reconstruction and pitch-rate control.
 - Supports reverse.
 - `AMOUNT` reduces FFT analysis hop toward freeze.
 - `WINDOW` is mapped to power-of-two FFT sizes internally.
+- Full reverse hold is handled as a direct reverse read so `100%` behaves consistently with nearby values.
 
 ### FFT2
 
@@ -53,7 +55,7 @@ Spectral-hold engine built on the same FFT framework.
 - Best for frozen or semi-frozen spectral textures.
 - Supports reverse.
 - `AMOUNT` increases hold intensity rather than moving an analysis hop toward zero.
-- Shares the FFT window family with `FFT1`, using power-of-two sizes internally.
+- Uses its own stored window value and maps it to power-of-two FFT sizes internally.
 
 ## Interface
 
@@ -132,10 +134,10 @@ Selects the active engine:
 
 ### WINDOW (16-8192)
 
-Shared window/segment size control.
+Shared UI slot with independent stored values per engine.
 
 - `STRETCH` and `GRAIN` use the smoothed value directly
-- `FFT1` and `FFT2` snap it to the next power of two, with a minimum effective FFT size of `64`
+- `FFT1` and `FFT2` snap it to valid power-of-two FFT sizes, with a minimum effective FFT size of `64`
 
 ### STYLE
 
@@ -209,14 +211,15 @@ Reverse playback/read direction.
 
 ### ALIGN
 
-Delays the dry path by the active FFT latency so dry and wet remain time-aligned when an FFT engine is running.
+Delays the dry path by the active engine latency so dry and wet remain time-aligned when the selected engine has non-zero latency.
 
 ### PDC
 
-Reports a fixed maximum FFT latency to the host while an FFT engine is active.
+Reports the active engine latency to the host when compensation is enabled.
 
-- `ON`: host latency compensation stays fixed at the maximum FFT size while the plugin pads the current FFT output internally
+- `ON`: host latency compensation follows the active engine latency
 - `OFF`: no latency is reported
+- PDC does not add internal padding or change the engine behavior
 
 ### MODE IN / MODE OUT
 
@@ -272,9 +275,9 @@ Independent inversion modes for polarity and stereo:
 
 - Input buffer: up to `262144` samples
 - `STRETCH`: WSOLA with overlap search, segment crossfade, and unity-safe bypass near neutral motion
-- `GRAIN`: up to `64` grains with Hann envelopes
-- `FFT1`: phase vocoder with freeze reached by reducing FFT analysis advance
-- `FFT2`: spectral hold built on the FFT engine, with hold intensity controlled by `AMOUNT`
+- `GRAIN`: up to `64` grains with Hann envelopes and deterministic trigger/loop state
+- `FFT1`: phase vocoder with freeze reached by reducing FFT analysis advance, plus signed reverse phase tracking
+- `FFT2`: spectral hold built on the FFT engine, with hold intensity controlled by `AMOUNT` and signed reverse phase tracking
 - Wet filter: HP/LP biquads with periodic coefficient updates
 - Tilt: first-order wet tilt
 - Chaos: Hermite-interpolated random targets with drift
@@ -303,8 +306,9 @@ Filter, tilt, and chaos subsystems also have their own internal smoothing/update
 
 ## Notes
 
-- `ALIGN` and `PDC` matter only for the FFT engines
+- `ALIGN` and `PDC` use the active engine latency and are intentionally independent from the sound of the engine
 - `TRG` is central to the creative workflow of this plugin; with `TRG` off the wet path stays clean
+- `WINDOW` uses one UI slot but stores independent values for `STRETCH`, `GRAIN`, `FFT1`, and `FFT2`
 - `FFT1` and `FFT2` quantize `WINDOW` to power-of-two FFT sizes internally, while `STRETCH` and `GRAIN` use the smoothed value directly
 
 ## Changelog
@@ -314,5 +318,11 @@ Filter, tilt, and chaos subsystems also have their own internal smoothing/update
 - Added the current limiter, routing, chaos, and UI workflow
 - Kept `STRETCH`, `GRAIN`, `FFT1`, and `FFT2` under the same editor
 - Smoothed `SEND DRY/WET` and `LIM THRESHOLD` to match the rest of the series
+- Hardened `PDC` so it reports latency without changing the underlying engine behavior
+- Made `WINDOW` state independent per engine while keeping a single compact UI slot
+- Stabilized `AMOUNT`/`MOD` automation consistency across `STRETCH`, `GRAIN`, `FFT1`, and `FFT2`
+- Improved FFT reverse behavior, including FFT1 full-reverse hold and signed reverse phase tracking
+- Fixed `DUAL` pitch mapping in FFT routes so each channel uses its own pitch rate consistently
+- Fixed the `GRAIN` size row so it is enabled only for the `GRAIN` engine
 - Cleaned documentation and removed stale or incorrect legacy descriptions
 - Release hardening: developer traces are now opt-in and kept out of normal release behavior
