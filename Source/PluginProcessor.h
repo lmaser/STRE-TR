@@ -609,6 +609,14 @@ private:
 		float fftOutputFadeOldOutL = 0.0f;
 		float fftOutputFadeOldMix = 0.0f;
 		float fftOutputFadeNewMix = 0.0f;
+		int   fftCycleSerial = 0;
+		int   fftRuntimeRoute = 0; // 0=none, 1=stft, 2=spectral_hold
+		int   fft1FreezeHoldRoute = 0;
+		int   signedAnalysisHop = 0;
+		int   freezeAnalysisInput = 0;
+		float spectralHoldCoeff = 0.0f;
+		double analysisReadBefore = 0.0;
+		double analysisReadAfter = 0.0;
 	};
 
 #if JUCE_DEBUG
@@ -933,6 +941,15 @@ private:
 		int   fft1AmountUnityBypassActive = 0;
 		float fft2HoldCoeff = 0.0f;
 		float fft2TargetHoldCoeff = 0.0f;
+		int   fftCycleCount = 0;
+		int   fftRuntimeRoute = 0;
+		int   fft1FreezeHoldRoute = 0;
+		int   signedAnalysisHop = 0;
+		int   freezeAnalysisInput = 0;
+		float spectralHoldCoeff = 0.0f;
+		double analysisReadBefore = 0.0;
+		double analysisReadAfter = 0.0;
+		double analysisReadDelta = 0.0;
 		float engineWetRmsL = 0.0f;
 		float engineWetRmsR = 0.0f;
 		float engineWetPeakL = 0.0f;
@@ -986,6 +1003,8 @@ private:
 					"fft_freeze_transition_total,style,reverse_on,wide_mode,dual_mode,smoothed_speed,"
 					"window_transition_remaining,window_transition_total,fft_unity_bypass_active,fft_transition_to_unity,"
 					"fft1_amount_unity_bypass_active,fft2_hold_coeff,fft2_target_hold_coeff,"
+					"fft_cycle_count,fft_runtime_route,fft1_freeze_hold_route,signed_analysis_hop,"
+					"freeze_analysis_input,spectral_hold_coeff,analysis_read_before,analysis_read_after,analysis_read_delta,"
 					"engine_wet_rms_l,engine_wet_rms_r,engine_wet_peak_l,engine_wet_peak_r,"
 					"final_wet_rms_l,final_wet_rms_r,final_wet_peak_l,final_wet_peak_r,out_rms_l,out_rms_r,out_peak_l,out_peak_r,"
 					"post_duck_out_rms_l,post_duck_out_rms_r,post_duck_out_peak_l,post_duck_out_peak_r\n",
@@ -1042,6 +1061,15 @@ private:
 					     << e.fft1AmountUnityBypassActive << ","
 					     << e.fft2HoldCoeff << ","
 					     << e.fft2TargetHoldCoeff << ","
+					     << e.fftCycleCount << ","
+					     << e.fftRuntimeRoute << ","
+					     << e.fft1FreezeHoldRoute << ","
+					     << e.signedAnalysisHop << ","
+					     << e.freezeAnalysisInput << ","
+					     << e.spectralHoldCoeff << ","
+					     << e.analysisReadBefore << ","
+					     << e.analysisReadAfter << ","
+					     << e.analysisReadDelta << ","
 					     << e.engineWetRmsL << ","
 					     << e.engineWetRmsR << ","
 					     << e.engineWetPeakL << ","

@@ -1189,6 +1189,10 @@ void STRETRAudioProcessorEditor::updateEngineControls()
 	auto* engineP = audioProcessor.apvts.getRawParameterValue (STRETRAudioProcessor::kParamEngine);
 	const int engineVal = engineP ? (int) std::lround (engineP->load (std::memory_order_relaxed)) : 0;
 
+	const bool grainActive = (engineVal == 1);   // GRAIN only
+	grainSlider.setAlpha (grainActive ? 1.0f : 0.35f);
+	grainSlider.setEnabled (grainActive);
+
 	const int familyWindow = audioProcessor.getStoredWindowForEngine (engineVal);
 	if (! clampingWindowSlider_ && (int) std::lround (windowSlider.getValue()) != familyWindow)
 	{
@@ -1210,10 +1214,6 @@ void STRETRAudioProcessorEditor::updateEngineControls()
             return;
         }
     }
-
-    const bool grainActive = (engineVal == 1);   // GRAIN only
-    grainSlider.setAlpha (grainActive ? 1.0f : 0.35f);
-    grainSlider.setEnabled (grainActive);
 
 	const bool reverseActive = true;
 	reverseButton.setAlpha (reverseActive ? 1.0f : 0.35f);
