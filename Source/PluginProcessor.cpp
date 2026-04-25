@@ -1012,7 +1012,7 @@ void STRETRAudioProcessor::clearStftOutputResidueForResize() noexcept
 	stft_.synthCounter = juce::jmax (0, newHop - 1);
 }
 
-void STRETRAudioProcessor::resizeFft2StateAtPos (double capturePos, int fftSize) noexcept
+void STRETRAudioProcessor::resizeFft2StateAtPos (double capturePos, int fftSize, bool freezeTarget) noexcept
 {
 	resizeStftAtPos (capturePos, fftSize);
 
@@ -1040,6 +1040,12 @@ void STRETRAudioProcessor::resizeFft2StateAtPos (double capturePos, int fftSize)
 				stft_.heldFreq[ch][k] = stft_.lastFreq[ch][k];
 				stft_.synthPhase[ch][k] = stft_.prevPhase[ch][k];
 			}
+		}
+
+		if (freezeTarget)
+		{
+			for (int k = 0; k < numBins; ++k)
+				stft_.synthPhase[ch][k] = stft_.prevPhase[ch][k];
 		}
 	}
 
@@ -2312,6 +2318,7 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 	// Advance the analysis cursor in the selected direction so FFT2 can honor reverse mode.
 	if (! freezeAnalysisInput && inputBufLen_ > 0)
 	{
+		stft_.hasFrame = true;
 		const double dir = reverseOn ? -1.0 : 1.0;
 		stft_.analysisReadPos = analysisReadBefore + (double) synthesisHop * dir;
 		while (stft_.analysisReadPos >= (double) inputBufLen_)
@@ -3016,7 +3023,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		if (engineVal == 3)
 		{
 			startWindowTransitionForEngine (engineVal, fftWindowFadeSamples);
-			resizeFft2StateAtPos (capturePos, requestedFftSize);
+			resizeFft2StateAtPos (capturePos, requestedFftSize, targetSpeed <= 0.0001f);
 		}
 		else
 		{
@@ -3159,8 +3166,15 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			{
 				fft2AmountZeroHoldBypassActive_ = false;
 				const float fft2TargetHoldCoeff = std::sqrt (std::sqrt (juce::jlimit (0.0f, 1.0f, 1.0f - speed)));
-				const float fft2HoldCoeffStep = 1.0f - std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.022f));
-				fft2HoldCoeffSmoothed_ += (fft2TargetHoldCoeff - fft2HoldCoeffSmoothed_) * fft2HoldCoeffStep;
+				if (targetSpeed <= 0.0001f)
+				{
+					fft2HoldCoeffSmoothed_ = 1.0f;
+				}
+				else
+				{
+					const float fft2HoldCoeffStep = 1.0f - std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.022f));
+					fft2HoldCoeffSmoothed_ += (fft2TargetHoldCoeff - fft2HoldCoeffSmoothed_) * fft2HoldCoeffStep;
+				}
 			}
 		}
 		else
@@ -3363,7 +3377,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			auto runFftCycle = [&] (float cycleSpeed, float cyclePitchRate, float cyclePitchRateR)
 			{
 				const bool fftRuntimeFreezeTarget = fftTargetFreeze
-					|| ((engineVal == 2) && (cycleSpeed <= 0.0001f));
+					|| (((engineVal == 2) || (engineVal == 3)) && (cycleSpeed <= 0.0001f));
 				if (fftDebugEnabled)
 				{
 					fftDebugContext_.blockIndex = debugBlockIndex;
@@ -3401,7 +3415,10 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 				if (engineVal == 3)
 				{
-					const float holdCoeff = juce::jlimit (0.0f, 1.0f, fft2HoldCoeffSmoothed_);
+					const bool fft2FullHold = cycleSpeed <= 0.0001f;
+					const float holdCoeff = fft2FullHold
+						? 1.0f
+						: juce::jlimit (0.0f, 1.0f, fft2HoldCoeffSmoothed_);
 					if (holdCoeff <= 0.001f)
 					{
 						performStftCycle (stft_.activeFftSize, fftSynthHop, fftSynthHop,
@@ -3409,8 +3426,11 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					}
 					else
 					{
+						if (fft2FullHold)
+							fftDebugContext_.analysisHopDebug = 0;
 						performStftCycleSpectralHold (stft_.activeFftSize, fftSynthHop,
-						                              holdCoeff, cyclePitchRate, reverseOn, false,
+						                              holdCoeff, cyclePitchRate, reverseOn,
+						                              fft2FullHold && stft_.hasFrame,
 						                              cyclePitchRateR, isWide);
 					}
 				}
@@ -4571,7 +4591,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	if (fft1AmountFreezeDumpActiveBlock)
 	{
 		const float invCount = 1.0f / (float) juce::jmax (1, numSamples);
-		const bool fftTargetFreeze = (engineVal == 2) && (targetSpeed <= 0.0001f);
+		const bool fftTargetFreeze = (engineVal == 2 || engineVal == 3) && (targetSpeed <= 0.0001f);
 		Fft1AmountFreezeDumpEntry dbg {};
 		dbg.blockIndex = fft1AmountFreezeDumpBlockIndex;
 		dbg.engine = engineVal;

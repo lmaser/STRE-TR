@@ -1156,7 +1156,7 @@ private:
 	void  resetStftAtPos (double capturePos, int fftSize) noexcept;
 	void  resizeStftAtPos (double capturePos, int fftSize) noexcept;
 	void  clearStftOutputResidueForResize() noexcept;
-	void  resizeFft2StateAtPos (double capturePos, int fftSize) noexcept;
+	void  resizeFft2StateAtPos (double capturePos, int fftSize, bool freezeTarget) noexcept;
 	int   recommendedFftSynthHop (int fftSize) const noexcept;
 	int   samplesForMs (double ms) const noexcept;
 	int   recommendedFftWindowCrossfadeSamples() const noexcept;
