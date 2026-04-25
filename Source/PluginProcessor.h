@@ -198,6 +198,8 @@ public:
 	bool getUiIoExpanded() const noexcept;
 
 	int getStoredWindowForEngine (int engineVal) const noexcept;
+	void setStoredWindowForEngine (int engineVal, int windowValue) noexcept;
+	void syncWindowParameterToEngine (int engineVal);
 
 	void setUiCustomPaletteColour (int index, juce::Colour colour);
 	juce::Colour getUiCustomPaletteColour (int index) const noexcept;
@@ -218,9 +220,22 @@ private:
 		static constexpr const char* useCustomPalette = "uiUseCustomPalette";
 		static constexpr const char* crtEnabled       = "uiFxTailEnabled";
 		static constexpr const char* ioExpanded       = "uiIoExpanded";
+		static constexpr const char* stretchWindow    = "stretchWindow";
+		static constexpr const char* grainWindow      = "grainWindow";
+		static constexpr const char* fft1Window       = "fft1Window";
+		static constexpr const char* fft2Window       = "fft2Window";
+		static constexpr const char* fftWindow        = "fftWindow";
 		static constexpr std::array<const char*, 2> customPalette {
 			"uiCustomPalette0", "uiCustomPalette1"
 		};
+	};
+
+	enum class WindowFamily : int
+	{
+		stretch = 0,
+		grain   = 1,
+		fft1    = 2,
+		fft2    = 3
 	};
 
 	double currentSampleRate = 44100.0;
@@ -1164,6 +1179,12 @@ private:
 	int   recommendedFftTriggerDuckHoldSamples (int fftSize) const noexcept;
 	int   recommendedFftFreezeTransitionSamples (int fftSize) const noexcept;
 	int   recommendedEngineCrossfadeSamples() const noexcept;
+	WindowFamily getWindowFamilyForEngineInternal (int engineVal) const noexcept;
+	int   getStoredWindowForFamily (WindowFamily family) const noexcept;
+	void  setStoredWindowForFamily (WindowFamily family, int windowValue) noexcept;
+	void  initialiseWindowFamilies (int fallbackWindow) noexcept;
+	void  restoreWindowFamilyStateFromTree() noexcept;
+	void  writeWindowFamilyStateToTree (juce::ValueTree& state) const;
 	void  resetFftWindowDuckPrepareState (int capturedWindowVal, float amountVal,
 	                                     int engineVal, bool triggerOn) noexcept;
 	void  clearFftWindowDuckRuntimeState() noexcept;
@@ -1237,10 +1258,17 @@ private:
 	bool  filterPre_  = false;
 	bool  tiltPre_    = false;
 	float smoothedWindow_    = (float) kWindowDefault;  // smoothed window size in samples
+	std::array<float, 4> smoothedWindowByFamily_ {
+		kWindowDefault, kWindowDefault, kWindowDefault, kWindowDefault
+	};
 	float fft2GeometryLog2Window_ = 0.0f;               // FFT2-only geometry smoother in log2 domain
 	float smoothedSpeed_     = 1.0f;   // smoothed stretch speed (0=freeze, 1=normal)
 	float smoothedPitchRate_ = 1.0f;   // smoothed pitch ratio
 	float windowSmoothStep_  = 0.0045f;
+	std::atomic<int> windowFamilyValues_[4] {};
+	std::atomic<int> activeWindowFamily_ { (int) WindowFamily::stretch };
+	std::atomic<int> lastObservedWindowParam_ { (int) kWindowDefault };
+	std::atomic<bool> windowFamiliesInitialised_ { false };
 
 	struct WetFilterChannelState
 	{

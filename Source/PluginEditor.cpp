@@ -1012,15 +1012,17 @@ void STRETRAudioProcessorEditor::applyLabelTextColour (juce::Label& label, juce:
 
 void STRETRAudioProcessorEditor::sliderValueChanged (juce::Slider* slider)
 {
-    if (slider == &windowSlider && ! clampingWindowSlider_ && isCurrentEngineFft())
+    if (slider == &windowSlider && ! clampingWindowSlider_)
     {
         const int effectiveWindow = getEffectiveWindowValue (windowSlider.getValue());
-        if ((int) std::lround (windowSlider.getValue()) != effectiveWindow)
+        if (isCurrentEngineFft() && (int) std::lround (windowSlider.getValue()) != effectiveWindow)
         {
             juce::ScopedValueSetter<bool> clampGuard (clampingWindowSlider_, true);
             windowSlider.setValue ((double) effectiveWindow, juce::dontSendNotification);
             return;
         }
+
+        audioProcessor.setStoredWindowForEngine (getCurrentEngineValue(), effectiveWindow);
     }
 
     refreshLegendTextCache();
@@ -1187,6 +1189,7 @@ void STRETRAudioProcessorEditor::updateEngineControls()
 	if (! clampingWindowSlider_ && (int) std::lround (windowSlider.getValue()) != familyWindow)
 	{
 		juce::ScopedValueSetter<bool> clampGuard (clampingWindowSlider_, true);
+		audioProcessor.syncWindowParameterToEngine (engineVal);
 		windowSlider.setValue ((double) familyWindow, juce::dontSendNotification);
 		return;
 	}
