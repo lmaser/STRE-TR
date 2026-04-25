@@ -1014,15 +1014,19 @@ void STRETRAudioProcessorEditor::sliderValueChanged (juce::Slider* slider)
 {
     if (slider == &windowSlider && ! clampingWindowSlider_)
     {
+        const int engineVal = getCurrentEngineValue();
         const int effectiveWindow = getEffectiveWindowValue (windowSlider.getValue());
         if (isCurrentEngineFft() && (int) std::lround (windowSlider.getValue()) != effectiveWindow)
         {
             juce::ScopedValueSetter<bool> clampGuard (clampingWindowSlider_, true);
+            audioProcessor.setStoredWindowForEngine (engineVal, effectiveWindow);
+            audioProcessor.syncWindowParameterToEngine (engineVal);
             windowSlider.setValue ((double) effectiveWindow, juce::dontSendNotification);
-            return;
         }
-
-        audioProcessor.setStoredWindowForEngine (getCurrentEngineValue(), effectiveWindow);
+        else
+        {
+            audioProcessor.setStoredWindowForEngine (engineVal, effectiveWindow);
+        }
     }
 
     refreshLegendTextCache();
@@ -1200,6 +1204,8 @@ void STRETRAudioProcessorEditor::updateEngineControls()
         if ((int) std::lround (windowSlider.getValue()) != effectiveWindow)
         {
             juce::ScopedValueSetter<bool> clampGuard (clampingWindowSlider_, true);
+            audioProcessor.setStoredWindowForEngine (engineVal, effectiveWindow);
+            audioProcessor.syncWindowParameterToEngine (engineVal);
             windowSlider.setValue ((double) effectiveWindow, juce::dontSendNotification);
             return;
         }
@@ -1356,9 +1362,8 @@ bool STRETRAudioProcessorEditor::isCurrentEngineFft() const
 
 int STRETRAudioProcessorEditor::getEffectiveWindowValue (double rawWindowValue) const
 {
-    return juce::jlimit (STRETRAudioProcessor::kWindowMin,
-                         STRETRAudioProcessor::kWindowMax,
-                         (int) std::lround (rawWindowValue));
+    return STRETRAudioProcessor::getCanonicalWindowForEngine (getCurrentEngineValue(),
+                                                              (int) std::lround (rawWindowValue));
 }
 
 juce::String STRETRAudioProcessorEditor::getWindowText() const

@@ -156,30 +156,38 @@ STRETRAudioProcessor::WindowFamily STRETRAudioProcessor::getWindowFamilyForEngin
 	return WindowFamily::stretch;
 }
 
+int STRETRAudioProcessor::getCanonicalWindowForFamily (WindowFamily family, int windowValue) const noexcept
+{
+	const int clamped = juce::jlimit (kWindowMin, kWindowMax, windowValue);
+	return (family == WindowFamily::fft1 || family == WindowFamily::fft2)
+		? getCanonicalFftWindow (clamped)
+		: clamped;
+}
+
 int STRETRAudioProcessor::getStoredWindowForFamily (WindowFamily family) const noexcept
 {
 	const int index = (int) family;
-	return juce::jlimit (kWindowMin,
-	                     kWindowMax,
-	                     windowFamilyValues_[index].load (std::memory_order_relaxed));
+	return getCanonicalWindowForFamily (family,
+	                                    windowFamilyValues_[index].load (std::memory_order_relaxed));
 }
 
 void STRETRAudioProcessor::setStoredWindowForFamily (WindowFamily family, int windowValue) noexcept
 {
 	const int index = (int) family;
-	windowFamilyValues_[index].store (juce::jlimit (kWindowMin, kWindowMax, windowValue),
+	windowFamilyValues_[index].store (getCanonicalWindowForFamily (family, windowValue),
 	                                  std::memory_order_relaxed);
 }
 
 void STRETRAudioProcessor::initialiseWindowFamilies (int fallbackWindow) noexcept
 {
 	const int safeWindow = juce::jlimit (kWindowMin, kWindowMax, fallbackWindow);
+	setStoredWindowForFamily (WindowFamily::stretch, safeWindow);
+	setStoredWindowForFamily (WindowFamily::grain, safeWindow);
+	setStoredWindowForFamily (WindowFamily::fft1, safeWindow);
+	setStoredWindowForFamily (WindowFamily::fft2, safeWindow);
 
 	for (int i = 0; i < 4; ++i)
-	{
-		windowFamilyValues_[i].store (safeWindow, std::memory_order_relaxed);
-		smoothedWindowByFamily_[(size_t) i] = (float) safeWindow;
-	}
+		smoothedWindowByFamily_[(size_t) i] = (float) getStoredWindowForFamily ((WindowFamily) i);
 
 	const auto family = getWindowFamilyForEngineInternal (loadIntParamOrDefault (engineParam, 0));
 	activeWindowFamily_.store ((int) family, std::memory_order_relaxed);
@@ -210,7 +218,7 @@ void STRETRAudioProcessor::restoreWindowFamilyStateFromTree() noexcept
 	setStoredWindowForFamily (WindowFamily::fft2,    readWindowProperty (UiStateKeys::fft2Window, legacyFftFallback));
 
 	for (int i = 0; i < 4; ++i)
-		smoothedWindowByFamily_[(size_t) i] = (float) windowFamilyValues_[i].load (std::memory_order_relaxed);
+		smoothedWindowByFamily_[(size_t) i] = (float) getStoredWindowForFamily ((WindowFamily) i);
 
 	const auto family = getWindowFamilyForEngineInternal (loadIntParamOrDefault (engineParam, 0));
 	activeWindowFamily_.store ((int) family, std::memory_order_relaxed);
@@ -379,7 +387,7 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	if (! windowFamiliesInitialised_.load (std::memory_order_relaxed))
 		initialiseWindowFamilies (loadIntParamOrDefault (windowParam, (int) kWindowDefault));
 	for (int i = 0; i < 4; ++i)
-		smoothedWindowByFamily_[(size_t) i] = (float) windowFamilyValues_[i].load (std::memory_order_relaxed);
+		smoothedWindowByFamily_[(size_t) i] = (float) getStoredWindowForFamily ((WindowFamily) i);
 	const auto prepareWindowFamily = getWindowFamilyForEngineInternal (loadIntParamOrDefault (engineParam, 0));
 	activeWindowFamily_.store ((int) prepareWindowFamily, std::memory_order_relaxed);
 	lastObservedWindowParam_.store (loadIntParamOrDefault (windowParam, (int) kWindowDefault),
@@ -2630,14 +2638,14 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		activeWindowFamily_.store ((int) windowFamily, std::memory_order_relaxed);
 		if (rawWindowParamVal != previousObservedWindowParam)
 		{
-			windowVal = rawWindowParamVal;
+			windowVal = getCanonicalWindowForFamily (windowFamily, rawWindowParamVal);
 			setStoredWindowForFamily (windowFamily, windowVal);
 		}
 		lastObservedWindowParam_.store (rawWindowParamVal, std::memory_order_relaxed);
 	}
 	else if (rawWindowParamVal != previousObservedWindowParam)
 	{
-		windowVal = rawWindowParamVal;
+		windowVal = getCanonicalWindowForFamily (windowFamily, rawWindowParamVal);
 		setStoredWindowForFamily (windowFamily, windowVal);
 		lastObservedWindowParam_.store (rawWindowParamVal, std::memory_order_relaxed);
 	}
@@ -5266,8 +5274,9 @@ int STRETRAudioProcessor::getStoredWindowForEngine (int engineVal) const noexcep
 
 void STRETRAudioProcessor::setStoredWindowForEngine (int engineVal, int windowValue) noexcept
 {
-	const int safeWindow = juce::jlimit (kWindowMin, kWindowMax, windowValue);
-	setStoredWindowForFamily (getWindowFamilyForEngineInternal (engineVal), safeWindow);
+	const auto family = getWindowFamilyForEngineInternal (engineVal);
+	const int safeWindow = getCanonicalWindowForFamily (family, windowValue);
+	setStoredWindowForFamily (family, safeWindow);
 	lastObservedWindowParam_.store (safeWindow, std::memory_order_relaxed);
 }
 

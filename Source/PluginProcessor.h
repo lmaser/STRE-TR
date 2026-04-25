@@ -99,6 +99,7 @@ public:
 
 	static constexpr int   kWindowMin     = 16;
 	static constexpr int   kWindowMax     = 8192;
+	static constexpr int   kFftWindowMin  = 64;
 	static constexpr float kWindowDefault = 1024.0f;
 
 	static constexpr int   kStyleMin     = 0;
@@ -152,6 +153,18 @@ public:
 		int p = 1;
 		while (p < v) p <<= 1;
 		return p;
+	}
+
+	static int getCanonicalFftWindow (int windowValue) noexcept
+	{
+		const int clamped = juce::jlimit (kFftWindowMin, kWindowMax, windowValue);
+		return juce::jlimit (kFftWindowMin, kWindowMax, nextPowerOf2 (clamped));
+	}
+
+	static int getCanonicalWindowForEngine (int engineVal, int windowValue) noexcept
+	{
+		const int clamped = juce::jlimit (kWindowMin, kWindowMax, windowValue);
+		return (engineVal == 2 || engineVal == 3) ? getCanonicalFftWindow (clamped) : clamped;
 	}
 
     // AudioProcessor overrides
@@ -1180,6 +1193,7 @@ private:
 	int   recommendedFftFreezeTransitionSamples (int fftSize) const noexcept;
 	int   recommendedEngineCrossfadeSamples() const noexcept;
 	WindowFamily getWindowFamilyForEngineInternal (int engineVal) const noexcept;
+	int   getCanonicalWindowForFamily (WindowFamily family, int windowValue) const noexcept;
 	int   getStoredWindowForFamily (WindowFamily family) const noexcept;
 	void  setStoredWindowForFamily (WindowFamily family, int windowValue) noexcept;
 	void  initialiseWindowFamilies (int fallbackWindow) noexcept;

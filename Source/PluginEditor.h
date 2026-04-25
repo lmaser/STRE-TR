@@ -119,7 +119,7 @@ private:
                 }
             }
 
-            // Window (continuous 21..8192)
+            // Window (FFT engines snap to canonical powers of two)
             if (owner != nullptr && this == &owner->windowSlider)
             {
                 return juce::String (owner->getEffectiveWindowValue (v));
