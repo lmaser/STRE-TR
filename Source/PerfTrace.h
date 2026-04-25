@@ -3,7 +3,6 @@
 #include <JuceHeader.h>
 #include <atomic>
 #include <cstdint>
-#include <cstdio>
 
 #ifndef GRATR_PERF_TRACE
  #define GRATR_PERF_TRACE 0

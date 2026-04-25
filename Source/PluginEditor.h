@@ -106,7 +106,7 @@ private:
                 return "R" + juce::String (percent - 50.0, 0);
             }
 
-            // Engine (0=STRETCH 1=GRAIN 2=FFT)
+            // Engine
             if (owner != nullptr && this == &owner->engineSlider)
             {
                 const int mode = (int) std::lround (v);

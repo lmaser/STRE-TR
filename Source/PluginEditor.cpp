@@ -2428,9 +2428,7 @@ void STRETRAudioProcessorEditor::resized()
     crtEffect.setResolution (static_cast<float> (W), static_cast<float> (H));
 }
 
-//========================== Prompt stubs ==========================
-// These will be fully implemented in a follow-up pass.
-// The UI layout, paint, and interaction are 100% complete.
+//========================== Prompts ==========================
 
 void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s)
 {
@@ -2784,33 +2782,21 @@ void STRETRAudioProcessorEditor::openMixSendPrompt()
 
     const auto& promptFont = kBoldFont40();
 
-    auto* dryNameLabel = new juce::Label ("", "DRY");
-    dryNameLabel->setJustificationType (juce::Justification::centredLeft);
-    applyLabelTextColour (*dryNameLabel, scheme.text);
-    dryNameLabel->setBorderSize (juce::BorderSize<int> (0));
-    dryNameLabel->setFont (promptFont);
-    aw->addAndMakeVisible (dryNameLabel);
+    auto addPromptLabel = [&] (const juce::String& text)
+    {
+        auto* label = new juce::Label ("", text);
+        label->setJustificationType (juce::Justification::centredLeft);
+        applyLabelTextColour (*label, scheme.text);
+        label->setBorderSize (juce::BorderSize<int> (0));
+        label->setFont (promptFont);
+        aw->addAndMakeVisible (label);
+        return label;
+    };
 
-    auto* wetNameLabel = new juce::Label ("", "WET");
-    wetNameLabel->setJustificationType (juce::Justification::centredLeft);
-    applyLabelTextColour (*wetNameLabel, scheme.text);
-    wetNameLabel->setBorderSize (juce::BorderSize<int> (0));
-    wetNameLabel->setFont (promptFont);
-    aw->addAndMakeVisible (wetNameLabel);
-
-    auto* dryDbLabel = new juce::Label ("", "dB");
-    dryDbLabel->setJustificationType (juce::Justification::centredLeft);
-    applyLabelTextColour (*dryDbLabel, scheme.text);
-    dryDbLabel->setBorderSize (juce::BorderSize<int> (0));
-    dryDbLabel->setFont (promptFont);
-    aw->addAndMakeVisible (dryDbLabel);
-
-    auto* wetDbLabel = new juce::Label ("", "dB");
-    wetDbLabel->setJustificationType (juce::Justification::centredLeft);
-    applyLabelTextColour (*wetDbLabel, scheme.text);
-    wetDbLabel->setBorderSize (juce::BorderSize<int> (0));
-    wetDbLabel->setFont (promptFont);
-    aw->addAndMakeVisible (wetDbLabel);
+    auto* dryNameLabel = addPromptLabel ("DRY");
+    auto* wetNameLabel = addPromptLabel ("WET");
+    auto* dryDbLabel = addPromptLabel ("dB");
+    auto* wetDbLabel = addPromptLabel ("dB");
 
     preparePromptTextEditor (*aw, "dryLevel", scheme.bg, scheme.text, scheme.fg, promptFont, false);
     preparePromptTextEditor (*aw, "wetLevel", scheme.bg, scheme.text, scheme.fg, promptFont, false);

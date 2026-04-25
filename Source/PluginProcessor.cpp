@@ -6,14 +6,14 @@ namespace
 	constexpr float kGainSmoothCoeff = 0.9955f;
 	constexpr float kGainSmoothStep  = 1.0f - kGainSmoothCoeff;
 
-	// Developer diagnostics stay off by default and FFT trace code is only meant
-	// to exist in debug-oriented builds.
+	// Developer diagnostics are centralized here so temporary dumps can be
+	// switched off without touching DSP paths.
 	struct DeveloperDiagnosticsConfig
 	{
 		static constexpr bool kEnableAutoDump = false;
 		static constexpr bool kEnableFftAutoDump = false;
 		static constexpr bool kEnableHeavyFftDebugTrace = false;
-		static constexpr bool kEnableFft1AmountFreezeDump = true;
+		static constexpr bool kEnableFft1AmountFreezeDump = false;
 #if JUCE_DEBUG
 		static constexpr bool kCompileStretchDebugTrace = true;
 		static constexpr bool kCompileGrainDebugTrace = true;
@@ -2750,7 +2750,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // Mod -> pitch rate: center (0.5)=1.0x, 0=0.0625x, 1=16x
 	const float targetPitchRate = std::exp2 ((modVal - 0.5f) * 4.0f);
 
-	// Window -> continuous size (16..8192), smoothed
+	// Window -> stored per engine; FFT engines receive canonical powers of two.
 	smoothedWindow_ = smoothedWindowByFamily_[(size_t) windowFamily];
 	const float targetWindow = (float) juce::jlimit (kWindowMin, kWindowMax, effectiveWindowVal);
 	const float fft2TargetLog2Window = std::log2 (targetWindow);
@@ -2799,7 +2799,6 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const float limThreshLinStart = smoothedLimThreshold;
 	float limThreshLinState = smoothedLimThreshold;
 
-	// Granular read rate: how fast the grain spawn position advances
 	// Granular read rate computed per-sample from smoothedSpeed_ below
    #if JUCE_DEBUG
 	const bool fftDebugEnabled = DeveloperDiagnosticsConfig::kEnableFftTraceRecording;
@@ -3313,6 +3312,15 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	float fft1AmountFreezeOutPeakR = 0.0f;
 	float fft1AmountFreezePostDuckOutPeakL = 0.0f;
 	float fft1AmountFreezePostDuckOutPeakR = 0.0f;
+	float fftDuckAttackStepBlock = 0.0f;
+	float fftDuckReleaseStepBlock = 0.0f;
+	if (engineVal == 2 || engineVal == 3)
+	{
+		const float attackMs = 4.0f;
+		const float releaseSeconds = (engineVal == 3) ? 0.320f : 0.250f;
+		fftDuckAttackStepBlock = 1.0f - std::exp (-1.0f / (static_cast<float> (currentSampleRate) * attackMs * 0.001f));
+		fftDuckReleaseStepBlock = 1.0f - std::exp (-1.0f / (static_cast<float> (currentSampleRate) * releaseSeconds));
+	}
 
     // Per-sample processing
 	for (int i = 0; i < numSamples; ++i)
@@ -5009,14 +5017,10 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				    || fftParamDuckGain_ < 0.9999f);
 			if (fftDuckRuntimeActive)
 			{
-				const float attackMs = 4.0f;
-				const float releaseSeconds = (engineVal == 3) ? 0.320f : 0.250f;
-				const float fftDuckAttackStep = 1.0f - std::exp (-1.0f / (static_cast<float> (currentSampleRate) * attackMs * 0.001f));
-				const float fftDuckReleaseStep = 1.0f - std::exp (-1.0f / (static_cast<float> (currentSampleRate) * releaseSeconds));
 				const float fftDuckTarget = (fftParamDuckHoldRemaining_ > 0) ? 0.0f : 1.0f;
 				const float fftDuckStep = (fftDuckTarget < fftParamDuckGain_)
-					? fftDuckAttackStep
-					: fftDuckReleaseStep;
+					? fftDuckAttackStepBlock
+					: fftDuckReleaseStepBlock;
 				fftParamDuckGain_ += (fftDuckTarget - fftParamDuckGain_) * fftDuckStep;
 				outL *= fftParamDuckGain_;
 				outR *= fftParamDuckGain_;

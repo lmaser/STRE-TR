@@ -17,7 +17,7 @@ public:
 	static constexpr const char* kParamMod       = "mod";
 	static constexpr const char* kParamGrain     = "grain";
     static constexpr const char* kParamEngine    = "engine";     // 0=STRETCH 1=GRAIN 2=FFT1 3=FFT2
-	static constexpr const char* kParamWindow    = "window";     // 21..8192 continuous
+	static constexpr const char* kParamWindow    = "window";     // 16..8192; FFT engines snap to powers of two
 	static constexpr const char* kParamStyle     = "style";      // 0=MONO 1=STEREO 2=WIDE 3=DUAL
 	static constexpr const char* kParamInput     = "input";
 	static constexpr const char* kParamOutput    = "output";
