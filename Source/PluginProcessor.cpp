@@ -1212,6 +1212,12 @@ void STRETRAudioProcessor::resetFftWindowDuckPrepareState (int capturedWindowVal
 {
 	fftParamDuckGain_ = 1.0f;
 	fftParamDuckHoldRemaining_ = 0;
+	fftDuckBridgeRemaining_ = 0;
+	fftDuckBridgeTotal_ = 0;
+	fftDuckBridgeStartL_ = 0.0f;
+	fftDuckBridgeStartR_ = 0.0f;
+	fftLastPostDuckOutL_ = 0.0f;
+	fftLastPostDuckOutR_ = 0.0f;
 	fftWindowApplyDelayRemaining_ = 0;
 	fftWindowCaptureRemaining_ = 0;
 	fftCapturedWindowVal_ = capturedWindowVal;
@@ -1229,6 +1235,10 @@ void STRETRAudioProcessor::clearFftWindowDuckRuntimeState() noexcept
 {
 	fftParamDuckHoldRemaining_ = 0;
 	fftParamDuckGain_ = 1.0f;
+	fftDuckBridgeRemaining_ = 0;
+	fftDuckBridgeTotal_ = 0;
+	fftDuckBridgeStartL_ = 0.0f;
+	fftDuckBridgeStartR_ = 0.0f;
 	fftWindowApplyDelayRemaining_ = 0;
 	fftWindowCaptureRemaining_ = 0;
 	fftWindowTraceRemaining_ = 0;
@@ -2688,6 +2698,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	}
 	const bool  fftEngineSelected = (engineVal == 2 || engineVal == 3);
 	const bool  fftDuckEngineActive = triggerOn && fftEngineSelected;
+	const bool  fftTriggerPressedThisBlock = triggerOn && ! triggerWasOn_ && fftEngineSelected;
 	const bool  fftTriggerReleasedThisBlock = (! triggerOn) && triggerWasOn_ && fftEngineSelected;
 	const bool  fftRawWindowChanged = fftDuckEngineActive
 		&& prevFftDuckTriggerOn_
@@ -2965,10 +2976,18 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     // Trigger edge detection: reset engines on trigger press
 	bool fftReseededThisBlock = false;
-	auto armFftTriggerDuck = [this] (int holdSamples) noexcept
+	auto armFftInstantDuck = [this] (int holdSamples) noexcept
 	{
 		fftParamDuckHoldRemaining_ = juce::jmax (fftParamDuckHoldRemaining_, holdSamples);
 		fftParamDuckGain_ = 0.0f;
+		const int bridgeSamples = juce::jlimit (0, holdSamples, samplesForMs (1.5));
+		if (bridgeSamples > 0)
+		{
+			fftDuckBridgeStartL_ = std::isfinite (fftLastPostDuckOutL_) ? fftLastPostDuckOutL_ : 0.0f;
+			fftDuckBridgeStartR_ = std::isfinite (fftLastPostDuckOutR_) ? fftLastPostDuckOutR_ : fftDuckBridgeStartL_;
+			fftDuckBridgeTotal_ = bridgeSamples;
+			fftDuckBridgeRemaining_ = bridgeSamples;
+		}
 	};
 	if (triggerOn && ! triggerWasOn_)
 	{
@@ -2979,7 +2998,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		if ((engineVal == 2 || engineVal == 3) && requestedFftSize > 0)
 		{
 			const int triggerDuckHoldSamples = recommendedFftTriggerDuckHoldSamples (requestedFftSize);
-			armFftTriggerDuck (triggerDuckHoldSamples);
+			armFftInstantDuck (triggerDuckHoldSamples);
 			resetStftAtPos (capturePos, requestedFftSize);
 			recordFftReset (1, capturePos);
 			fftReseededThisBlock = true;
@@ -3015,7 +3034,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	{
 		const double capturePos = (double) ((inputBufWritePos_ - 1 + inputBufLen_) & inputBufMask_);
 		const int triggerDuckHoldSamples = recommendedFftTriggerDuckHoldSamples (requestedFftSize);
-		armFftTriggerDuck (triggerDuckHoldSamples);
+		armFftInstantDuck (triggerDuckHoldSamples);
 		resetStftAtPos (capturePos, requestedFftSize);
 		recordFftReset (1, capturePos);
 		fftReseededThisBlock = true;
@@ -3079,7 +3098,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 #endif
 	}
 	if (fftTriggerReleasedThisBlock && requestedFftSize > 0)
-		armFftTriggerDuck (samplesForMs (2.0));
+		armFftInstantDuck (samplesForMs (2.0));
 	triggerWasOn_ = triggerOn;
 
 	// Engine crossfade: trigger fade-in on engine change
@@ -3170,6 +3189,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			engineVal == 3
 				? juce::jmax (samplesForMs (32.0), fftWindowFadeSamples / 3)
 				: samplesForMs (20.0));
+		armFftInstantDuck (fftWindowHoldSamples);
 		fftOutputFadeHoldSamples_ = fftWindowHoldSamples;
 		fftOutputFadeTotal_ = fftWindowFadeSamples + fftOutputFadeHoldSamples_;
 		fftOutputFadePos_ = fftOutputFadeTotal_;
@@ -3268,21 +3288,31 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	chaosStereo_ = (styleVal >= 1);
 	const bool fft1AmountFreezeDumpActiveBlock = DeveloperDiagnosticsConfig::kEnableFft1AmountFreezeDump
 		&& (engineVal == 2 || engineVal == 3)
-		&& triggerOn
-		&& ((amountVal <= 5.0f) || (amountVal >= 95.0f));
+		&& (triggerOn
+		    || fftTriggerReleasedThisBlock
+		    || fftParamDuckHoldRemaining_ > 0
+		    || fftParamDuckGain_ < 0.9999f
+		    || fftOutputFadePos_ > 0);
 	const int fft1AmountFreezeDumpBlockIndex = ++fft1AmountFreezeDumpBlockCounter_;
+	const int fft1AmountFreezeDumpTriggerEdge = fftTriggerPressedThisBlock ? 1 : (fftTriggerReleasedThisBlock ? -1 : 0);
+	const int fft1AmountFreezeDumpDuckHoldStart = fftParamDuckHoldRemaining_;
+	const float fft1AmountFreezeDumpDuckGainStart = fftParamDuckGain_;
 	double fft1AmountFreezeEngineWetSqL = 0.0;
 	double fft1AmountFreezeEngineWetSqR = 0.0;
 	double fft1AmountFreezeFinalWetSqL = 0.0;
 	double fft1AmountFreezeFinalWetSqR = 0.0;
 	double fft1AmountFreezeOutSqL = 0.0;
 	double fft1AmountFreezeOutSqR = 0.0;
+	double fft1AmountFreezePostDuckOutSqL = 0.0;
+	double fft1AmountFreezePostDuckOutSqR = 0.0;
 	float fft1AmountFreezeEngineWetPeakL = 0.0f;
 	float fft1AmountFreezeEngineWetPeakR = 0.0f;
 	float fft1AmountFreezeFinalWetPeakL = 0.0f;
 	float fft1AmountFreezeFinalWetPeakR = 0.0f;
 	float fft1AmountFreezeOutPeakL = 0.0f;
 	float fft1AmountFreezeOutPeakR = 0.0f;
+	float fft1AmountFreezePostDuckOutPeakL = 0.0f;
+	float fft1AmountFreezePostDuckOutPeakR = 0.0f;
 
     // Per-sample processing
 	for (int i = 0; i < numSamples; ++i)
@@ -4745,60 +4775,6 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		}
 	}
 
-	if (fft1AmountFreezeDumpActiveBlock)
-	{
-		const float invCount = 1.0f / (float) juce::jmax (1, numSamples);
-		const bool fftTargetFreeze = (engineVal == 2 || engineVal == 3) && (targetSpeed <= 0.0001f);
-		Fft1AmountFreezeDumpEntry dbg {};
-		dbg.blockIndex = fft1AmountFreezeDumpBlockIndex;
-		dbg.engine = engineVal;
-		dbg.triggerOn = triggerOn ? 1 : 0;
-		dbg.alignOn = alignOn ? 1 : 0;
-		dbg.pdcOn = pdcOn ? 1 : 0;
-		dbg.style = styleVal;
-		dbg.reverseOn = reverseOn ? 1 : 0;
-		dbg.wideMode = (styleVal == 2 && numChannels >= 2) ? 1 : 0;
-		dbg.dualMode = (styleVal == 3 && numChannels >= 2) ? 1 : 0;
-		dbg.amount = amountVal;
-		dbg.mod = modVal;
-		dbg.speed = targetSpeed;
-		dbg.smoothedSpeed = smoothedSpeed_;
-		dbg.pitchRate = targetPitchRate;
-		dbg.windowSamples = windowSamples;
-		dbg.fftSize = stft_.activeFftSize;
-		dbg.reportedLatency = reportedLatency;
-		dbg.dryDelayLen = dryDelayLen_;
-		dbg.fftTargetFreeze = fftTargetFreeze ? 1 : 0;
-		dbg.fftExplicitFreezeActive = fftExplicitFreezeActive_ ? 1 : 0;
-		dbg.fftExplicitFreezeCapturePending = fftExplicitFreezeCapturePending_ ? 1 : 0;
-		dbg.lastAnalysisHop = stft_.lastAnalysisHop;
-		dbg.freezeEntryWarmupCycles = stft_.freezeEntryWarmupCycles;
-		dbg.fftTransitionRemaining = fftTransitionRemaining_;
-		dbg.fftTransitionTotal = fftTransitionTotal_;
-		dbg.fftFreezeTransitionRemaining = fftFreezeTransitionRemaining_;
-		dbg.fftFreezeTransitionTotal = fftFreezeTransitionTotal_;
-		dbg.windowTransitionRemaining = getWindowTransitionRemainingForEngine (engineVal);
-		dbg.windowTransitionTotal = getWindowTransitionTotalForEngine (engineVal);
-		dbg.fftUnityBypassActive = fftUnityBypassActive_ ? 1 : 0;
-		dbg.fftTransitionToUnity = fftTransitionToUnity_ ? 1 : 0;
-		dbg.fft1AmountUnityBypassActive = fft1AmountUnityBypassActive_ ? 1 : 0;
-		dbg.fft2HoldCoeff = fft2HoldCoeffSmoothed_;
-		dbg.fft2TargetHoldCoeff = std::sqrt (std::sqrt (juce::jlimit (0.0f, 1.0f, 1.0f - targetSpeed)));
-		dbg.engineWetRmsL = std::sqrt ((float) (fft1AmountFreezeEngineWetSqL * invCount));
-		dbg.engineWetRmsR = std::sqrt ((float) (fft1AmountFreezeEngineWetSqR * invCount));
-		dbg.engineWetPeakL = fft1AmountFreezeEngineWetPeakL;
-		dbg.engineWetPeakR = fft1AmountFreezeEngineWetPeakR;
-		dbg.finalWetRmsL = std::sqrt ((float) (fft1AmountFreezeFinalWetSqL * invCount));
-		dbg.finalWetRmsR = std::sqrt ((float) (fft1AmountFreezeFinalWetSqR * invCount));
-		dbg.finalWetPeakL = fft1AmountFreezeFinalWetPeakL;
-		dbg.finalWetPeakR = fft1AmountFreezeFinalWetPeakR;
-		dbg.outRmsL = std::sqrt ((float) (fft1AmountFreezeOutSqL * invCount));
-		dbg.outRmsR = std::sqrt ((float) (fft1AmountFreezeOutSqR * invCount));
-		dbg.outPeakL = fft1AmountFreezeOutPeakL;
-		dbg.outPeakR = fft1AmountFreezeOutPeakR;
-		fft1AmountFreezeDumpTrace_.record (dbg);
-	}
-
 	smoothedDryLevel = dryLevelState;
 	smoothedWetLevel = wetLevelState;
 	smoothedLimThreshold = limThreshLinState;
@@ -5048,6 +5024,21 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					--fftParamDuckHoldRemaining_;
 			}
 
+			if ((engineVal == 2 || engineVal == 3) && fftDuckBridgeRemaining_ > 0 && fftDuckBridgeTotal_ > 0)
+			{
+				const int bridgeDenom = juce::jmax (1, fftDuckBridgeTotal_ - 1);
+				const float bridgePhase = (float) juce::jmax (0, fftDuckBridgeRemaining_ - 1) / (float) bridgeDenom;
+				const float bridgeGain = bridgePhase * bridgePhase * (3.0f - 2.0f * bridgePhase);
+				outL += fftDuckBridgeStartL_ * bridgeGain;
+				outR += fftDuckBridgeStartR_ * bridgeGain;
+				--fftDuckBridgeRemaining_;
+				if (fftDuckBridgeRemaining_ <= 0)
+				{
+					fftDuckBridgeRemaining_ = 0;
+					fftDuckBridgeTotal_ = 0;
+				}
+			}
+
 			if (fftDebugEnabled)
 			{
 				fftDebugContext_.fftWetPreOutputFadeL = preFadeL;
@@ -5075,14 +5066,93 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				fftPrevWetPostOutputL_ = outL;
 			}
 
+			if (fft1AmountFreezeDumpActiveBlock)
+			{
+				fft1AmountFreezePostDuckOutSqL += (double) outL * (double) outL;
+				fft1AmountFreezePostDuckOutSqR += (double) outR * (double) outR;
+				fft1AmountFreezePostDuckOutPeakL = juce::jmax (fft1AmountFreezePostDuckOutPeakL, std::abs (outL));
+				fft1AmountFreezePostDuckOutPeakR = juce::jmax (fft1AmountFreezePostDuckOutPeakR, std::abs (outR));
+			}
+
 			left[i] = outL;
 			if (right != nullptr)
 				right[i] = outR;
 
+			fftLastPostDuckOutL_ = outL;
+			fftLastPostDuckOutR_ = outR;
 			wetOutputHistory_[0][wetOutputHistoryWritePos_] = outL;
 			wetOutputHistory_[1][wetOutputHistoryWritePos_] = outR;
 			wetOutputHistoryWritePos_ = (wetOutputHistoryWritePos_ + 1) & (kWetOutputHistoryLen - 1);
 		}
+	}
+
+	if (fft1AmountFreezeDumpActiveBlock)
+	{
+		const float invCount = 1.0f / (float) juce::jmax (1, numSamples);
+		const bool fftTargetFreeze = (engineVal == 2 || engineVal == 3) && (targetSpeed <= 0.0001f);
+		Fft1AmountFreezeDumpEntry dbg {};
+		dbg.blockIndex = fft1AmountFreezeDumpBlockIndex;
+		dbg.engine = engineVal;
+		dbg.triggerOn = triggerOn ? 1 : 0;
+		dbg.alignOn = alignOn ? 1 : 0;
+		dbg.pdcOn = pdcOn ? 1 : 0;
+		dbg.triggerEdge = fft1AmountFreezeDumpTriggerEdge;
+		dbg.fftWindowMotionActive = fftWindowMotionActiveBlock ? 1 : 0;
+		dbg.fftSizeChanged = fftSizeChanged ? 1 : 0;
+		dbg.fftOutputFadePos = fftOutputFadePos_;
+		dbg.fftOutputFadeTotal = fftOutputFadeTotal_;
+		dbg.fftDuckHoldStart = fft1AmountFreezeDumpDuckHoldStart;
+		dbg.fftDuckHoldEnd = fftParamDuckHoldRemaining_;
+		dbg.fftDuckBridgeRemaining = fftDuckBridgeRemaining_;
+		dbg.fftDuckBridgeTotal = fftDuckBridgeTotal_;
+		dbg.fftDuckGainStart = fft1AmountFreezeDumpDuckGainStart;
+		dbg.fftDuckGainEnd = fftParamDuckGain_;
+		dbg.style = styleVal;
+		dbg.reverseOn = reverseOn ? 1 : 0;
+		dbg.wideMode = (styleVal == 2 && numChannels >= 2) ? 1 : 0;
+		dbg.dualMode = (styleVal == 3 && numChannels >= 2) ? 1 : 0;
+		dbg.amount = amountVal;
+		dbg.mod = modVal;
+		dbg.speed = targetSpeed;
+		dbg.smoothedSpeed = smoothedSpeed_;
+		dbg.pitchRate = targetPitchRate;
+		dbg.windowSamples = windowSamples;
+		dbg.fftSize = stft_.activeFftSize;
+		dbg.reportedLatency = reportedLatency;
+		dbg.dryDelayLen = dryDelayLen_;
+		dbg.fftTargetFreeze = fftTargetFreeze ? 1 : 0;
+		dbg.fftExplicitFreezeActive = fftExplicitFreezeActive_ ? 1 : 0;
+		dbg.fftExplicitFreezeCapturePending = fftExplicitFreezeCapturePending_ ? 1 : 0;
+		dbg.lastAnalysisHop = stft_.lastAnalysisHop;
+		dbg.freezeEntryWarmupCycles = stft_.freezeEntryWarmupCycles;
+		dbg.fftTransitionRemaining = fftTransitionRemaining_;
+		dbg.fftTransitionTotal = fftTransitionTotal_;
+		dbg.fftFreezeTransitionRemaining = fftFreezeTransitionRemaining_;
+		dbg.fftFreezeTransitionTotal = fftFreezeTransitionTotal_;
+		dbg.windowTransitionRemaining = getWindowTransitionRemainingForEngine (engineVal);
+		dbg.windowTransitionTotal = getWindowTransitionTotalForEngine (engineVal);
+		dbg.fftUnityBypassActive = fftUnityBypassActive_ ? 1 : 0;
+		dbg.fftTransitionToUnity = fftTransitionToUnity_ ? 1 : 0;
+		dbg.fft1AmountUnityBypassActive = fft1AmountUnityBypassActive_ ? 1 : 0;
+		dbg.fft2HoldCoeff = fft2HoldCoeffSmoothed_;
+		dbg.fft2TargetHoldCoeff = std::sqrt (std::sqrt (juce::jlimit (0.0f, 1.0f, 1.0f - targetSpeed)));
+		dbg.engineWetRmsL = std::sqrt ((float) (fft1AmountFreezeEngineWetSqL * invCount));
+		dbg.engineWetRmsR = std::sqrt ((float) (fft1AmountFreezeEngineWetSqR * invCount));
+		dbg.engineWetPeakL = fft1AmountFreezeEngineWetPeakL;
+		dbg.engineWetPeakR = fft1AmountFreezeEngineWetPeakR;
+		dbg.finalWetRmsL = std::sqrt ((float) (fft1AmountFreezeFinalWetSqL * invCount));
+		dbg.finalWetRmsR = std::sqrt ((float) (fft1AmountFreezeFinalWetSqR * invCount));
+		dbg.finalWetPeakL = fft1AmountFreezeFinalWetPeakL;
+		dbg.finalWetPeakR = fft1AmountFreezeFinalWetPeakR;
+		dbg.outRmsL = std::sqrt ((float) (fft1AmountFreezeOutSqL * invCount));
+		dbg.outRmsR = std::sqrt ((float) (fft1AmountFreezeOutSqR * invCount));
+		dbg.outPeakL = fft1AmountFreezeOutPeakL;
+		dbg.outPeakR = fft1AmountFreezeOutPeakR;
+		dbg.postDuckOutRmsL = std::sqrt ((float) (fft1AmountFreezePostDuckOutSqL * invCount));
+		dbg.postDuckOutRmsR = std::sqrt ((float) (fft1AmountFreezePostDuckOutSqR * invCount));
+		dbg.postDuckOutPeakL = fft1AmountFreezePostDuckOutPeakL;
+		dbg.postDuckOutPeakR = fft1AmountFreezePostDuckOutPeakR;
+		fft1AmountFreezeDumpTrace_.record (dbg);
 	}
 }
 

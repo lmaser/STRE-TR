@@ -893,6 +893,17 @@ private:
 		int   triggerOn = 0;
 		int   alignOn = 0;
 		int   pdcOn = 0;
+		int   triggerEdge = 0;
+		int   fftWindowMotionActive = 0;
+		int   fftSizeChanged = 0;
+		int   fftOutputFadePos = 0;
+		int   fftOutputFadeTotal = 0;
+		int   fftDuckHoldStart = 0;
+		int   fftDuckHoldEnd = 0;
+		int   fftDuckBridgeRemaining = 0;
+		int   fftDuckBridgeTotal = 0;
+		float fftDuckGainStart = 1.0f;
+		float fftDuckGainEnd = 1.0f;
 		int   style = 0;
 		int   reverseOn = 0;
 		int   wideMode = 0;
@@ -934,6 +945,10 @@ private:
 		float outRmsR = 0.0f;
 		float outPeakL = 0.0f;
 		float outPeakR = 0.0f;
+		float postDuckOutRmsL = 0.0f;
+		float postDuckOutRmsR = 0.0f;
+		float postDuckOutPeakL = 0.0f;
+		float postDuckOutPeakR = 0.0f;
 	};
 
 	class Fft1AmountFreezeDumpTrace
@@ -961,7 +976,10 @@ private:
 			if (auto stream = f.createOutputStream())
 			{
 				stream->writeText (
-					"block_index,engine,trigger_on,align_on,pdc_on,amount,mod,speed,pitch_rate,window_samples,fft_size,"
+					"block_index,engine,trigger_on,align_on,pdc_on,trigger_edge,fft_window_motion_active,"
+					"fft_size_changed,fft_output_fade_pos,fft_output_fade_total,fft_duck_hold_start,"
+					"fft_duck_hold_end,fft_duck_bridge_remaining,fft_duck_bridge_total,fft_duck_gain_start,fft_duck_gain_end,"
+					"amount,mod,speed,pitch_rate,window_samples,fft_size,"
 					"reported_latency,dry_delay_len,fft_target_freeze,fft_explicit_freeze_active,"
 					"fft_explicit_freeze_capture_pending,last_analysis_hop,freeze_entry_warmup_cycles,"
 					"fft_transition_remaining,fft_transition_total,fft_freeze_transition_remaining,"
@@ -969,7 +987,8 @@ private:
 					"window_transition_remaining,window_transition_total,fft_unity_bypass_active,fft_transition_to_unity,"
 					"fft1_amount_unity_bypass_active,fft2_hold_coeff,fft2_target_hold_coeff,"
 					"engine_wet_rms_l,engine_wet_rms_r,engine_wet_peak_l,engine_wet_peak_r,"
-					"final_wet_rms_l,final_wet_rms_r,final_wet_peak_l,final_wet_peak_r,out_rms_l,out_rms_r,out_peak_l,out_peak_r\n",
+					"final_wet_rms_l,final_wet_rms_r,final_wet_peak_l,final_wet_peak_r,out_rms_l,out_rms_r,out_peak_l,out_peak_r,"
+					"post_duck_out_rms_l,post_duck_out_rms_r,post_duck_out_peak_l,post_duck_out_peak_r\n",
 					false, false, nullptr);
 
 				const int total = juce::jmin (writeIndex.load (std::memory_order_relaxed), kRingSize);
@@ -983,6 +1002,17 @@ private:
 					     << e.triggerOn << ","
 					     << e.alignOn << ","
 					     << e.pdcOn << ","
+					     << e.triggerEdge << ","
+					     << e.fftWindowMotionActive << ","
+					     << e.fftSizeChanged << ","
+					     << e.fftOutputFadePos << ","
+					     << e.fftOutputFadeTotal << ","
+					     << e.fftDuckHoldStart << ","
+					     << e.fftDuckHoldEnd << ","
+					     << e.fftDuckBridgeRemaining << ","
+					     << e.fftDuckBridgeTotal << ","
+					     << e.fftDuckGainStart << ","
+					     << e.fftDuckGainEnd << ","
 					     << e.amount << ","
 					     << e.mod << ","
 					     << e.speed << ","
@@ -1023,7 +1053,11 @@ private:
 					     << e.outRmsL << ","
 					     << e.outRmsR << ","
 					     << e.outPeakL << ","
-					     << e.outPeakR << "\n";
+					     << e.outPeakR << ","
+					     << e.postDuckOutRmsL << ","
+					     << e.postDuckOutRmsR << ","
+					     << e.postDuckOutPeakL << ","
+					     << e.postDuckOutPeakR << "\n";
 					stream->writeText (line, false, false, nullptr);
 				}
 				stream->flush();
@@ -1140,6 +1174,12 @@ private:
 	float fftPrevWetPostOutputL_ = 0.0f;
 	float fftParamDuckGain_ = 1.0f;
 	int   fftParamDuckHoldRemaining_ = 0;
+	float fftDuckBridgeStartL_ = 0.0f;
+	float fftDuckBridgeStartR_ = 0.0f;
+	float fftLastPostDuckOutL_ = 0.0f;
+	float fftLastPostDuckOutR_ = 0.0f;
+	int   fftDuckBridgeRemaining_ = 0;
+	int   fftDuckBridgeTotal_ = 0;
 	int   fftWindowApplyDelayRemaining_ = 0;
 	int   fftWindowCaptureRemaining_ = 0;
 	int   fftCapturedWindowVal_ = (int) kWindowDefault;
