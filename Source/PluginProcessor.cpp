@@ -13,7 +13,7 @@ namespace
 		static constexpr bool kEnableAutoDump = false;
 		static constexpr bool kEnableFftAutoDump = false;
 		static constexpr bool kEnableHeavyFftDebugTrace = false;
-		static constexpr bool kEnableFft1AmountFreezeDump = false;
+		static constexpr bool kEnableFft1AmountFreezeDump = STRETR_ENABLE_FFT1_CLICK_DUMP != 0;
 #if JUCE_DEBUG
 		static constexpr bool kCompileStretchDebugTrace = true;
 		static constexpr bool kCompileGrainDebugTrace = true;
@@ -40,6 +40,50 @@ namespace
 	{
 		return loadAtomicOrDefault (p, def ? 1.0f : 0.0f) > 0.5f;
 	}
+
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
+	inline bool updateDumpMaxDelta (float prevL, float prevR,
+	                                float currL, float currR,
+	                                int sampleIndex,
+	                                int& maxSample,
+	                                float& maxAbsDeltaL, float& maxAbsDeltaR,
+	                                float& prevAtMaxL, float& prevAtMaxR,
+	                                float& currAtMaxL, float& currAtMaxR) noexcept
+	{
+		const float absDeltaL = std::abs (currL - prevL);
+		const float absDeltaR = std::abs (currR - prevR);
+		const float currentMax = juce::jmax (maxAbsDeltaL, maxAbsDeltaR);
+		const float newMax = juce::jmax (absDeltaL, absDeltaR);
+		if (newMax <= currentMax)
+			return false;
+
+		maxSample = sampleIndex;
+		maxAbsDeltaL = absDeltaL;
+		maxAbsDeltaR = absDeltaR;
+		prevAtMaxL = prevL;
+		prevAtMaxR = prevR;
+		currAtMaxL = currL;
+		currAtMaxR = currR;
+		return true;
+	}
+
+	inline bool updateDumpMaxDelta (float prevL, float prevR,
+	                                float currL, float currR,
+	                                int sampleIndex,
+	                                StretrDumpStageDelta& delta) noexcept
+	{
+		return updateDumpMaxDelta (prevL, prevR,
+		                           currL, currR,
+		                           sampleIndex,
+		                           delta.sample,
+		                           delta.absDeltaL,
+		                           delta.absDeltaR,
+		                           delta.prevL,
+		                           delta.prevR,
+	                           delta.currL,
+	                           delta.currR);
+	}
+#endif
 
 	inline void setParameterPlainValue (juce::AudioProcessorValueTreeState& apvts,
 	                                    const char* paramId, float plainValue)
@@ -319,10 +363,12 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 	{
 		perfTrace.enableDesktopAutoDump();
 	}
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
 	if constexpr (DeveloperDiagnosticsConfig::kEnableFft1AmountFreezeDump)
 	{
-		fft1AmountFreezeDumpTrace_.enableDesktopAutoDump();
+		fft1AmountFreezeDumpTrace_.enableDesktopAutoDump ("stretr_fft1_click_delta_dump.csv");
 	}
+#endif
 #if JUCE_DEBUG
 	if constexpr (DeveloperDiagnosticsConfig::kEnableAutoDump)
 	{
@@ -1218,6 +1264,30 @@ void STRETRAudioProcessor::resetFftWindowDuckPrepareState (int capturedWindowVal
 	fftDuckBridgeStartR_ = 0.0f;
 	fftLastPostDuckOutL_ = 0.0f;
 	fftLastPostDuckOutR_ = 0.0f;
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
+	fftDumpPrevFftWetL_ = 0.0f;
+	fftDumpPrevFftWetR_ = 0.0f;
+	fftDumpPrevPreStyleWetL_ = 0.0f;
+	fftDumpPrevPreStyleWetR_ = 0.0f;
+	fftDumpPrevPostStyleWetL_ = 0.0f;
+	fftDumpPrevPostStyleWetR_ = 0.0f;
+	fftDumpPrevPostFilterWetL_ = 0.0f;
+	fftDumpPrevPostFilterWetR_ = 0.0f;
+	fftDumpPrevPostChaosWetL_ = 0.0f;
+	fftDumpPrevPostChaosWetR_ = 0.0f;
+	fftDumpPrevPreDcWetL_ = 0.0f;
+	fftDumpPrevPreDcWetR_ = 0.0f;
+	fftDumpPrevPostDcWetL_ = 0.0f;
+	fftDumpPrevPostDcWetR_ = 0.0f;
+	fftDumpPrevEngineWetL_ = 0.0f;
+	fftDumpPrevEngineWetR_ = 0.0f;
+	fftDumpPrevFinalWetL_ = 0.0f;
+	fftDumpPrevFinalWetR_ = 0.0f;
+	fftDumpPrevOutL_ = 0.0f;
+	fftDumpPrevOutR_ = 0.0f;
+	fftDumpPrevPostDuckOutL_ = 0.0f;
+	fftDumpPrevPostDuckOutR_ = 0.0f;
+#endif
 	fftWindowApplyDelayRemaining_ = 0;
 	fftWindowCaptureRemaining_ = 0;
 	fftCapturedWindowVal_ = capturedWindowVal;
@@ -1485,7 +1555,10 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 	const float twoPi    = juce::MathConstants<float>::twoPi;
 	const float pi       = juce::MathConstants<float>::pi;
 	const float expBase  = twoPi / (float) fftSize;
+#if JUCE_DEBUG || STRETR_ENABLE_FFT1_CLICK_DUMP
 	const double analysisReadBefore = stft_.analysisReadPos;
+#endif
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
 	if constexpr (DeveloperDiagnosticsConfig::kEnableFft1AmountFreezeDump)
 	{
 		++fftDebugContext_.fftCycleSerial;
@@ -1496,6 +1569,7 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 		fftDebugContext_.analysisReadBefore = analysisReadBefore;
 		fftDebugContext_.analysisReadAfter = analysisReadBefore;
 	}
+#endif
    #if JUCE_DEBUG
 	const float normAtRead = stft_.outputNormAccum[stft_.outputReadPos];
 	const float invNormAtRead = (normAtRead > 1.0e-6f) ? (1.0f / normAtRead) : 0.0f;
@@ -2062,8 +2136,10 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 		else if (stft_.analysisReadPos < 0.0)
 			stft_.analysisReadPos += (double) inputBufLen_;
 	}
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
 	if constexpr (DeveloperDiagnosticsConfig::kEnableFft1AmountFreezeDump)
 		fftDebugContext_.analysisReadAfter = stft_.analysisReadPos;
+#endif
 
    #if JUCE_DEBUG
 	if (fftDebugEnabled)
@@ -2206,6 +2282,7 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 	const float blend      = 1.0f - holdCoeff;  // 1 = transparent, 0 = full freeze
 	const float phaseAnalysisHop = reverseOn ? - (float) synthesisHop : (float) synthesisHop;
 	const double analysisReadBefore = stft_.analysisReadPos;
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
 	if constexpr (DeveloperDiagnosticsConfig::kEnableFft1AmountFreezeDump)
 	{
 		++fftDebugContext_.fftCycleSerial;
@@ -2216,6 +2293,7 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 		fftDebugContext_.analysisReadBefore = analysisReadBefore;
 		fftDebugContext_.analysisReadAfter = analysisReadBefore;
 	}
+#endif
 	int readStart = 0;
 	if (inputBufLen_ > 0)
 	{
@@ -2473,8 +2551,10 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 		while (stft_.analysisReadPos < 0.0)
 			stft_.analysisReadPos += (double) inputBufLen_;
 	}
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
 	if constexpr (DeveloperDiagnosticsConfig::kEnableFft1AmountFreezeDump)
 		fftDebugContext_.analysisReadAfter = stft_.analysisReadPos;
+#endif
 
    #if JUCE_DEBUG
 	if (fftDebugEnabled)
@@ -2724,7 +2804,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	}
 	const bool  fftEngineSelected = (engineVal == 2 || engineVal == 3);
 	const bool  fftDuckEngineActive = triggerOn && fftEngineSelected;
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
 	const bool  fftTriggerPressedThisBlock = triggerOn && ! triggerWasOn_ && fftEngineSelected;
+#endif
 	const bool  fftTriggerReleasedThisBlock = (! triggerOn) && triggerWasOn_ && fftEngineSelected;
 	const bool  fftRawWindowChanged = fftDuckEngineActive
 		&& prevFftDuckTriggerOn_
@@ -3311,6 +3393,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		chaosParamSmoothCoeff_ = cachedChaosParamSmoothCoeff_;
 
 	chaosStereo_ = (styleVal >= 1);
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
 	const bool fft1AmountFreezeDumpActiveBlock = DeveloperDiagnosticsConfig::kEnableFft1AmountFreezeDump
 		&& (engineVal == 2 || engineVal == 3)
 		&& (triggerOn
@@ -3339,6 +3422,57 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	float fft1AmountFreezeOutPeakR = 0.0f;
 	float fft1AmountFreezePostDuckOutPeakL = 0.0f;
 	float fft1AmountFreezePostDuckOutPeakR = 0.0f;
+	int fft1AmountFreezeMaxFftWetDeltaSample = -1;
+	float fft1AmountFreezeMaxFftWetAbsDeltaL = 0.0f;
+	float fft1AmountFreezeMaxFftWetAbsDeltaR = 0.0f;
+	float fft1AmountFreezeMaxFftWetPrevL = 0.0f;
+	float fft1AmountFreezeMaxFftWetPrevR = 0.0f;
+	float fft1AmountFreezeMaxFftWetCurrL = 0.0f;
+	float fft1AmountFreezeMaxFftWetCurrR = 0.0f;
+	float fft1AmountFreezeMaxFftWetNorm = 0.0f;
+	int fft1AmountFreezeMaxFftWetOutputReadPos = -1;
+	int fft1AmountFreezeMaxFftWetSynthCounter = -1;
+	int fft1AmountFreezeMaxEngineWetDeltaSample = -1;
+	float fft1AmountFreezeMaxEngineWetAbsDeltaL = 0.0f;
+	float fft1AmountFreezeMaxEngineWetAbsDeltaR = 0.0f;
+	float fft1AmountFreezeMaxEngineWetPrevL = 0.0f;
+	float fft1AmountFreezeMaxEngineWetPrevR = 0.0f;
+	float fft1AmountFreezeMaxEngineWetCurrL = 0.0f;
+	float fft1AmountFreezeMaxEngineWetCurrR = 0.0f;
+	int fft1AmountFreezeMaxFinalWetDeltaSample = -1;
+	float fft1AmountFreezeMaxFinalWetAbsDeltaL = 0.0f;
+	float fft1AmountFreezeMaxFinalWetAbsDeltaR = 0.0f;
+	float fft1AmountFreezeMaxFinalWetPrevL = 0.0f;
+	float fft1AmountFreezeMaxFinalWetPrevR = 0.0f;
+	float fft1AmountFreezeMaxFinalWetCurrL = 0.0f;
+	float fft1AmountFreezeMaxFinalWetCurrR = 0.0f;
+	int fft1AmountFreezeMaxOutDeltaSample = -1;
+	float fft1AmountFreezeMaxOutAbsDeltaL = 0.0f;
+	float fft1AmountFreezeMaxOutAbsDeltaR = 0.0f;
+	float fft1AmountFreezeMaxOutPrevL = 0.0f;
+	float fft1AmountFreezeMaxOutPrevR = 0.0f;
+	float fft1AmountFreezeMaxOutCurrL = 0.0f;
+	float fft1AmountFreezeMaxOutCurrR = 0.0f;
+	int fft1AmountFreezeMaxPostDuckOutDeltaSample = -1;
+	float fft1AmountFreezeMaxPostDuckOutAbsDeltaL = 0.0f;
+	float fft1AmountFreezeMaxPostDuckOutAbsDeltaR = 0.0f;
+	float fft1AmountFreezeMaxPostDuckOutPrevL = 0.0f;
+	float fft1AmountFreezeMaxPostDuckOutPrevR = 0.0f;
+	float fft1AmountFreezeMaxPostDuckOutCurrL = 0.0f;
+	float fft1AmountFreezeMaxPostDuckOutCurrR = 0.0f;
+	StretrDumpStageDelta fft1AmountFreezeMaxPreStyleWetDelta;
+	StretrDumpStageDelta fft1AmountFreezeMaxPostStyleWetDelta;
+	StretrDumpStageDelta fft1AmountFreezeMaxPostFilterWetDelta;
+	StretrDumpStageDelta fft1AmountFreezeMaxPostChaosWetDelta;
+	StretrDumpStageDelta fft1AmountFreezeMaxPreDcWetDelta;
+	StretrDumpStageDelta fft1AmountFreezeMaxPostDcWetDelta;
+	float fft1AmountFreezeMaxPostDcPrevDcInL = 0.0f;
+	float fft1AmountFreezeMaxPostDcPrevDcInR = 0.0f;
+	float fft1AmountFreezeMaxPostDcPrevDcOutL = 0.0f;
+	float fft1AmountFreezeMaxPostDcPrevDcOutR = 0.0f;
+	float fft1AmountFreezeMaxPostDcInputL = 0.0f;
+	float fft1AmountFreezeMaxPostDcInputR = 0.0f;
+#endif
 	float fftDuckAttackStepBlock = 0.0f;
 	float fftDuckReleaseStepBlock = 0.0f;
 	if (engineVal == 2 || engineVal == 3)
@@ -3701,7 +3835,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 						targetAnalysisHop = juce::jlimit ((double) minAnalysisHop, (double) fftSynthHop,
 						                                  (double) fftSynthHop * (double) cycleSpeed);
 					else if (engineVal == 2)
-						targetAnalysisHop = fft1ReverseDirectFreezeCycle ? (double) fftSynthHop : 0.0;
+						targetAnalysisHop = fft1ReverseDirectFreezeCycle ? (double) minAnalysisHop : 0.0;
 					int fftAnalysisHop = (targetAnalysisHop > 0.0001)
 						? juce::jlimit (minAnalysisHop, fftSynthHop, (int) std::lround (targetAnalysisHop))
 						: 0;
@@ -3788,10 +3922,10 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 							fftAnalysisHop = juce::jmax (fftAnalysisHop, freezeFloorHop);
 						}
 						enteringFreeze = ! fft1ReverseDirectFreezeCycle
-							&& (fftAnalysisHop <= freezeHopThreshold)
-							&& (stft_.lastAnalysisHop > freezeHopThreshold);
+							&& (fftAnalysisHop <= 0)
+							&& (stft_.lastAnalysisHop > 0);
 						freezeImmediatelyAfterReset = ! fft1ReverseDirectFreezeCycle
-							&& (fftAnalysisHop <= freezeHopThreshold)
+							&& (fftAnalysisHop <= 0)
 							&& (stft_.lastAnalysisHop < 0);
 						if (enteringFreeze || freezeImmediatelyAfterReset)
 						{
@@ -4006,7 +4140,31 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			else
 			{
 				float fftWetL = 0.0f, fftWetR = 0.0f;
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
+				const int fftWetOutputReadPosBefore = stft_.outputReadPos;
+				const int fftWetSynthCounterBefore = stft_.synthCounter;
+				const float fftWetNormAtRead = stft_.outputNormAccum[fftWetOutputReadPosBefore];
+#endif
 				readCurrentFftWet (fftWetL, fftWetR);
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
+				if (fft1AmountFreezeDumpActiveBlock
+				    && updateDumpMaxDelta (fftDumpPrevFftWetL_, fftDumpPrevFftWetR_,
+				                           fftWetL, fftWetR, i,
+				                           fft1AmountFreezeMaxFftWetDeltaSample,
+				                           fft1AmountFreezeMaxFftWetAbsDeltaL,
+				                           fft1AmountFreezeMaxFftWetAbsDeltaR,
+				                           fft1AmountFreezeMaxFftWetPrevL,
+				                           fft1AmountFreezeMaxFftWetPrevR,
+				                           fft1AmountFreezeMaxFftWetCurrL,
+				                           fft1AmountFreezeMaxFftWetCurrR))
+				{
+					fft1AmountFreezeMaxFftWetNorm = fftWetNormAtRead;
+					fft1AmountFreezeMaxFftWetOutputReadPos = fftWetOutputReadPosBefore;
+					fft1AmountFreezeMaxFftWetSynthCounter = fftWetSynthCounterBefore;
+				}
+				fftDumpPrevFftWetL_ = fftWetL;
+				fftDumpPrevFftWetR_ = fftWetR;
+#endif
 				fftDebugContext_.fftWetPreWindowFadeL = fftWetL;
 				fftDebugContext_.fftWetPreWindowDeltaL = fftWetL - fftPrevWetPreWindowL_;
 				fftDebugContext_.fftWetPostWindowFadeL = fftWetL;
@@ -4719,6 +4877,15 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			wetR = unityRefR;
 		}
 
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
+		if (fft1AmountFreezeDumpActiveBlock)
+			updateDumpMaxDelta (fftDumpPrevPreStyleWetL_, fftDumpPrevPreStyleWetR_,
+			                    wetL, wetR, i,
+			                    fft1AmountFreezeMaxPreStyleWetDelta);
+		fftDumpPrevPreStyleWetL_ = wetL;
+		fftDumpPrevPreStyleWetR_ = wetR;
+#endif
+
 		// Style processing (WIDE / DUAL)
 		if (numChannels >= 2)
 		{
@@ -4738,6 +4905,14 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			// styleVal == 1 (STEREO) and 3 (DUAL): no change here
 			// DUAL and WIDE are handled per-engine (separate L/R processing)
 		}
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
+		if (fft1AmountFreezeDumpActiveBlock)
+			updateDumpMaxDelta (fftDumpPrevPostStyleWetL_, fftDumpPrevPostStyleWetR_,
+			                    wetL, wetR, i,
+			                    fft1AmountFreezeMaxPostStyleWetDelta);
+		fftDumpPrevPostStyleWetL_ = wetL;
+		fftDumpPrevPostStyleWetR_ = wetR;
+#endif
 
 		// Chaos engines
 		if (chaosFilterEnabled_) advanceChaosF();
@@ -4746,10 +4921,26 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		// Wet-signal filter + tilt
 		if (!tiltPre_)   tiltWetSample   (wetL, wetR);
 		if (!filterPre_) filterWetSample (wetL, wetR);
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
+		if (fft1AmountFreezeDumpActiveBlock)
+			updateDumpMaxDelta (fftDumpPrevPostFilterWetL_, fftDumpPrevPostFilterWetR_,
+			                    wetL, wetR, i,
+			                    fft1AmountFreezeMaxPostFilterWetDelta);
+		fftDumpPrevPostFilterWetL_ = wetL;
+		fftDumpPrevPostFilterWetR_ = wetR;
+#endif
 
 		// Chaos delay (per-channel Hermite+Drift micro-delay + gain modulation)
 		if (chaosDelayEnabled_ && chaosAmtD_ > 0.01f)
 			applyChaosDelay (wetL, wetR);
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
+		if (fft1AmountFreezeDumpActiveBlock)
+			updateDumpMaxDelta (fftDumpPrevPostChaosWetL_, fftDumpPrevPostChaosWetR_,
+			                    wetL, wetR, i,
+			                    fft1AmountFreezeMaxPostChaosWetDelta);
+		fftDumpPrevPostChaosWetL_ = wetL;
+		fftDumpPrevPostChaosWetR_ = wetR;
+#endif
 
 		// Mode Out: MID stays dual-mono, SIDE becomes true stereo (+S / -S)
 		if (numChannels >= 2 && modeOutVal != 0)
@@ -4766,23 +4957,68 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				wetR = -mono;
 			}
 		}
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
+		if (fft1AmountFreezeDumpActiveBlock)
+			updateDumpMaxDelta (fftDumpPrevPreDcWetL_, fftDumpPrevPreDcWetR_,
+			                    wetL, wetR, i,
+			                    fft1AmountFreezeMaxPreDcWetDelta);
+		fftDumpPrevPreDcWetL_ = wetL;
+		fftDumpPrevPreDcWetR_ = wetR;
+#endif
 
 		// DC blocker (1-pole HP ~5 Hz)
 		{
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
+			const float prevDcInL = dcBlockPrevIn_[0];
+			const float prevDcInR = dcBlockPrevIn_[1];
+			const float prevDcOutL = dcBlockPrevOut_[0];
+			const float prevDcOutR = dcBlockPrevOut_[1];
+			const float dcInputL = wetL;
+			const float dcInputR = wetR;
+#endif
 			const float outL = wetL - dcBlockPrevIn_[0] + dcBlockR_ * dcBlockPrevOut_[0];
 			const float outR = wetR - dcBlockPrevIn_[1] + dcBlockR_ * dcBlockPrevOut_[1];
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
+			if (fft1AmountFreezeDumpActiveBlock
+			    && updateDumpMaxDelta (fftDumpPrevPostDcWetL_, fftDumpPrevPostDcWetR_,
+			                           outL, outR, i,
+			                           fft1AmountFreezeMaxPostDcWetDelta))
+			{
+				fft1AmountFreezeMaxPostDcPrevDcInL = prevDcInL;
+				fft1AmountFreezeMaxPostDcPrevDcInR = prevDcInR;
+				fft1AmountFreezeMaxPostDcPrevDcOutL = prevDcOutL;
+				fft1AmountFreezeMaxPostDcPrevDcOutR = prevDcOutR;
+				fft1AmountFreezeMaxPostDcInputL = dcInputL;
+				fft1AmountFreezeMaxPostDcInputR = dcInputR;
+			}
+#endif
 			dcBlockPrevIn_[0] = wetL;  dcBlockPrevIn_[1] = wetR;
 			dcBlockPrevOut_[0] = outL; dcBlockPrevOut_[1] = outR;
 			wetL = outL;
 			wetR = outR;
 		}
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
+		fftDumpPrevPostDcWetL_ = wetL;
+		fftDumpPrevPostDcWetR_ = wetR;
 		if (fft1AmountFreezeDumpActiveBlock)
 		{
+			updateDumpMaxDelta (fftDumpPrevEngineWetL_, fftDumpPrevEngineWetR_,
+			                    wetL, wetR, i,
+			                    fft1AmountFreezeMaxEngineWetDeltaSample,
+			                    fft1AmountFreezeMaxEngineWetAbsDeltaL,
+			                    fft1AmountFreezeMaxEngineWetAbsDeltaR,
+			                    fft1AmountFreezeMaxEngineWetPrevL,
+			                    fft1AmountFreezeMaxEngineWetPrevR,
+			                    fft1AmountFreezeMaxEngineWetCurrL,
+			                    fft1AmountFreezeMaxEngineWetCurrR);
 			fft1AmountFreezeEngineWetSqL += (double) wetL * (double) wetL;
 			fft1AmountFreezeEngineWetSqR += (double) wetR * (double) wetR;
 			fft1AmountFreezeEngineWetPeakL = juce::jmax (fft1AmountFreezeEngineWetPeakL, std::abs (wetL));
 			fft1AmountFreezeEngineWetPeakR = juce::jmax (fft1AmountFreezeEngineWetPeakR, std::abs (wetR));
 		}
+		fftDumpPrevEngineWetL_ = wetL;
+		fftDumpPrevEngineWetR_ = wetR;
+#endif
 
 		// Mix dry/wet with Sum Bus routing
 		float dG, wG;
@@ -4801,13 +5037,26 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 		wL *= wG;
 		wR *= wG;
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
 		if (fft1AmountFreezeDumpActiveBlock)
 		{
+			updateDumpMaxDelta (fftDumpPrevFinalWetL_, fftDumpPrevFinalWetR_,
+			                    wL, wR, i,
+			                    fft1AmountFreezeMaxFinalWetDeltaSample,
+			                    fft1AmountFreezeMaxFinalWetAbsDeltaL,
+			                    fft1AmountFreezeMaxFinalWetAbsDeltaR,
+			                    fft1AmountFreezeMaxFinalWetPrevL,
+			                    fft1AmountFreezeMaxFinalWetPrevR,
+			                    fft1AmountFreezeMaxFinalWetCurrL,
+			                    fft1AmountFreezeMaxFinalWetCurrR);
 			fft1AmountFreezeFinalWetSqL += (double) wL * (double) wL;
 			fft1AmountFreezeFinalWetSqR += (double) wR * (double) wR;
 			fft1AmountFreezeFinalWetPeakL = juce::jmax (fft1AmountFreezeFinalWetPeakL, std::abs (wL));
 			fft1AmountFreezeFinalWetPeakR = juce::jmax (fft1AmountFreezeFinalWetPeakR, std::abs (wR));
 		}
+		fftDumpPrevFinalWetL_ = wL;
+		fftDumpPrevFinalWetR_ = wR;
+#endif
 		if (sumBusVal == 0) // ST
 		{
 			channelL[i] = dL + wL;
@@ -4825,15 +5074,33 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			channelL[i] = dL + sideBus;
 			if (channelR != nullptr) channelR[i] = dR - sideBus;
 		}
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
 		if (fft1AmountFreezeDumpActiveBlock)
 		{
 			const float outDumpL = channelL[i];
 			const float outDumpR = (channelR != nullptr) ? channelR[i] : outDumpL;
+			updateDumpMaxDelta (fftDumpPrevOutL_, fftDumpPrevOutR_,
+			                    outDumpL, outDumpR, i,
+			                    fft1AmountFreezeMaxOutDeltaSample,
+			                    fft1AmountFreezeMaxOutAbsDeltaL,
+			                    fft1AmountFreezeMaxOutAbsDeltaR,
+			                    fft1AmountFreezeMaxOutPrevL,
+			                    fft1AmountFreezeMaxOutPrevR,
+			                    fft1AmountFreezeMaxOutCurrL,
+			                    fft1AmountFreezeMaxOutCurrR);
 			fft1AmountFreezeOutSqL += (double) outDumpL * (double) outDumpL;
 			fft1AmountFreezeOutSqR += (double) outDumpR * (double) outDumpR;
 			fft1AmountFreezeOutPeakL = juce::jmax (fft1AmountFreezeOutPeakL, std::abs (outDumpL));
 			fft1AmountFreezeOutPeakR = juce::jmax (fft1AmountFreezeOutPeakR, std::abs (outDumpR));
+			fftDumpPrevOutL_ = outDumpL;
+			fftDumpPrevOutR_ = outDumpR;
 		}
+		else
+		{
+			fftDumpPrevOutL_ = channelL[i];
+			fftDumpPrevOutR_ = (channelR != nullptr) ? channelR[i] : channelL[i];
+		}
+#endif
 	}
 
 	smoothedDryLevel = dryLevelState;
@@ -5123,13 +5390,26 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				fftPrevWetPostOutputL_ = outL;
 			}
 
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
 			if (fft1AmountFreezeDumpActiveBlock)
 			{
+				updateDumpMaxDelta (fftDumpPrevPostDuckOutL_, fftDumpPrevPostDuckOutR_,
+				                    outL, outR, i,
+				                    fft1AmountFreezeMaxPostDuckOutDeltaSample,
+				                    fft1AmountFreezeMaxPostDuckOutAbsDeltaL,
+				                    fft1AmountFreezeMaxPostDuckOutAbsDeltaR,
+				                    fft1AmountFreezeMaxPostDuckOutPrevL,
+				                    fft1AmountFreezeMaxPostDuckOutPrevR,
+				                    fft1AmountFreezeMaxPostDuckOutCurrL,
+				                    fft1AmountFreezeMaxPostDuckOutCurrR);
 				fft1AmountFreezePostDuckOutSqL += (double) outL * (double) outL;
 				fft1AmountFreezePostDuckOutSqR += (double) outR * (double) outR;
 				fft1AmountFreezePostDuckOutPeakL = juce::jmax (fft1AmountFreezePostDuckOutPeakL, std::abs (outL));
 				fft1AmountFreezePostDuckOutPeakR = juce::jmax (fft1AmountFreezePostDuckOutPeakR, std::abs (outR));
 			}
+			fftDumpPrevPostDuckOutL_ = outL;
+			fftDumpPrevPostDuckOutR_ = outR;
+#endif
 
 			left[i] = outL;
 			if (right != nullptr)
@@ -5143,6 +5423,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		}
 	}
 
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
 	if (fft1AmountFreezeDumpActiveBlock)
 	{
 		const float invCount = 1.0f / (float) juce::jmax (1, numSamples);
@@ -5230,8 +5511,74 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		dbg.postDuckOutRmsR = std::sqrt ((float) (fft1AmountFreezePostDuckOutSqR * invCount));
 		dbg.postDuckOutPeakL = fft1AmountFreezePostDuckOutPeakL;
 		dbg.postDuckOutPeakR = fft1AmountFreezePostDuckOutPeakR;
+		dbg.modeIn = modeInVal;
+		dbg.modeOut = modeOutVal;
+		dbg.sumBus = sumBusVal;
+		dbg.mixMode = mixMode;
+		dbg.filterPre = filterPre_ ? 1 : 0;
+		dbg.tiltPre = tiltPre_ ? 1 : 0;
+		dbg.wetFilterHpOn = wetFilterHpOn_ ? 1 : 0;
+		dbg.wetFilterLpOn = wetFilterLpOn_ ? 1 : 0;
+		dbg.chaosFilterOn = chaosFilterEnabled_ ? 1 : 0;
+		dbg.chaosDelayOn = chaosDelayEnabled_ ? 1 : 0;
+		dbg.chaosAmtF = chaosAmtF_;
+		dbg.chaosAmtD = chaosAmtD_;
+		dbg.tiltDb = tiltDb_;
+		dbg.filterHpFreq = smoothedFilterHpFreq_;
+		dbg.filterLpFreq = smoothedFilterLpFreq_;
+		dbg.maxFftWetDeltaSample = fft1AmountFreezeMaxFftWetDeltaSample;
+		dbg.maxFftWetAbsDeltaL = fft1AmountFreezeMaxFftWetAbsDeltaL;
+		dbg.maxFftWetAbsDeltaR = fft1AmountFreezeMaxFftWetAbsDeltaR;
+		dbg.maxFftWetPrevL = fft1AmountFreezeMaxFftWetPrevL;
+		dbg.maxFftWetPrevR = fft1AmountFreezeMaxFftWetPrevR;
+		dbg.maxFftWetCurrL = fft1AmountFreezeMaxFftWetCurrL;
+		dbg.maxFftWetCurrR = fft1AmountFreezeMaxFftWetCurrR;
+		dbg.maxFftWetNorm = fft1AmountFreezeMaxFftWetNorm;
+		dbg.maxFftWetOutputReadPos = fft1AmountFreezeMaxFftWetOutputReadPos;
+		dbg.maxFftWetSynthCounter = fft1AmountFreezeMaxFftWetSynthCounter;
+		dbg.maxEngineWetDeltaSample = fft1AmountFreezeMaxEngineWetDeltaSample;
+		dbg.maxEngineWetAbsDeltaL = fft1AmountFreezeMaxEngineWetAbsDeltaL;
+		dbg.maxEngineWetAbsDeltaR = fft1AmountFreezeMaxEngineWetAbsDeltaR;
+		dbg.maxEngineWetPrevL = fft1AmountFreezeMaxEngineWetPrevL;
+		dbg.maxEngineWetPrevR = fft1AmountFreezeMaxEngineWetPrevR;
+		dbg.maxEngineWetCurrL = fft1AmountFreezeMaxEngineWetCurrL;
+		dbg.maxEngineWetCurrR = fft1AmountFreezeMaxEngineWetCurrR;
+		dbg.maxFinalWetDeltaSample = fft1AmountFreezeMaxFinalWetDeltaSample;
+		dbg.maxFinalWetAbsDeltaL = fft1AmountFreezeMaxFinalWetAbsDeltaL;
+		dbg.maxFinalWetAbsDeltaR = fft1AmountFreezeMaxFinalWetAbsDeltaR;
+		dbg.maxFinalWetPrevL = fft1AmountFreezeMaxFinalWetPrevL;
+		dbg.maxFinalWetPrevR = fft1AmountFreezeMaxFinalWetPrevR;
+		dbg.maxFinalWetCurrL = fft1AmountFreezeMaxFinalWetCurrL;
+		dbg.maxFinalWetCurrR = fft1AmountFreezeMaxFinalWetCurrR;
+		dbg.maxOutDeltaSample = fft1AmountFreezeMaxOutDeltaSample;
+		dbg.maxOutAbsDeltaL = fft1AmountFreezeMaxOutAbsDeltaL;
+		dbg.maxOutAbsDeltaR = fft1AmountFreezeMaxOutAbsDeltaR;
+		dbg.maxOutPrevL = fft1AmountFreezeMaxOutPrevL;
+		dbg.maxOutPrevR = fft1AmountFreezeMaxOutPrevR;
+		dbg.maxOutCurrL = fft1AmountFreezeMaxOutCurrL;
+		dbg.maxOutCurrR = fft1AmountFreezeMaxOutCurrR;
+		dbg.maxPostDuckOutDeltaSample = fft1AmountFreezeMaxPostDuckOutDeltaSample;
+		dbg.maxPostDuckOutAbsDeltaL = fft1AmountFreezeMaxPostDuckOutAbsDeltaL;
+		dbg.maxPostDuckOutAbsDeltaR = fft1AmountFreezeMaxPostDuckOutAbsDeltaR;
+		dbg.maxPostDuckOutPrevL = fft1AmountFreezeMaxPostDuckOutPrevL;
+		dbg.maxPostDuckOutPrevR = fft1AmountFreezeMaxPostDuckOutPrevR;
+		dbg.maxPostDuckOutCurrL = fft1AmountFreezeMaxPostDuckOutCurrL;
+		dbg.maxPostDuckOutCurrR = fft1AmountFreezeMaxPostDuckOutCurrR;
+		dbg.maxPreStyleWet = fft1AmountFreezeMaxPreStyleWetDelta;
+		dbg.maxPostStyleWet = fft1AmountFreezeMaxPostStyleWetDelta;
+		dbg.maxPostFilterWet = fft1AmountFreezeMaxPostFilterWetDelta;
+		dbg.maxPostChaosWet = fft1AmountFreezeMaxPostChaosWetDelta;
+		dbg.maxPreDcWet = fft1AmountFreezeMaxPreDcWetDelta;
+		dbg.maxPostDcWet = fft1AmountFreezeMaxPostDcWetDelta;
+		dbg.maxPostDcPrevDcInL = fft1AmountFreezeMaxPostDcPrevDcInL;
+		dbg.maxPostDcPrevDcInR = fft1AmountFreezeMaxPostDcPrevDcInR;
+		dbg.maxPostDcPrevDcOutL = fft1AmountFreezeMaxPostDcPrevDcOutL;
+		dbg.maxPostDcPrevDcOutR = fft1AmountFreezeMaxPostDcPrevDcOutR;
+		dbg.maxPostDcInputL = fft1AmountFreezeMaxPostDcInputL;
+		dbg.maxPostDcInputR = fft1AmountFreezeMaxPostDcInputR;
 		fft1AmountFreezeDumpTrace_.record (dbg);
 	}
+#endif
 }
 
 //==============================================================================

@@ -6,6 +6,25 @@
 #include <vector>
 #include "PerfTrace.h"
 
+// Compile-time gate for the temporary FFT1 click CSV dump.
+// Keep disabled for release builds unless explicitly diagnosing this path.
+#ifndef STRETR_ENABLE_FFT1_CLICK_DUMP
+#define STRETR_ENABLE_FFT1_CLICK_DUMP 0
+#endif
+
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
+struct StretrDumpStageDelta
+{
+	int   sample = -1;
+	float absDeltaL = 0.0f;
+	float absDeltaR = 0.0f;
+	float prevL = 0.0f;
+	float prevR = 0.0f;
+	float currL = 0.0f;
+	float currR = 0.0f;
+};
+#endif
+
 class STRETRAudioProcessor : public juce::AudioProcessor
 {
 public:
@@ -306,6 +325,44 @@ private:
 		float overlapRmseR  = 0.0f;
 	};
 
+	class DebugCsvTraceSupport
+	{
+	public:
+		void setAutoDumpPath (const juce::String& path) { autoDumpPath = path; }
+
+	protected:
+		static int nextRingIndex (std::atomic<int>& writeIndex, int ringSize) noexcept
+		{
+			return writeIndex.fetch_add (1, std::memory_order_relaxed) & (ringSize - 1);
+		}
+
+		static int ringTotal (int writeCount, int ringSize) noexcept
+		{
+			return juce::jmin (writeCount, ringSize);
+		}
+
+		static int ringStart (int writeCount, int ringSize) noexcept
+		{
+			return writeCount - ringTotal (writeCount, ringSize);
+		}
+
+		void enableDesktopAutoDump (const juce::String& filename)
+		{
+			auto desktop = juce::File::getSpecialLocation (juce::File::userDesktopDirectory);
+			setAutoDumpPath (desktop.getChildFile (filename).getFullPathName());
+		}
+
+		bool shouldAutoDump (int writeCount) const
+		{
+			return autoDumpPath.isNotEmpty() && writeCount > 0;
+		}
+
+		const juce::String& getAutoDumpPath() const { return autoDumpPath; }
+
+	private:
+		juce::String autoDumpPath;
+	};
+
 #if JUCE_DEBUG
 	struct StretchDebugEntry
 	{
@@ -339,23 +396,21 @@ private:
 		float  overlapRmseR    = 0.0f;
 	};
 
-	class StretchDebugTrace
+	class StretchDebugTrace : private DebugCsvTraceSupport
 	{
 	public:
 		static constexpr int kRingSize = 32768;
+		using DebugCsvTraceSupport::setAutoDumpPath;
 
 		void record (const StretchDebugEntry& entry) noexcept
 		{
-			const int idx = writeIndex.fetch_add (1, std::memory_order_relaxed) & (kRingSize - 1);
+			const int idx = nextRingIndex (writeIndex, kRingSize);
 			ring[idx] = entry;
 		}
 
-		void setAutoDumpPath (const juce::String& path) { autoDumpPath = path; }
-
 		void enableDesktopAutoDump (const juce::String& filename = "stretr_stretch_dump.csv")
 		{
-			auto desktop = juce::File::getSpecialLocation (juce::File::userDesktopDirectory);
-			setAutoDumpPath (desktop.getChildFile (filename).getFullPathName());
+			DebugCsvTraceSupport::enableDesktopAutoDump (filename);
 		}
 
 		bool dumpToFile (const juce::String& filePath) const
@@ -370,8 +425,9 @@ private:
 					"start_delta_r,overlap_rmse_l,overlap_rmse_r\n",
 					false, false, nullptr);
 
-				const int total = juce::jmin (writeIndex.load (std::memory_order_relaxed), kRingSize);
-				const int startIdx = writeIndex.load (std::memory_order_relaxed) - total;
+				const int writeCount = writeIndex.load (std::memory_order_relaxed);
+				const int total = ringTotal (writeCount, kRingSize);
+				const int startIdx = ringStart (writeCount, kRingSize);
 				for (int i = 0; i < total; ++i)
 				{
 					const auto& e = ring[(startIdx + i) & (kRingSize - 1)];
@@ -418,14 +474,13 @@ private:
 
 		~StretchDebugTrace()
 		{
-			if (autoDumpPath.isNotEmpty() && writeIndex.load (std::memory_order_relaxed) > 0)
-				dumpToFile (autoDumpPath);
+			if (shouldAutoDump (writeIndex.load (std::memory_order_relaxed)))
+				dumpToFile (getAutoDumpPath());
 		}
 
 	private:
 		StretchDebugEntry ring[kRingSize] {};
 		std::atomic<int> writeIndex { 0 };
-		juce::String autoDumpPath;
 	};
 
 	StretchDebugTrace stretchDebugTrace_;
@@ -471,23 +526,21 @@ private:
 		double futureMargin   = 0.0;
 	};
 
-	class GrainDebugTrace
+	class GrainDebugTrace : private DebugCsvTraceSupport
 	{
 	public:
 		static constexpr int kRingSize = 32768;
+		using DebugCsvTraceSupport::setAutoDumpPath;
 
 		void record (const GrainDebugEntry& entry) noexcept
 		{
-			const int idx = writeIndex.fetch_add (1, std::memory_order_relaxed) & (kRingSize - 1);
+			const int idx = nextRingIndex (writeIndex, kRingSize);
 			ring[idx] = entry;
 		}
 
-		void setAutoDumpPath (const juce::String& path) { autoDumpPath = path; }
-
 		void enableDesktopAutoDump (const juce::String& filename = "stretr_grain_dump.csv")
 		{
-			auto desktop = juce::File::getSpecialLocation (juce::File::userDesktopDirectory);
-			setAutoDumpPath (desktop.getChildFile (filename).getFullPathName());
+			DebugCsvTraceSupport::enableDesktopAutoDump (filename);
 		}
 
 		bool dumpToFile (const juce::String& filePath) const
@@ -501,8 +554,9 @@ private:
 					"read_pos_before,spawn_pos,read_pos_after,look_behind,future_margin\n",
 					false, false, nullptr);
 
-				const int total = juce::jmin (writeIndex.load (std::memory_order_relaxed), kRingSize);
-				const int startIdx = writeIndex.load (std::memory_order_relaxed) - total;
+				const int writeCount = writeIndex.load (std::memory_order_relaxed);
+				const int total = ringTotal (writeCount, kRingSize);
+				const int startIdx = ringStart (writeCount, kRingSize);
 				for (int i = 0; i < total; ++i)
 				{
 					const auto& e = ring[(startIdx + i) & (kRingSize - 1)];
@@ -543,14 +597,13 @@ private:
 
 		~GrainDebugTrace()
 		{
-			if (autoDumpPath.isNotEmpty() && writeIndex.load (std::memory_order_relaxed) > 0)
-				dumpToFile (autoDumpPath);
+			if (shouldAutoDump (writeIndex.load (std::memory_order_relaxed)))
+				dumpToFile (getAutoDumpPath());
 		}
 
 	private:
 		GrainDebugEntry ring[kRingSize] {};
 		std::atomic<int> writeIndex { 0 };
-		juce::String autoDumpPath;
 	};
 
 	GrainDebugTrace grainDebugTrace_;
@@ -716,23 +769,21 @@ private:
 		float  fftOutputFadeNewMix = 0.0f;
 	};
 
-	class FftDebugTrace
+	class FftDebugTrace : private DebugCsvTraceSupport
 	{
 	public:
 		static constexpr int kRingSize = 16384;
+		using DebugCsvTraceSupport::setAutoDumpPath;
 
 		void record (const FftDebugEntry& entry) noexcept
 		{
-			const int idx = writeIndex.fetch_add (1, std::memory_order_relaxed) & (kRingSize - 1);
+			const int idx = nextRingIndex (writeIndex, kRingSize);
 			ring[idx] = entry;
 		}
 
-		void setAutoDumpPath (const juce::String& path) { autoDumpPath = path; }
-
 		void enableDesktopAutoDump (const juce::String& filename = "stretr_fft_dump.csv")
 		{
-			auto desktop = juce::File::getSpecialLocation (juce::File::userDesktopDirectory);
-			setAutoDumpPath (desktop.getChildFile (filename).getFullPathName());
+			DebugCsvTraceSupport::enableDesktopAutoDump (filename);
 		}
 
 		bool dumpToFile (const juce::String& filePath) const
@@ -761,8 +812,9 @@ private:
 					"fft_output_fade_old_out_l,fft_output_fade_old_mix,fft_output_fade_new_mix\n",
 					false, false, nullptr);
 
-				const int total = juce::jmin (writeIndex.load (std::memory_order_relaxed), kRingSize);
-				const int startIdx = writeIndex.load (std::memory_order_relaxed) - total;
+				const int writeCount = writeIndex.load (std::memory_order_relaxed);
+				const int total = ringTotal (writeCount, kRingSize);
+				const int startIdx = ringStart (writeCount, kRingSize);
 				for (int i = 0; i < total; ++i)
 				{
 					const auto& e = ring[(startIdx + i) & (kRingSize - 1)];
@@ -880,20 +932,20 @@ private:
 
 		~FftDebugTrace()
 		{
-			if (autoDumpPath.isNotEmpty() && writeIndex.load (std::memory_order_relaxed) > 0)
-				dumpToFile (autoDumpPath);
+			if (shouldAutoDump (writeIndex.load (std::memory_order_relaxed)))
+				dumpToFile (getAutoDumpPath());
 		}
 
 	private:
 		std::unique_ptr<FftDebugEntry[]> ring = std::make_unique<FftDebugEntry[]>(kRingSize);
 		std::atomic<int> writeIndex { 0 };
-		juce::String autoDumpPath;
 	};
 
 	FftDebugTrace fftDebugTrace_;
 #endif
 	FftDebugContext fftDebugContext_;
 
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
 	struct Fft1AmountFreezeDumpEntry
 	{
 		int   blockIndex = 0;
@@ -966,25 +1018,88 @@ private:
 		float postDuckOutRmsR = 0.0f;
 		float postDuckOutPeakL = 0.0f;
 		float postDuckOutPeakR = 0.0f;
+		int   modeIn = 0;
+		int   modeOut = 0;
+		int   sumBus = 0;
+		int   mixMode = 0;
+		int   filterPre = 0;
+		int   tiltPre = 0;
+		int   wetFilterHpOn = 0;
+		int   wetFilterLpOn = 0;
+		int   chaosFilterOn = 0;
+		int   chaosDelayOn = 0;
+		float chaosAmtF = 0.0f;
+		float chaosAmtD = 0.0f;
+		float tiltDb = 0.0f;
+		float filterHpFreq = 0.0f;
+		float filterLpFreq = 0.0f;
+		int   maxFftWetDeltaSample = -1;
+		float maxFftWetAbsDeltaL = 0.0f;
+		float maxFftWetAbsDeltaR = 0.0f;
+		float maxFftWetPrevL = 0.0f;
+		float maxFftWetPrevR = 0.0f;
+		float maxFftWetCurrL = 0.0f;
+		float maxFftWetCurrR = 0.0f;
+		float maxFftWetNorm = 0.0f;
+		int   maxFftWetOutputReadPos = -1;
+		int   maxFftWetSynthCounter = -1;
+		int   maxEngineWetDeltaSample = -1;
+		float maxEngineWetAbsDeltaL = 0.0f;
+		float maxEngineWetAbsDeltaR = 0.0f;
+		float maxEngineWetPrevL = 0.0f;
+		float maxEngineWetPrevR = 0.0f;
+		float maxEngineWetCurrL = 0.0f;
+		float maxEngineWetCurrR = 0.0f;
+		int   maxFinalWetDeltaSample = -1;
+		float maxFinalWetAbsDeltaL = 0.0f;
+		float maxFinalWetAbsDeltaR = 0.0f;
+		float maxFinalWetPrevL = 0.0f;
+		float maxFinalWetPrevR = 0.0f;
+		float maxFinalWetCurrL = 0.0f;
+		float maxFinalWetCurrR = 0.0f;
+		int   maxOutDeltaSample = -1;
+		float maxOutAbsDeltaL = 0.0f;
+		float maxOutAbsDeltaR = 0.0f;
+		float maxOutPrevL = 0.0f;
+		float maxOutPrevR = 0.0f;
+		float maxOutCurrL = 0.0f;
+		float maxOutCurrR = 0.0f;
+		int   maxPostDuckOutDeltaSample = -1;
+		float maxPostDuckOutAbsDeltaL = 0.0f;
+		float maxPostDuckOutAbsDeltaR = 0.0f;
+		float maxPostDuckOutPrevL = 0.0f;
+		float maxPostDuckOutPrevR = 0.0f;
+		float maxPostDuckOutCurrL = 0.0f;
+		float maxPostDuckOutCurrR = 0.0f;
+		StretrDumpStageDelta maxPreStyleWet;
+		StretrDumpStageDelta maxPostStyleWet;
+		StretrDumpStageDelta maxPostFilterWet;
+		StretrDumpStageDelta maxPostChaosWet;
+		StretrDumpStageDelta maxPreDcWet;
+		StretrDumpStageDelta maxPostDcWet;
+		float maxPostDcPrevDcInL = 0.0f;
+		float maxPostDcPrevDcInR = 0.0f;
+		float maxPostDcPrevDcOutL = 0.0f;
+		float maxPostDcPrevDcOutR = 0.0f;
+		float maxPostDcInputL = 0.0f;
+		float maxPostDcInputR = 0.0f;
 	};
 
-	class Fft1AmountFreezeDumpTrace
+	class Fft1AmountFreezeDumpTrace : private DebugCsvTraceSupport
 	{
 	public:
 		static constexpr int kRingSize = 8192;
+		using DebugCsvTraceSupport::setAutoDumpPath;
 
 		void record (const Fft1AmountFreezeDumpEntry& entry) noexcept
 		{
-			const int idx = writeIndex.fetch_add (1, std::memory_order_relaxed) & (kRingSize - 1);
+			const int idx = nextRingIndex (writeIndex, kRingSize);
 			ring[idx] = entry;
 		}
 
-		void setAutoDumpPath (const juce::String& path) { autoDumpPath = path; }
-
 		void enableDesktopAutoDump (const juce::String& filename = "stretr_fft1_amount_freeze_dump.csv")
 		{
-			auto desktop = juce::File::getSpecialLocation (juce::File::userDesktopDirectory);
-			setAutoDumpPath (desktop.getChildFile (filename).getFullPathName());
+			DebugCsvTraceSupport::enableDesktopAutoDump (filename);
 		}
 
 		bool dumpToFile (const juce::String& filePath) const
@@ -1007,15 +1122,50 @@ private:
 					"freeze_analysis_input,spectral_hold_coeff,analysis_read_before,analysis_read_after,analysis_read_delta,"
 					"engine_wet_rms_l,engine_wet_rms_r,engine_wet_peak_l,engine_wet_peak_r,"
 					"final_wet_rms_l,final_wet_rms_r,final_wet_peak_l,final_wet_peak_r,out_rms_l,out_rms_r,out_peak_l,out_peak_r,"
-					"post_duck_out_rms_l,post_duck_out_rms_r,post_duck_out_peak_l,post_duck_out_peak_r\n",
+					"post_duck_out_rms_l,post_duck_out_rms_r,post_duck_out_peak_l,post_duck_out_peak_r,"
+					"mode_in,mode_out,sum_bus,mix_mode,filter_pre,tilt_pre,wet_filter_hp_on,wet_filter_lp_on,"
+					"chaos_filter_on,chaos_delay_on,chaos_amt_f,chaos_amt_d,tilt_db,filter_hp_freq,filter_lp_freq,"
+					"max_fft_wet_delta_sample,max_fft_wet_abs_delta_l,max_fft_wet_abs_delta_r,max_fft_wet_prev_l,max_fft_wet_prev_r,"
+					"max_fft_wet_curr_l,max_fft_wet_curr_r,max_fft_wet_norm,max_fft_wet_output_read_pos,max_fft_wet_synth_counter,"
+					"max_engine_wet_delta_sample,max_engine_wet_abs_delta_l,max_engine_wet_abs_delta_r,max_engine_wet_prev_l,max_engine_wet_prev_r,"
+					"max_engine_wet_curr_l,max_engine_wet_curr_r,max_final_wet_delta_sample,max_final_wet_abs_delta_l,max_final_wet_abs_delta_r,"
+					"max_final_wet_prev_l,max_final_wet_prev_r,max_final_wet_curr_l,max_final_wet_curr_r,"
+					"max_out_delta_sample,max_out_abs_delta_l,max_out_abs_delta_r,max_out_prev_l,max_out_prev_r,max_out_curr_l,max_out_curr_r,"
+					"max_post_duck_out_delta_sample,max_post_duck_out_abs_delta_l,max_post_duck_out_abs_delta_r,"
+					"max_post_duck_out_prev_l,max_post_duck_out_prev_r,max_post_duck_out_curr_l,max_post_duck_out_curr_r,"
+					"max_pre_style_wet_delta_sample,max_pre_style_wet_abs_delta_l,max_pre_style_wet_abs_delta_r,"
+					"max_pre_style_wet_prev_l,max_pre_style_wet_prev_r,max_pre_style_wet_curr_l,max_pre_style_wet_curr_r,"
+					"max_post_style_wet_delta_sample,max_post_style_wet_abs_delta_l,max_post_style_wet_abs_delta_r,"
+					"max_post_style_wet_prev_l,max_post_style_wet_prev_r,max_post_style_wet_curr_l,max_post_style_wet_curr_r,"
+					"max_post_filter_wet_delta_sample,max_post_filter_wet_abs_delta_l,max_post_filter_wet_abs_delta_r,"
+					"max_post_filter_wet_prev_l,max_post_filter_wet_prev_r,max_post_filter_wet_curr_l,max_post_filter_wet_curr_r,"
+					"max_post_chaos_wet_delta_sample,max_post_chaos_wet_abs_delta_l,max_post_chaos_wet_abs_delta_r,"
+					"max_post_chaos_wet_prev_l,max_post_chaos_wet_prev_r,max_post_chaos_wet_curr_l,max_post_chaos_wet_curr_r,"
+					"max_pre_dc_wet_delta_sample,max_pre_dc_wet_abs_delta_l,max_pre_dc_wet_abs_delta_r,"
+					"max_pre_dc_wet_prev_l,max_pre_dc_wet_prev_r,max_pre_dc_wet_curr_l,max_pre_dc_wet_curr_r,"
+					"max_post_dc_wet_delta_sample,max_post_dc_wet_abs_delta_l,max_post_dc_wet_abs_delta_r,"
+					"max_post_dc_wet_prev_l,max_post_dc_wet_prev_r,max_post_dc_wet_curr_l,max_post_dc_wet_curr_r,"
+					"max_post_dc_prev_dc_in_l,max_post_dc_prev_dc_in_r,max_post_dc_prev_dc_out_l,max_post_dc_prev_dc_out_r,"
+					"max_post_dc_input_l,max_post_dc_input_r\n",
 					false, false, nullptr);
 
-				const int total = juce::jmin (writeIndex.load (std::memory_order_relaxed), kRingSize);
-				const int startIdx = writeIndex.load (std::memory_order_relaxed) - total;
+				const int writeCount = writeIndex.load (std::memory_order_relaxed);
+				const int total = ringTotal (writeCount, kRingSize);
+				const int startIdx = ringStart (writeCount, kRingSize);
 				for (int i = 0; i < total; ++i)
 				{
 					const auto& e = ring[(startIdx + i) & (kRingSize - 1)];
 					juce::String line;
+					auto appendStageDelta = [] (juce::String& target, const StretrDumpStageDelta& d)
+					{
+						target << d.sample << ","
+						       << d.absDeltaL << ","
+						       << d.absDeltaR << ","
+						       << d.prevL << ","
+						       << d.prevR << ","
+						       << d.currL << ","
+						       << d.currR << ",";
+					};
 					line << e.blockIndex << ","
 					     << e.engine << ","
 					     << e.triggerOn << ","
@@ -1085,7 +1235,72 @@ private:
 					     << e.postDuckOutRmsL << ","
 					     << e.postDuckOutRmsR << ","
 					     << e.postDuckOutPeakL << ","
-					     << e.postDuckOutPeakR << "\n";
+					     << e.postDuckOutPeakR << ","
+					     << e.modeIn << ","
+					     << e.modeOut << ","
+					     << e.sumBus << ","
+					     << e.mixMode << ","
+					     << e.filterPre << ","
+					     << e.tiltPre << ","
+					     << e.wetFilterHpOn << ","
+					     << e.wetFilterLpOn << ","
+					     << e.chaosFilterOn << ","
+					     << e.chaosDelayOn << ","
+					     << e.chaosAmtF << ","
+					     << e.chaosAmtD << ","
+					     << e.tiltDb << ","
+					     << e.filterHpFreq << ","
+					     << e.filterLpFreq << ","
+					     << e.maxFftWetDeltaSample << ","
+					     << e.maxFftWetAbsDeltaL << ","
+					     << e.maxFftWetAbsDeltaR << ","
+					     << e.maxFftWetPrevL << ","
+					     << e.maxFftWetPrevR << ","
+					     << e.maxFftWetCurrL << ","
+					     << e.maxFftWetCurrR << ","
+					     << e.maxFftWetNorm << ","
+					     << e.maxFftWetOutputReadPos << ","
+					     << e.maxFftWetSynthCounter << ","
+					     << e.maxEngineWetDeltaSample << ","
+					     << e.maxEngineWetAbsDeltaL << ","
+					     << e.maxEngineWetAbsDeltaR << ","
+					     << e.maxEngineWetPrevL << ","
+					     << e.maxEngineWetPrevR << ","
+					     << e.maxEngineWetCurrL << ","
+					     << e.maxEngineWetCurrR << ","
+					     << e.maxFinalWetDeltaSample << ","
+					     << e.maxFinalWetAbsDeltaL << ","
+					     << e.maxFinalWetAbsDeltaR << ","
+					     << e.maxFinalWetPrevL << ","
+					     << e.maxFinalWetPrevR << ","
+					     << e.maxFinalWetCurrL << ","
+					     << e.maxFinalWetCurrR << ","
+					     << e.maxOutDeltaSample << ","
+					     << e.maxOutAbsDeltaL << ","
+					     << e.maxOutAbsDeltaR << ","
+					     << e.maxOutPrevL << ","
+					     << e.maxOutPrevR << ","
+					     << e.maxOutCurrL << ","
+					     << e.maxOutCurrR << ","
+					     << e.maxPostDuckOutDeltaSample << ","
+					     << e.maxPostDuckOutAbsDeltaL << ","
+					     << e.maxPostDuckOutAbsDeltaR << ","
+					     << e.maxPostDuckOutPrevL << ","
+					     << e.maxPostDuckOutPrevR << ","
+					     << e.maxPostDuckOutCurrL << ","
+					     << e.maxPostDuckOutCurrR << ",";
+					appendStageDelta (line, e.maxPreStyleWet);
+					appendStageDelta (line, e.maxPostStyleWet);
+					appendStageDelta (line, e.maxPostFilterWet);
+					appendStageDelta (line, e.maxPostChaosWet);
+					appendStageDelta (line, e.maxPreDcWet);
+					appendStageDelta (line, e.maxPostDcWet);
+					line << e.maxPostDcPrevDcInL << ","
+					     << e.maxPostDcPrevDcInR << ","
+					     << e.maxPostDcPrevDcOutL << ","
+					     << e.maxPostDcPrevDcOutR << ","
+					     << e.maxPostDcInputL << ","
+					     << e.maxPostDcInputR << "\n";
 					stream->writeText (line, false, false, nullptr);
 				}
 				stream->flush();
@@ -1096,18 +1311,18 @@ private:
 
 		~Fft1AmountFreezeDumpTrace()
 		{
-			if (autoDumpPath.isNotEmpty() && writeIndex.load (std::memory_order_relaxed) > 0)
-				dumpToFile (autoDumpPath);
+			if (shouldAutoDump (writeIndex.load (std::memory_order_relaxed)))
+				dumpToFile (getAutoDumpPath());
 		}
 
 	private:
 		Fft1AmountFreezeDumpEntry ring[kRingSize] {};
 		std::atomic<int> writeIndex { 0 };
-		juce::String autoDumpPath;
 	};
 
 	Fft1AmountFreezeDumpTrace fft1AmountFreezeDumpTrace_;
 	int fft1AmountFreezeDumpBlockCounter_ = 0;
+#endif
 
     // Granular engine state
 	struct Grain
@@ -1206,6 +1421,30 @@ private:
 	float fftDuckBridgeStartR_ = 0.0f;
 	float fftLastPostDuckOutL_ = 0.0f;
 	float fftLastPostDuckOutR_ = 0.0f;
+#if STRETR_ENABLE_FFT1_CLICK_DUMP
+	float fftDumpPrevFftWetL_ = 0.0f;
+	float fftDumpPrevFftWetR_ = 0.0f;
+	float fftDumpPrevPreStyleWetL_ = 0.0f;
+	float fftDumpPrevPreStyleWetR_ = 0.0f;
+	float fftDumpPrevPostStyleWetL_ = 0.0f;
+	float fftDumpPrevPostStyleWetR_ = 0.0f;
+	float fftDumpPrevPostFilterWetL_ = 0.0f;
+	float fftDumpPrevPostFilterWetR_ = 0.0f;
+	float fftDumpPrevPostChaosWetL_ = 0.0f;
+	float fftDumpPrevPostChaosWetR_ = 0.0f;
+	float fftDumpPrevPreDcWetL_ = 0.0f;
+	float fftDumpPrevPreDcWetR_ = 0.0f;
+	float fftDumpPrevPostDcWetL_ = 0.0f;
+	float fftDumpPrevPostDcWetR_ = 0.0f;
+	float fftDumpPrevEngineWetL_ = 0.0f;
+	float fftDumpPrevEngineWetR_ = 0.0f;
+	float fftDumpPrevFinalWetL_ = 0.0f;
+	float fftDumpPrevFinalWetR_ = 0.0f;
+	float fftDumpPrevOutL_ = 0.0f;
+	float fftDumpPrevOutR_ = 0.0f;
+	float fftDumpPrevPostDuckOutL_ = 0.0f;
+	float fftDumpPrevPostDuckOutR_ = 0.0f;
+#endif
 	int   fftDuckBridgeRemaining_ = 0;
 	int   fftDuckBridgeTotal_ = 0;
 	int   fftWindowApplyDelayRemaining_ = 0;
