@@ -100,6 +100,19 @@ namespace
 		return (dB <= -100.0f) ? 0.0f : std::exp2 (dB * 0.16609640474f);
 	}
 
+	inline float gainFaderDecibelsToGain (float dB) noexcept
+	{
+		return (dB <= STRETRAudioProcessor::kGainFloorDb) ? 0.0f : std::exp2 (dB * 0.16609640474f);
+	}
+
+	inline juce::NormalisableRange<float> makeGainFaderRange() noexcept
+	{
+		return juce::NormalisableRange<float> (STRETRAudioProcessor::kGainFloorDb,
+		                                       STRETRAudioProcessor::kGainMaxDb,
+		                                       0.0f,
+		                                       STRETRAudioProcessor::kGainSkew);
+	}
+
 	inline float fastAtan2Approx (float y, float x) noexcept
 	{
 		constexpr float kPiOver4 = juce::MathConstants<float>::pi * 0.25f;
@@ -571,8 +584,17 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	chaosDelayMaxSamples_ = 0.0f; smoothedChaosDelayMaxSamples_ = 0.0f;
 	chaosGainMaxDb_ = 0.0f; smoothedChaosGainMaxDb_ = 0.0f;
 	chaosFilterMaxOct_ = 0.0f; smoothedChaosFilterMaxOct_ = 0.0f;
+	chaosDelaySmoothStep_ = 1.0f - std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.002f));
+	chaosDriveAmtSmoothed_ = 0.0f;
+	chaosDriveSpdSmoothed_ = kChaosSpdDefault;
+	chaosDriveParamSmoothReady_ = false;
+	chaosFilterAmtSmoothed_ = 0.0f;
+	chaosFilterSpdSmoothed_ = kChaosSpdDefault;
+	chaosFilterParamSmoothReady_ = false;
 	for (int c = 0; c < 2; ++c)
 	{
+		chaosDelaySmoothedSamples_[c] = 0.0f;
+		chaosDelaySmoothReady_[c] = false;
 		chaosDPrev_[c] = chaosDCurr_[c] = chaosDNext_[c] = 0.0f;
 		chaosDPhase_[c] = 0.0f; chaosDDriftPhase_[c] = 0.0f; chaosDDriftFreqHz_[c] = 0.0f; chaosDOut_[c] = 0.0f;
 		chaosGPrev_[c] = chaosGCurr_[c] = chaosGNext_[c] = 0.0f;
@@ -679,7 +701,8 @@ void STRETRAudioProcessor::filterWetSample (float& wetL, float& wetR)
 	if (--filterCoeffCountdown_ <= 0)
 	{
 		filterCoeffCountdown_ = kFilterCoeffUpdateInterval;
-		const bool chaosFilterActive = chaosFilterEnabled_ && chaosAmtF_ > 0.01f;
+		const bool chaosFilterActive = chaosFilterEnabled_
+			&& (chaosAmtF_ > 0.01f || (chaosFilterParamSmoothReady_ && chaosFilterAmtSmoothed_ > 0.01f));
 		if (chaosFilterActive)
 		{
 			const float sHp = smoothedFilterHpFreq_;
@@ -727,7 +750,8 @@ void STRETRAudioProcessor::filterWetSample (float& wetL, float& wetR)
 		}
 	}
 
-	const bool chaosFilterActive = chaosFilterEnabled_ && chaosAmtF_ > 0.01f;
+	const bool chaosFilterActive = chaosFilterEnabled_
+		&& (chaosAmtF_ > 0.01f || (chaosFilterParamSmoothReady_ && chaosFilterAmtSmoothed_ > 0.01f));
 	if (wetFilterHpOn_ || chaosFilterActive)
 	{
 		for (int s = 0; s < wetFilterNumSectionsHp_; ++s)
@@ -2702,8 +2726,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const int invPol     = loadIntParamOrDefault (invPolParam,  kInvPolDefault);
 	const int invStr     = loadIntParamOrDefault (invStrParam,  kInvStrDefault);
 
-	const float targetInputGain  = fastDecibelsToGain (inputGainDb);
-	const float targetOutputGain = fastDecibelsToGain (outputGainDb);
+	const float targetInputGain  = gainFaderDecibelsToGain (inputGainDb);
+	const float targetOutputGain = gainFaderDecibelsToGain (outputGainDb);
 
     // Limiter
 	const int limMode = loadIntParamOrDefault (limModeParam, kLimModeDefault);
@@ -3375,21 +3399,47 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 	if (chaosFilterEnabled_)
 	{
-		chaosAmtF_       = loadAtomicOrDefault (chaosAmtFilterParam, kChaosAmtDefault);
-		const float spd  = loadAtomicOrDefault (chaosSpdFilterParam, kChaosSpdDefault);
-		chaosShPeriodF_  = (float) currentSampleRate / juce::jmax (0.01f, spd);
+		chaosAmtF_ = juce::jlimit (kChaosAmtMin, kChaosAmtMax,
+			loadAtomicOrDefault (chaosAmtFilterParam, kChaosAmtDefault));
+		const float spd = juce::jlimit (kChaosSpdMin, kChaosSpdMax,
+			loadAtomicOrDefault (chaosSpdFilterParam, kChaosSpdDefault));
+		chaosShPeriodF_ = (float) currentSampleRate / spd;
 		chaosFilterMaxOct_ = chaosAmtF_ * 0.02f;
+	}
+	else
+	{
+		chaosAmtF_ = 0.0f;
+		chaosFilterMaxOct_ = 0.0f;
+		chaosFilterAmtSmoothed_ = 0.0f;
+		chaosFilterSpdSmoothed_ = kChaosSpdDefault;
+		chaosFilterParamSmoothReady_ = false;
 	}
 	if (chaosDelayEnabled_)
 	{
-		chaosAmtD_       = loadAtomicOrDefault (chaosAmtParam, kChaosAmtDefault);
-		chaosAmtNormD_   = chaosAmtD_ * 0.01f;
-		const float spd  = loadAtomicOrDefault (chaosSpdParam, kChaosSpdDefault);
-		chaosShPeriodD_  = (float) currentSampleRate / juce::jmax (0.01f, spd);
+		chaosAmtD_ = juce::jlimit (kChaosAmtMin, kChaosAmtMax,
+			loadAtomicOrDefault (chaosAmtParam, kChaosAmtDefault));
+		chaosAmtNormD_ = chaosAmtD_ * 0.01f;
+		const float spd = juce::jlimit (kChaosSpdMin, kChaosSpdMax,
+			loadAtomicOrDefault (chaosSpdParam, kChaosSpdDefault));
+		chaosShPeriodD_ = (float) currentSampleRate / spd;
 		chaosDelayMaxSamples_ = chaosAmtNormD_ * 0.005f * static_cast<float> (currentSampleRate);
 		chaosGainMaxDb_       = chaosAmtNormD_;
 	}
+	else
+	{
+		chaosAmtD_ = 0.0f;
+		chaosAmtNormD_ = 0.0f;
+		chaosDelayMaxSamples_ = 0.0f;
+		chaosGainMaxDb_ = 0.0f;
+		chaosDriveAmtSmoothed_ = 0.0f;
+		chaosDriveSpdSmoothed_ = kChaosSpdDefault;
+		chaosDriveParamSmoothReady_ = false;
+		chaosDelaySmoothedSamples_[0] = chaosDelaySmoothedSamples_[1] = 0.0f;
+		chaosDelaySmoothReady_[0] = chaosDelaySmoothReady_[1] = false;
+	}
 	if (chaosFilterEnabled_ || chaosDelayEnabled_)
+		chaosParamSmoothCoeff_ = cachedChaosParamSmoothCoeff_;
+	else
 		chaosParamSmoothCoeff_ = cachedChaosParamSmoothCoeff_;
 
 	chaosStereo_ = (styleVal >= 1);
@@ -4930,8 +4980,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		fftDumpPrevPostFilterWetR_ = wetR;
 #endif
 
-		// Chaos delay (per-channel Hermite+Drift micro-delay + gain modulation)
-		if (chaosDelayEnabled_ && chaosAmtD_ > 0.01f)
+		// Chaos delay (per-channel smooth S&H micro-delay + gain modulation)
+		if (chaosDelayEnabled_
+		    && (chaosAmtD_ > 0.01f || (chaosDriveParamSmoothReady_ && chaosDriveAmtSmoothed_ > 0.01f)))
 			applyChaosDelay (wetL, wetR);
 #if STRETR_ENABLE_FFT1_CLICK_DUMP
 		if (fft1AmountFreezeDumpActiveBlock)
@@ -5640,10 +5691,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamInput, "Input",
-		juce::NormalisableRange<float> (kInputMin, kInputMax, 0.0f, 2.5f), kInputDefault));
+		makeGainFaderRange(), kInputDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamOutput, "Output",
-		juce::NormalisableRange<float> (kOutputMin, kOutputMax, 0.0f, 3.23f), kOutputDefault));
+		makeGainFaderRange(), kOutputDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamMix, "Mix",
 		juce::NormalisableRange<float> (kMixMin, kMixMax, 0.0f, 1.0f), kMixDefault));

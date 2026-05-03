@@ -33,6 +33,20 @@ static constexpr double kModOctaves = 4.0;
 static constexpr double kModMaxMult = 4.0;
 static constexpr double kModMinMult = 0.25;
 
+static bool isGainFaderFloor (float dB) noexcept
+{
+    return dB <= STRETRAudioProcessor::kGainFloorDb + 0.001f;
+}
+
+static juce::String formatGainFaderDb (float dB)
+{
+    if (isGainFaderFloor (dB))
+        return "-INF dB";
+    if (std::abs (dB) < 0.05f)
+        return "0 dB";
+    return juce::String (dB, 1) + " dB";
+}
+
 static double modSliderToMultiplier (double v)
 {
     v = juce::jlimit (0.0, 1.0, v);
@@ -337,6 +351,13 @@ void STRETRAudioProcessorEditor::FilterBarComponent::setFreqFromMouseX (float mo
         param->setValueNotifyingHost (param->convertTo0to1 (freq));
 }
 
+void STRETRAudioProcessorEditor::FilterBarComponent::updateTooltipForTarget (DragTarget target)
+{
+    if (target == HP) setTooltip ("HP: " + juce::String (juce::roundToInt (hpFreq_)) + " Hz");
+    else if (target == LP) setTooltip ("LP: " + juce::String (juce::roundToInt (lpFreq_)) + " Hz");
+    else setTooltip ({});
+}
+
 void STRETRAudioProcessorEditor::FilterBarComponent::updateFromProcessor()
 {
     if (owner == nullptr) return;
@@ -385,22 +406,19 @@ void STRETRAudioProcessorEditor::FilterBarComponent::mouseDown (const juce::Mous
 {
     if (e.mods.isPopupMenu()) { if (owner) owner->openFilterPrompt(); return; }
     currentDrag_ = hitTestMarker (e.position);
-    if (currentDrag_ != None) { setFreqFromMouseX (e.position.x, currentDrag_); updateFromProcessor(); }
+    if (currentDrag_ != None) { setFreqFromMouseX (e.position.x, currentDrag_); updateFromProcessor(); updateTooltipForTarget (currentDrag_); }
 }
 
 void STRETRAudioProcessorEditor::FilterBarComponent::mouseDrag (const juce::MouseEvent& e)
 {
-    if (currentDrag_ != None) { setFreqFromMouseX (e.position.x, currentDrag_); updateFromProcessor(); }
+    if (currentDrag_ != None) { setFreqFromMouseX (e.position.x, currentDrag_); updateFromProcessor(); updateTooltipForTarget (currentDrag_); }
 }
 
 void STRETRAudioProcessorEditor::FilterBarComponent::mouseUp (const juce::MouseEvent&) { currentDrag_ = None; }
 
 void STRETRAudioProcessorEditor::FilterBarComponent::mouseMove (const juce::MouseEvent& e)
 {
-    const auto target = hitTestMarker (e.position);
-    if (target == HP) setTooltip ("HP: " + juce::String (juce::roundToInt (hpFreq_)) + " Hz");
-    else if (target == LP) setTooltip ("LP: " + juce::String (juce::roundToInt (lpFreq_)) + " Hz");
-    else setTooltip ({});
+    updateTooltipForTarget (hitTestMarker (e.position));
 }
 
 void STRETRAudioProcessorEditor::FilterBarComponent::mouseDoubleClick (const juce::MouseEvent& e)
@@ -454,6 +472,20 @@ void STRETRAudioProcessorEditor::DualMixBarComponent::setLevelFromMouseX (float 
                                           : STRETRAudioProcessor::kParamWetLevel;
     if (auto* param = owner->audioProcessor.apvts.getParameter (paramId))
         param->setValueNotifyingHost (level);
+}
+
+void STRETRAudioProcessorEditor::DualMixBarComponent::updateTooltipForTarget (DragTarget target)
+{
+    if (target == None)
+    {
+        setTooltip ({});
+        return;
+    }
+
+    const float level = (target == DRY) ? dryLevel_ : wetLevel_;
+    const float dB = (level <= 0.0001f) ? -100.0f : 20.0f * std::log10 (level);
+    const juce::String label = (target == DRY) ? "DRY" : "WET";
+    setTooltip (dB <= -100.0f ? (label + ": -INF dB") : (label + ": " + juce::String (dB, 1) + " dB"));
 }
 
 void STRETRAudioProcessorEditor::DualMixBarComponent::updateFromProcessor()
@@ -519,6 +551,7 @@ void STRETRAudioProcessorEditor::DualMixBarComponent::mouseDown (const juce::Mou
         lastTouched_ = currentDrag_;
         setLevelFromMouseX (e.position.x, currentDrag_);
         updateFromProcessor();
+        updateTooltipForTarget (currentDrag_);
         if (owner) { if (owner->refreshLegendTextCache()) owner->updateCachedLayout(); owner->repaint(); }
     }
 }
@@ -529,6 +562,7 @@ void STRETRAudioProcessorEditor::DualMixBarComponent::mouseDrag (const juce::Mou
     {
         setLevelFromMouseX (e.position.x, currentDrag_);
         updateFromProcessor();
+        updateTooltipForTarget (currentDrag_);
         if (owner) { if (owner->refreshLegendTextCache()) owner->updateCachedLayout(); owner->repaint(); }
     }
 }
@@ -540,11 +574,7 @@ void STRETRAudioProcessorEditor::DualMixBarComponent::mouseUp (const juce::Mouse
 
 void STRETRAudioProcessorEditor::DualMixBarComponent::mouseMove (const juce::MouseEvent& e)
 {
-    const auto target = hitTestMarker (e.position);
-    const float level = (target == DRY) ? dryLevel_ : wetLevel_;
-    const float dB = (level <= 0.0001f) ? -100.0f : 20.0f * std::log10 (level);
-    const juce::String label = (target == DRY) ? "DRY" : "WET";
-    setTooltip (dB <= -100.0f ? (label + ": -INF dB") : (label + ": " + juce::String (dB, 1) + " dB"));
+    updateTooltipForTarget (hitTestMarker (e.position));
 }
 
 //========================== Legend width constants ==========================
@@ -737,6 +767,8 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
     styleSlider.setNumDecimalPlacesToDisplay (0);
     inputSlider.setNumDecimalPlacesToDisplay (1);
     outputSlider.setNumDecimalPlacesToDisplay (1);
+    inputSlider.setSkewFactor (STRETRAudioProcessor::kGainSkew);
+    outputSlider.setSkewFactor (STRETRAudioProcessor::kGainSkew);
     tiltSlider.setNumDecimalPlacesToDisplay (1);
     panSlider.setNumDecimalPlacesToDisplay (1);
     mixSlider.setNumDecimalPlacesToDisplay (1);
@@ -1405,31 +1437,23 @@ juce::String STRETRAudioProcessorEditor::getStyleTextShort() const
 juce::String STRETRAudioProcessorEditor::getInputText() const
 {
     const float db = (float) inputSlider.getValue();
-    if (db <= kSilenceDb) return "-INF dB INPUT";
-    if (std::abs (db) < 0.05f) return "0 dB INPUT";
-    return juce::String (db, 1) + " dB INPUT";
+    return formatGainFaderDb (db) + " INPUT";
 }
 juce::String STRETRAudioProcessorEditor::getInputTextShort() const
 {
     const float db = (float) inputSlider.getValue();
-    if (db <= kSilenceDb) return "-INF dB IN";
-    if (std::abs (db) < 0.05f) return "0 dB IN";
-    return juce::String (db, 1) + " dB IN";
+    return formatGainFaderDb (db) + " IN";
 }
 
 juce::String STRETRAudioProcessorEditor::getOutputText() const
 {
     const float db = (float) outputSlider.getValue();
-    if (db <= kSilenceDb) return "-INF dB OUTPUT";
-    if (std::abs (db) < 0.05f) return "0 dB OUTPUT";
-    return juce::String (db, 1) + " dB OUTPUT";
+    return formatGainFaderDb (db) + " OUTPUT";
 }
 juce::String STRETRAudioProcessorEditor::getOutputTextShort() const
 {
     const float db = (float) outputSlider.getValue();
-    if (db <= kSilenceDb) return "-INF dB OUT";
-    if (std::abs (db) < 0.05f) return "0 dB OUT";
-    return juce::String (db, 1) + " dB OUT";
+    return formatGainFaderDb (db) + " OUT";
 }
 
 juce::String STRETRAudioProcessorEditor::getMixText() const
@@ -1549,8 +1573,10 @@ bool STRETRAudioProcessorEditor::refreshLegendTextCache()
     cachedEngineIntOnly  = getEngineTextShort();
     cachedWindowIntOnly  = juce::String (getEffectiveWindowValue (windowSlider.getValue()));
     cachedStyleIntOnly   = getStyleTextShort();
-    cachedInputIntOnly   = juce::String ((int) inputSlider.getValue()) + "dB";
-    cachedOutputIntOnly  = juce::String ((int) outputSlider.getValue()) + "dB";
+    cachedInputIntOnly   = isGainFaderFloor ((float) inputSlider.getValue())
+                            ? "-INFdB" : juce::String ((int) inputSlider.getValue()) + "dB";
+    cachedOutputIntOnly  = isGainFaderFloor ((float) outputSlider.getValue())
+                            ? "-INFdB" : juce::String ((int) outputSlider.getValue()) + "dB";
 
     if (mixModeCombo.getSelectedId() == 2)
     {
@@ -2497,8 +2523,8 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         else if (&s == &modSlider)     worstCaseText = "4.000";
         else if (&s == &grainSlider)   worstCaseText = "500.000";
         else if (&s == &windowSlider)  worstCaseText = "8192";
-        else if (&s == &inputSlider)   worstCaseText = "-100.0";
-        else if (&s == &outputSlider)  worstCaseText = "-100.0";
+        else if (&s == &inputSlider)   worstCaseText = "-144.0";
+        else if (&s == &outputSlider)  worstCaseText = "-144.0";
         else if (&s == &mixSlider)     worstCaseText = "100.0";
         else if (&s == &panSlider)     worstCaseText = "100";
         else if (&s == &tiltSlider)    worstCaseText = "-100.0";
@@ -3154,7 +3180,10 @@ void STRETRAudioProcessorEditor::openChaosConfigPrompt (const char* amtParamId, 
             const int textW = juce::jmax (1, stringWidth (font, txt));
             const int unitW = (unitLabel != nullptr) ? stringWidth (font, unitLabel->getText()) + 2 : 0;
             constexpr int kEditorTextPadPx = 12; constexpr int kMinEditorWidthPx = 24;
-            const int editorW = juce::jlimit (kMinEditorWidthPx, 80, textW + kEditorTextPadPx * 2);
+            const int maxEditorWidthPx = (unitLabel != nullptr && unitLabel->getText() == "Hz")
+                ? juce::jmax (80, stringWidth (font, "100.00") + kEditorTextPadPx * 2)
+                : 80;
+            const int editorW = juce::jlimit (kMinEditorWidthPx, maxEditorWidthPx, textW + kEditorTextPadPx * 2);
             const int visualW = labelW + spaceW + textW + unitW;
             const int centerX = contentPad + contentW / 2;
             int blockLeft = juce::jlimit (contentPad, juce::jmax (contentPad, contentPad + contentW - visualW), centerX - visualW / 2);

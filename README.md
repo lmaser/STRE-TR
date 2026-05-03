@@ -148,11 +148,12 @@ Stereo behavior of the wet signal:
 - `WIDE`: per-engine decorrelation plus extra side boost
 - `DUAL`: independent left/right trajectories where supported
 
-### INPUT (-100 to 0 dB)
+### INPUT (-INF to +24 dB)
 
 Pre-engine gain.
+The fader floor is -144 dB, displayed as -INF; 0 dB is centered on the control.
 
-### OUTPUT (-100 to +24 dB)
+### OUTPUT (-INF to +24 dB)
 
 Wet output gain before mix routing.
 
