@@ -333,6 +333,7 @@ Filter, tilt, and chaos subsystems also have their own internal smoothing/update
 - Hardened `PDC` so it reports latency without changing the underlying engine behavior
 - Made `WINDOW` state independent per engine while keeping a single compact UI slot
 - Stabilized `AMOUNT`/`MOD` automation consistency across `STRETCH`, `GRAIN`, `FFT1`, and `FFT2`
+- Hardened FFT output normalization and FFT1 freeze transitions to avoid edge-case automation clicks on large windows
 - Added `JIT` as a deterministic organic-motion control for pitch drift and granular instability
 - Improved FFT reverse behavior, including FFT1 full-reverse hold and signed reverse phase tracking
 - Fixed `DUAL` pitch mapping in FFT routes so each channel uses its own pitch rate consistently

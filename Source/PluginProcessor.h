@@ -6,10 +6,10 @@
 #include <vector>
 #include "PerfTrace.h"
 
-// Compile-time gate for the temporary FFT1 click CSV dump.
+// Compile-time gate for the temporary FFT amount/click CSV dump.
 // Keep disabled for release builds unless explicitly diagnosing this path.
 #ifndef STRETR_ENABLE_FFT1_CLICK_DUMP
-#define STRETR_ENABLE_FFT1_CLICK_DUMP 0
+#define STRETR_ENABLE_FFT1_CLICK_DUMP 1
 #endif
 
 #if STRETR_ENABLE_FFT1_CLICK_DUMP
@@ -426,6 +426,9 @@ private:
 		bool dumpToFile (const juce::String& filePath) const
 		{
 			juce::File f (filePath);
+			if (f.existsAsFile())
+				f.deleteFile();
+
 			if (auto stream = f.createOutputStream())
 			{
 				stream->writeText (
@@ -556,6 +559,9 @@ private:
 		bool dumpToFile (const juce::String& filePath) const
 		{
 			juce::File f (filePath);
+			if (f.existsAsFile())
+				f.deleteFile();
+
 			if (auto stream = f.createOutputStream())
 			{
 				stream->writeText (
@@ -799,6 +805,9 @@ private:
 		bool dumpToFile (const juce::String& filePath) const
 		{
 			juce::File f (filePath);
+			if (f.existsAsFile())
+				f.deleteFile();
+
 			if (auto stream = f.createOutputStream())
 			{
 				stream->writeText (
@@ -965,6 +974,7 @@ private:
 		int   pdcOn = 0;
 		int   triggerEdge = 0;
 		int   fftWindowMotionActive = 0;
+		int   fftAmountMotionActive = 0;
 		int   fftSizeChanged = 0;
 		int   fftOutputFadePos = 0;
 		int   fftOutputFadeTotal = 0;
@@ -983,8 +993,31 @@ private:
 		float speed = 0.0f;
 		float smoothedSpeed = 0.0f;
 		float pitchRate = 1.0f;
+		float jitterTarget = 0.0f;
+		float jitterSmoothed = 0.0f;
+		float jitterAmountScale = 0.0f;
+		float effectivePitchRateL = 1.0f;
+		float effectivePitchRateR = 1.0f;
 		int   windowSamples = 0;
 		int   fftSize = 0;
+		int   rawWindowParam = 0;
+		int   storedWindow = 0;
+		int   effectiveWindow = 0;
+		float targetWindow = 0.0f;
+		float smoothedWindow = 0.0f;
+		int   capturedWindow = 0;
+		int   pendingWindow = 0;
+		int   fftWindowCaptureRemaining = 0;
+		int   fftWindowApplyDelayRemaining = 0;
+		int   fft2GeometryWindow = 0;
+		float fft2GeometryLog2Window = 0.0f;
+		int   desiredFftSize = 0;
+		int   requestedFftSize = 0;
+		int   previousFftSize = 0;
+		int   activeFftSize = 0;
+		int   fft2AmountZeroHoldBypassActive = 0;
+		int   fft2TargetFullHold = 0;
+		int   fft2SmoothedFullHold = 0;
 		int   reportedLatency = 0;
 		int   dryDelayLen = 0;
 		int   fftTargetFreeze = 0;
@@ -1115,13 +1148,22 @@ private:
 		bool dumpToFile (const juce::String& filePath) const
 		{
 			juce::File f (filePath);
+			if (f.existsAsFile())
+				f.deleteFile();
+
 			if (auto stream = f.createOutputStream())
 			{
 				stream->writeText (
-					"block_index,engine,trigger_on,align_on,pdc_on,trigger_edge,fft_window_motion_active,"
+					"block_index,engine,trigger_on,align_on,pdc_on,trigger_edge,fft_window_motion_active,fft_amount_motion_active,"
 					"fft_size_changed,fft_output_fade_pos,fft_output_fade_total,fft_duck_hold_start,"
 					"fft_duck_hold_end,fft_duck_bridge_remaining,fft_duck_bridge_total,fft_duck_gain_start,fft_duck_gain_end,"
-					"amount,mod,speed,pitch_rate,window_samples,fft_size,"
+					"amount,mod,speed,pitch_rate,jitter_target,jitter_smoothed,jitter_amount_scale,"
+					"effective_pitch_rate_l,effective_pitch_rate_r,window_samples,fft_size,"
+					"raw_window_param,stored_window,effective_window,target_window,smoothed_window,"
+					"captured_window,pending_window,fft_window_capture_remaining,fft_window_apply_delay_remaining,"
+					"fft2_geometry_window,fft2_geometry_log2_window,desired_fft_size,requested_fft_size,"
+					"previous_fft_size,active_fft_size,fft2_amount_zero_hold_bypass_active,"
+					"fft2_target_full_hold,fft2_smoothed_full_hold,"
 					"reported_latency,dry_delay_len,fft_target_freeze,fft_explicit_freeze_active,"
 					"fft_explicit_freeze_capture_pending,last_analysis_hop,freeze_entry_warmup_cycles,"
 					"fft_transition_remaining,fft_transition_total,fft_freeze_transition_remaining,"
@@ -1183,6 +1225,7 @@ private:
 					     << e.pdcOn << ","
 					     << e.triggerEdge << ","
 					     << e.fftWindowMotionActive << ","
+					     << e.fftAmountMotionActive << ","
 					     << e.fftSizeChanged << ","
 					     << e.fftOutputFadePos << ","
 					     << e.fftOutputFadeTotal << ","
@@ -1196,8 +1239,31 @@ private:
 					     << e.mod << ","
 					     << e.speed << ","
 					     << e.pitchRate << ","
+					     << e.jitterTarget << ","
+					     << e.jitterSmoothed << ","
+					     << e.jitterAmountScale << ","
+					     << e.effectivePitchRateL << ","
+					     << e.effectivePitchRateR << ","
 					     << e.windowSamples << ","
 					     << e.fftSize << ","
+					     << e.rawWindowParam << ","
+					     << e.storedWindow << ","
+					     << e.effectiveWindow << ","
+					     << e.targetWindow << ","
+					     << e.smoothedWindow << ","
+					     << e.capturedWindow << ","
+					     << e.pendingWindow << ","
+					     << e.fftWindowCaptureRemaining << ","
+					     << e.fftWindowApplyDelayRemaining << ","
+					     << e.fft2GeometryWindow << ","
+					     << e.fft2GeometryLog2Window << ","
+					     << e.desiredFftSize << ","
+					     << e.requestedFftSize << ","
+					     << e.previousFftSize << ","
+					     << e.activeFftSize << ","
+					     << e.fft2AmountZeroHoldBypassActive << ","
+					     << e.fft2TargetFullHold << ","
+					     << e.fft2SmoothedFullHold << ","
 					     << e.reportedLatency << ","
 					     << e.dryDelayLen << ","
 					     << e.fftTargetFreeze << ","
@@ -1425,6 +1491,9 @@ private:
 	float fftPrevWetPreWindowL_ = 0.0f;
 	float fftPrevWetPostWindowL_ = 0.0f;
 	float fftPrevWetPostOutputL_ = 0.0f;
+	float fftLastStableWetL_ = 0.0f;
+	float fftLastStableWetR_ = 0.0f;
+	bool  fftLastStableWetValid_ = false;
 	float fftParamDuckGain_ = 1.0f;
 	int   fftParamDuckHoldRemaining_ = 0;
 	float fftDuckBridgeStartL_ = 0.0f;
