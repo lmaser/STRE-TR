@@ -320,6 +320,7 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 {
 	amountParam  = apvts.getRawParameterValue (kParamAmount);
 	modParam     = apvts.getRawParameterValue (kParamMod);
+	jitterParam  = apvts.getRawParameterValue (kParamJitter);
 	grainParam   = apvts.getRawParameterValue (kParamGrain);
 	engineParam  = apvts.getRawParameterValue (kParamEngine);
 	windowParam  = apvts.getRawParameterValue (kParamWindow);
@@ -459,11 +460,15 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	fft2GeometryLog2Window_ = std::log2 (juce::jlimit ((float) kWindowMin, (float) kWindowMax, smoothedWindow_));
 	smoothedSpeed_     = juce::jmax (0.0f, 1.0f - initialAmountVal / 100.0f);
 	smoothedPitchRate_ = std::exp2 ((loadAtomicOrDefault (modParam, kModDefault) - 0.5f) * 4.0f);
+	jitterSmoothed_ = juce::jlimit (0.0f, 1.0f,
+	                                loadAtomicOrDefault (jitterParam, kJitterDefault) * 0.01f);
 	{
 		const float t = 1.0f - smoothedSpeed_;
 		fft2HoldCoeffSmoothed_ = std::sqrt (std::sqrt (juce::jlimit (0.0f, 1.0f, t)));
 	}
 	windowSmoothStep_  = 1.0f - std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.030f));
+	jitterSmoothStep_  = 1.0f - std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.050f));
+	resetJitterEngines();
 	resetFftWindowDuckPrepareState (initialWindowVal, initialAmountVal, initialEngineVal, initialTriggerOn);
 
     // Initialize Hann LUT
@@ -639,6 +644,132 @@ void STRETRAudioProcessor::releaseResources()
 	transportWasPlaying_ = false;
 	transportHasSamplePos_ = false;
 	transportLastSamplePos_ = 0;
+}
+
+void STRETRAudioProcessor::resetJitterEngines() noexcept
+{
+	auto randomBipolar = [] (juce::Random& rng) noexcept
+	{
+		return rng.nextFloat() * 2.0f - 1.0f;
+	};
+
+	auto initEngine = [&] (JitterEngine& engine, juce::int64 seed, float rateA, float rateB) noexcept
+	{
+		engine.rng = juce::Random (seed);
+		engine.driftPhaseA = engine.rng.nextFloat();
+		engine.driftPhaseB = engine.rng.nextFloat();
+		engine.driftRateHzA = rateA * (0.85f + engine.rng.nextFloat() * 0.30f);
+		engine.driftRateHzB = rateB * (0.85f + engine.rng.nextFloat() * 0.30f);
+		engine.shCurr = randomBipolar (engine.rng);
+		engine.shNext = randomBipolar (engine.rng);
+		engine.shPhase = engine.rng.nextFloat();
+	};
+
+	for (int ch = 0; ch < 2; ++ch)
+	{
+		const juce::int64 baseSeed = (ch == 0) ? 0x5354524a49543031ll : 0x5354524a49543032ll;
+		initEngine (jitterWindow_[ch], baseSeed + 0x17ll, 0.061f, 0.097f);
+		initEngine (jitterAnchor_[ch], baseSeed + 0x31ll, 0.083f, 0.149f);
+		initEngine (jitterPitch_[ch],  baseSeed + 0x4dll, 0.113f, 0.181f);
+		initEngine (jitterRapid_[ch],  baseSeed + 0x6bll, 0.293f, 0.557f);
+
+		jitterWindowOut_[ch] = 0.0f;
+		jitterAnchorOut_[ch] = 0.0f;
+		jitterPitchOut_[ch] = 0.0f;
+		jitterRapidOut_[ch] = 0.0f;
+	}
+}
+
+float STRETRAudioProcessor::advanceJitterEngine (JitterEngine& engine, float fastRateHz, float fastBlend,
+                                                 float maxFastRateHz, float maxBlend) noexcept
+{
+	const float sr = juce::jmax (1.0f, (float) currentSampleRate);
+	auto wrapPhase = [] (float phase) noexcept
+	{
+		return phase >= 1.0f ? phase - std::floor (phase) : phase;
+	};
+	auto smootherStep = [] (float t) noexcept
+	{
+		t = juce::jlimit (0.0f, 1.0f, t);
+		return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+	};
+
+	engine.driftPhaseA = wrapPhase (engine.driftPhaseA + engine.driftRateHzA / sr);
+	engine.driftPhaseB = wrapPhase (engine.driftPhaseB + engine.driftRateHzB / sr);
+	const float slow = std::sin (engine.driftPhaseA * kTwoPi) * 0.68f
+	                 + std::sin (engine.driftPhaseB * kTwoPi) * 0.32f;
+
+	const float safeFastRateHz = juce::jlimit (0.1f, juce::jmax (0.1f, maxFastRateHz), fastRateHz);
+	engine.shPhase += safeFastRateHz / sr;
+	if (engine.shPhase >= 1.0f)
+	{
+		engine.shPhase -= std::floor (engine.shPhase);
+		engine.shCurr = engine.shNext;
+		engine.shNext = engine.rng.nextFloat() * 2.0f - 1.0f;
+	}
+
+	const float sh = engine.shCurr + (engine.shNext - engine.shCurr) * smootherStep (engine.shPhase);
+	const float blend = juce::jlimit (0.0f, juce::jmax (0.0f, maxBlend), fastBlend);
+	return juce::jlimit (-1.0f, 1.0f, slow * (1.0f - blend) + sh * blend);
+}
+
+void STRETRAudioProcessor::advanceJitterEngines (float amount) noexcept
+{
+	const float amt = juce::jlimit (0.0f, 1.0f, amount);
+	const float high = juce::jlimit (0.0f, 1.0f, (amt - 0.55f) / 0.45f);
+	const float fastBlend = high * high * (3.0f - 2.0f * high) * 0.35f;
+	const float fastBaseHz = 2.0f + 16.0f * amt * amt;
+	const float finalRange = juce::jlimit (0.0f, 1.0f, (amt - 0.80f) / 0.20f);
+	const float finalShape = finalRange * finalRange * (3.0f - 2.0f * finalRange);
+
+	for (int ch = 0; ch < 2; ++ch)
+	{
+		jitterWindowOut_[ch] = advanceJitterEngine (jitterWindow_[ch], fastBaseHz * 0.79f, fastBlend);
+		jitterAnchorOut_[ch] = advanceJitterEngine (jitterAnchor_[ch], fastBaseHz * 1.13f, fastBlend);
+		jitterPitchOut_[ch]  = advanceJitterEngine (jitterPitch_[ch],  fastBaseHz * 1.37f, fastBlend);
+		jitterRapidOut_[ch]  = advanceJitterEngine (jitterRapid_[ch],
+			fastBaseHz * 12.80f + 44.0f * finalShape, finalShape * 0.80f, 220.0f, 0.80f);
+	}
+}
+
+STRETRAudioProcessor::JitterRuntimeValues STRETRAudioProcessor::makeJitterRuntimeValues (int lane,
+                                                                                         float referenceSamples,
+                                                                                         float amountScale,
+                                                                                         bool allowAnchor) const noexcept
+{
+	JitterRuntimeValues values;
+	const float amt = juce::jlimit (0.0f, 1.0f, jitterSmoothed_ * amountScale);
+	if (amt <= 1.0e-5f)
+		return values;
+
+	const int ch = juce::jlimit (0, 1, lane);
+	const float depth = amt * amt;
+	const float finalRange = juce::jlimit (0.0f, 1.0f, (amt - 0.80f) / 0.20f);
+	const float finalShape = finalRange * finalRange * (3.0f - 2.0f * finalRange);
+	const float rapid = jitterRapidOut_[ch];
+
+	const float pitchDepthCents = 1.5f * amt + 7.5f * depth;
+	const float pitchCents = juce::jlimit (-12.0f, 12.0f,
+		jitterPitchOut_[ch] * pitchDepthCents + rapid * finalShape * 2.5f);
+	values.pitchScale = std::exp2 (pitchCents / 1200.0f);
+
+	if (allowAnchor)
+	{
+		const float lengthDepth = (0.004f * amt + 0.018f * depth) * (1.0f + 0.55f * finalShape);
+		const float lengthMod = juce::jlimit (-1.0f, 1.0f,
+			jitterWindowOut_[ch] + rapid * finalShape * 0.45f);
+		values.lengthScale = juce::jlimit (0.88f, 1.12f, 1.0f + lengthMod * lengthDepth);
+
+		const float ref = juce::jmax (1.0f, referenceSamples);
+		const float anchorDepth = (0.003f * amt + 0.012f * depth) * (1.0f + 0.60f * finalShape);
+		const float anchorLimit = juce::jmin (ref * anchorDepth,
+		                                      (float) currentSampleRate * (0.010f + 0.010f * finalShape));
+		const float anchorMod = juce::jlimit (-1.0f, 1.0f,
+			jitterAnchorOut_[ch] + jitterWindowOut_[ch] * 0.35f + rapid * finalShape * 0.75f);
+		values.anchorOffsetSamples = (double) anchorMod * (double) anchorLimit;
+	}
+
+	return values;
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -2757,6 +2888,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const int   engineVal  = loadIntParamOrDefault (engineParam, 0);
 	const float amountVal  = loadAtomicOrDefault (amountParam, kAmountDefault);   // 0..100
 	const float modVal     = loadAtomicOrDefault (modParam, kModDefault);         // 0..1
+	const float jitterTarget = juce::jlimit (0.0f, 1.0f,
+	                                         loadAtomicOrDefault (jitterParam, kJitterDefault) * 0.01f);
 	const int   rawWindowParamVal = juce::jlimit (kWindowMin, kWindowMax,
 	                                              loadIntParamOrDefault (windowParam, (int) kWindowDefault));
 	const int   styleVal   = loadIntParamOrDefault (styleParam, 1);
@@ -3548,9 +3681,24 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		smoothedWindow_ = smoothedWindowActive;
 		smoothedSpeed_     += (targetSpeed      - smoothedSpeed_)     * kGainSmoothStep;
 		smoothedPitchRate_ += (targetPitchRate  - smoothedPitchRate_) * kGainSmoothStep;
+		jitterSmoothed_    += (jitterTarget     - jitterSmoothed_)    * jitterSmoothStep_;
+		if (jitterTarget <= 1.0e-5f && jitterSmoothed_ < 1.0e-5f)
+			jitterSmoothed_ = 0.0f;
+		if (jitterTarget > 1.0e-5f || jitterSmoothed_ > 1.0e-5f)
+			advanceJitterEngines (jitterSmoothed_);
 
-		const float speed     = smoothedSpeed_;
-		const float pitchRate = smoothedPitchRate_;
+		const float speed = smoothedSpeed_;
+		const float basePitchRate = smoothedPitchRate_;
+		const float jitterAmountNorm = juce::jlimit (0.0f, 1.0f, 1.0f - speed);
+		const float jitterAmountScale = (jitterAmountNorm > 1.0e-5f) ? std::sqrt (jitterAmountNorm) : 0.0f;
+		const float jitterReferenceSamples = (engineVal == 1)
+			? (float) grainSamples
+			: (float) ((engineVal == 3) ? fft2GeometryWindowSamples : windowSamples);
+		const bool jitterAllowAnchor = (engineVal == 1);
+		const auto jitterL = makeJitterRuntimeValues (0, jitterReferenceSamples, jitterAmountScale, jitterAllowAnchor);
+		const auto jitterR = makeJitterRuntimeValues ((styleVal == 0) ? 0 : 1,
+		                                              jitterReferenceSamples, jitterAmountScale, jitterAllowAnchor);
+		const float pitchRate = basePitchRate * jitterL.pitchScale;
 		if (engineVal == 3 && triggerOn)
 		{
 			const float fft2ZeroAmountTol = fft2AmountZeroHoldBypassActive_ ? 0.05f : 0.02f;
@@ -3651,7 +3799,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         // Engine dispatch
 		const bool isDual = (styleVal == 3 && numChannels >= 2);
 		const bool isWide = (styleVal == 2 && numChannels >= 2);
-		const float pitchRateR = isDual ? (pitchRate * 0.5f) : -1.0f;
+		const float pitchRateR = isDual ? (basePitchRate * 0.5f * jitterR.pitchScale) : -1.0f;
 		if (! triggerOn || engineVal != 0)
 		{
 			wsolaUnityBypassActive_ = false;
@@ -4445,6 +4593,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				const int synthesisHop = juce::jmax (1, segLen - overlapLen);
 				const int outMask = kWsolaOutBufLen - 1;
 				const double direction = reverseOn ? -1.0 : 1.0;
+				const float stretchPitchRateR = isDual ? pitchRateR
+					: (isWide ? basePitchRate * jitterR.pitchScale : pitchRate);
 				const double targetAnalysisHop = (double) synthesisHop * (double) speed * (double) pitchRate;
 				const bool nearUnity = std::abs (speed - 1.0f) <= 0.05f
 					&& std::abs (pitchRate - 1.0f) <= 0.05f;
@@ -4521,13 +4671,13 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					double readPosR = readPosL;
 					if (isDual)
 					{
-						const double analysisHopR = (double) synthesisHop * (double) speed * (double) pitchRate * 0.5;
+						const double analysisHopR = (double) synthesisHop * (double) speed * (double) stretchPitchRateR;
 						if (wsola_.hasPrevTail)
 							wsola_.segInputStartR += analysisHopR * direction;
 
 						if (! reverseOn)
 						{
-							const double maxStartR = capturePos - computeLookBehind (pitchRate * 0.5f, false);
+							const double maxStartR = capturePos - computeLookBehind (stretchPitchRateR, false);
 							if (wsola_.segInputStartR > maxStartR)
 								wsola_.segInputStartR = maxStartR;
 						}
@@ -4536,7 +4686,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 						const auto matchR = wsola_.hasPrevTail
 							? wsolaBestOverlapOffset (1, wsola_.segInputStartR, overlapLen,
 							                          prevBestOffsetR, nearUnity,
-							                          pitchRate * 0.5f * (float) direction, synthPos)
+							                          stretchPitchRateR * (float) direction, synthPos)
 							: WsolaMatchResult {};
 						wsola_.lastBestOffsetR = matchR.bestOffset;
 						readPosR = wsola_.segInputStartR + (double) matchR.bestOffset;
@@ -4548,7 +4698,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 					const bool hasPrevSegment = wsola_.hasPrevTail;
 					const float readRateL = pitchRate * (float) direction;
-					const float readRateR = (isDual ? (pitchRate * 0.5f) : pitchRate) * (float) direction;
+					const float readRateR = stretchPitchRateR * (float) direction;
 					for (int n = 0; n < segLen; ++n)
 					{
 						const float sL = readInputBuf (0, readPosL);
@@ -4684,11 +4834,29 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				{
 					grainReadPos_ = clampGrainSpawnPos (nextReadPos, grainCapturePos, grainLookBehind);
 				}
+				const auto jitteredSpawnPos = [&] (const JitterRuntimeValues& jitterValues,
+				                                   int grainLen, float readRate, bool wideMode) noexcept
+				{
+					double pos = spawnPos + jitterValues.anchorOffsetSamples;
+					if (grainFreezeHold)
+					{
+						const double minPos = grainCapturePos - (double) (inputBufLen_ - 4);
+						return juce::jlimit (minPos, grainCapturePos - 4.0, pos);
+					}
+					const double effectiveLookBehind = computeGrainLookBehind (grainLen, readRate, reverseOn, wideMode);
+					return clampGrainSpawnPos (pos, grainCapturePos, effectiveLookBehind);
+				};
+				const auto jitteredGrainLength = [&] (const JitterRuntimeValues& jitterValues) noexcept
+				{
+					return juce::jmax (4, (int) std::lround ((float) grainSamples * jitterValues.lengthScale));
+				};
 
 				if (isDual)
 				{
 					for (int dch = 0; dch < 2; ++dch)
 					{
+						const auto& grainJitter = (dch == 0) ? jitterL : jitterR;
+						const int grainLen = jitteredGrainLength (grainJitter);
 						for (int attempt = 0; attempt < kMaxGrains; ++attempt)
 						{
 							const int slot = (grainNextSlot_ + attempt) % kMaxGrains;
@@ -4696,12 +4864,13 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 							{
 								auto& g = grains_[slot];
 								g.active  = true;
-								g.length  = grainSamples;
+								g.length  = grainLen;
 								g.elapsed = 0;
-								g.rate    = (dch == 0) ? (double) pitchRate : (double) (pitchRate * 0.5f);
+								g.rate    = (dch == 0) ? (double) pitchRate : (double) pitchRateR;
 								g.reverse = reverseOn;
-								g.readPos = spawnPos;
-								g.playPos = g.reverse ? (double) (grainSamples - 1) : 0.0;
+								g.readPos = jitteredSpawnPos (grainJitter, grainLen,
+								                              (dch == 0) ? pitchRate : pitchRateR, false);
+								g.playPos = g.reverse ? (double) (grainLen - 1) : 0.0;
 								g.dualCh  = dch;
 								grainNextSlot_ = (slot + 1) % kMaxGrains;
 								break;
@@ -4713,6 +4882,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				{
 					for (int dch = 0; dch < 2; ++dch)
 					{
+						const auto& grainJitter = (dch == 0) ? jitterL : jitterR;
+						const int grainLen = jitteredGrainLength (grainJitter);
 						for (int attempt = 0; attempt < kMaxGrains; ++attempt)
 						{
 							const int slot = (grainNextSlot_ + attempt) % kMaxGrains;
@@ -4720,15 +4891,16 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 							{
 								auto& g = grains_[slot];
 								g.active  = true;
-								g.length  = grainSamples;
+								g.length  = grainLen;
 								g.elapsed = 0;
-								g.rate    = (double) pitchRate;
+								const float wideRate = (dch == 0) ? pitchRate : (basePitchRate * jitterR.pitchScale);
+								g.rate    = (double) wideRate;
 								g.reverse = reverseOn;
-								double rp = spawnPos;
+								double rp = jitteredSpawnPos (grainJitter, grainLen, wideRate, dch == 1);
 								if (dch == 1)
-									rp += (double) (grainSamples / 2);
+									rp += (double) (grainLen / 2);
 								g.readPos = rp;
-								g.playPos = g.reverse ? (double) (grainSamples - 1) : 0.0;
+								g.playPos = g.reverse ? (double) (grainLen - 1) : 0.0;
 								g.dualCh  = dch;
 								grainNextSlot_ = (slot + 1) % kMaxGrains;
 								break;
@@ -4738,6 +4910,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				}
 				else
 				{
+					const int grainLen = jitteredGrainLength (jitterL);
 					for (int attempt = 0; attempt < kMaxGrains; ++attempt)
 					{
 						const int slot = (grainNextSlot_ + attempt) % kMaxGrains;
@@ -4745,12 +4918,12 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 						{
 							auto& g = grains_[slot];
 							g.active  = true;
-							g.length  = grainSamples;
+							g.length  = grainLen;
 							g.elapsed = 0;
 							g.rate    = (double) pitchRate;
 							g.reverse = reverseOn;
-							g.readPos = spawnPos;
-							g.playPos = g.reverse ? (double) (grainSamples - 1) : 0.0;
+							g.readPos = jitteredSpawnPos (jitterL, grainLen, pitchRate, false);
+							g.playPos = g.reverse ? (double) (grainLen - 1) : 0.0;
 							g.dualCh  = -1;
 							grainNextSlot_ = (slot + 1) % kMaxGrains;
 							break;
@@ -5676,6 +5849,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamMod, "Mod",
 		juce::NormalisableRange<float> (kModMin, kModMax, 0.0f, 1.0f), kModDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamJitter, "Jitter",
+		juce::NormalisableRange<float> (kJitterMin, kJitterMax, 0.01f, 1.0f), kJitterDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamGrain, "Grain",
 		juce::NormalisableRange<float> (kGrainMin, kGrainMax, 0.001f, 0.25f), kGrainDefault));

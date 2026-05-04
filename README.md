@@ -61,7 +61,7 @@ Spectral-hold engine built on the same FFT framework.
 
 STRE-TR uses the same text-first horizontal bar language as the rest of the series.
 
-- Left view: `AMOUNT`, `MOD`, `GRAIN`, `ENGINE`, `WINDOW`, `STYLE`
+- Left view: `AMOUNT`, `MOD`, `JIT`, `GRAIN`, `ENGINE`, `WINDOW`, `STYLE`
 - Expanded IO view: `INPUT`, `OUTPUT`, `TILT`, `PAN`, `MIX`, `LIM`
 - Bottom controls: routing, limiter mode, invert modes, mix mode, filter/tilt position
 - Toggle rows: `ALIGN`, `PDC`, `RVS`, `TRG`
@@ -114,6 +114,15 @@ Pitch-rate control centered at `1.0x`.
 - `1.0` internal = `16x`
 
 It is smoothed per sample.
+
+### JIT (0-100%)
+
+Organic jitter/instability for the active stretch engine.
+
+- Scales with `AMOUNT`, so `AMOUNT = 0%` remains transparent
+- Adds subtle pitch drift in all engines
+- Adds safe grain-length and grain-anchor movement in `GRAIN`
+- Uses deterministic drift and smoothed sample-and-hold sources
 
 ### GRAIN (1-500 ms)
 
@@ -279,6 +288,7 @@ Independent inversion modes for polarity and stereo:
 - `GRAIN`: up to `64` grains with Hann envelopes and deterministic trigger/loop state
 - `FFT1`: phase vocoder with freeze reached by reducing FFT analysis advance, plus signed reverse phase tracking
 - `FFT2`: spectral hold built on the FFT engine, with hold intensity controlled by `AMOUNT` and signed reverse phase tracking
+- `JIT`: deterministic per-channel drift/S&H modulation, mapped conservatively to pitch and granular read geometry
 - Wet filter: HP/LP biquads with periodic coefficient updates
 - Tilt: first-order wet tilt
 - Chaos: Hermite-interpolated random targets with drift
@@ -301,6 +311,7 @@ STRE-TR currently smooths the user-facing continuous controls that matter for fa
 - `WINDOW`
 - `AMOUNT` -> engine speed/hold behavior
 - `MOD` -> pitch rate
+- `JIT` -> engine jitter depth
 - `PAN`
 
 Filter, tilt, and chaos subsystems also have their own internal smoothing/update logic.
@@ -322,6 +333,7 @@ Filter, tilt, and chaos subsystems also have their own internal smoothing/update
 - Hardened `PDC` so it reports latency without changing the underlying engine behavior
 - Made `WINDOW` state independent per engine while keeping a single compact UI slot
 - Stabilized `AMOUNT`/`MOD` automation consistency across `STRETCH`, `GRAIN`, `FFT1`, and `FFT2`
+- Added `JIT` as a deterministic organic-motion control for pitch drift and granular instability
 - Improved FFT reverse behavior, including FFT1 full-reverse hold and signed reverse phase tracking
 - Fixed `DUAL` pitch mapping in FFT routes so each channel uses its own pitch rate consistently
 - Fixed the `GRAIN` size row so it is enabled only for the `GRAIN` engine

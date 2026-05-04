@@ -75,6 +75,12 @@ private:
                 return juce::String (v, 1);
             }
 
+            // Jitter (0-100%)
+            if (owner != nullptr && this == &owner->jitterSlider)
+            {
+                return juce::String (v, 1);
+            }
+
             // Grain (ms)
             if (owner != nullptr && this == &owner->grainSlider)
             {
@@ -153,6 +159,7 @@ private:
 
     BarSlider amountSlider;
     BarSlider modSlider;
+    BarSlider jitterSlider;
     BarSlider grainSlider;
     BarSlider engineSlider;
     BarSlider windowSlider;
@@ -188,6 +195,7 @@ private:
 
     std::unique_ptr<SliderAttachment> amountAttachment;
     std::unique_ptr<SliderAttachment> modAttachment;
+    std::unique_ptr<SliderAttachment> jitterAttachment;
     std::unique_ptr<SliderAttachment> grainAttachment;
     std::unique_ptr<SliderAttachment> engineAttachment;
     std::unique_ptr<SliderAttachment> windowAttachment;
@@ -446,6 +454,9 @@ private:
     juce::String getModText() const;
     juce::String getModTextShort() const;
 
+    juce::String getJitterText() const;
+    juce::String getJitterTextShort() const;
+
     juce::String getGrainText() const;
     juce::String getGrainTextShort() const;
 
@@ -513,6 +524,8 @@ private:
     juce::String cachedAmountTextShort;
     juce::String cachedModTextFull;
     juce::String cachedModTextShort;
+    juce::String cachedJitterTextFull;
+    juce::String cachedJitterTextShort;
     juce::String cachedGrainTextFull;
     juce::String cachedGrainTextShort;
     juce::String cachedEngineTextFull;
@@ -535,6 +548,7 @@ private:
 
     juce::String cachedAmountIntOnly;
     juce::String cachedModIntOnly;
+    juce::String cachedJitterIntOnly;
     juce::String cachedGrainIntOnly;
     juce::String cachedEngineIntOnly;
     juce::String cachedWindowIntOnly;
@@ -555,7 +569,7 @@ private:
 
     HorizontalLayoutMetrics cachedHLayout_;
     VerticalLayoutMetrics cachedVLayout_;
-    std::array<juce::Rectangle<int>, 11> cachedValueAreas_;
+    std::array<juce::Rectangle<int>, 12> cachedValueAreas_;
     juce::Rectangle<int> cachedFilterValueArea_;
     juce::Rectangle<int> cachedPanValueArea_;
     juce::Rectangle<int> cachedLimThresholdValueArea_;

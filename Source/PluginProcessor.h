@@ -34,6 +34,7 @@ public:
     // Parameter IDs
 	static constexpr const char* kParamAmount    = "amount";
 	static constexpr const char* kParamMod       = "mod";
+	static constexpr const char* kParamJitter    = "jitter";
 	static constexpr const char* kParamGrain     = "grain";
     static constexpr const char* kParamEngine    = "engine";     // 0=STRETCH 1=GRAIN 2=FFT1 3=FFT2
 	static constexpr const char* kParamWindow    = "window";     // 16..8192; FFT engines snap to powers of two
@@ -107,6 +108,10 @@ public:
 	static constexpr float kModMin     = 0.0f;
 	static constexpr float kModMax     = 1.0f;
 	static constexpr float kModDefault = 0.5f;
+
+	static constexpr float kJitterMin     = 0.0f;
+	static constexpr float kJitterMax     = 100.0f;
+	static constexpr float kJitterDefault = 0.0f;
 
 	static constexpr float kGrainMin     = 1.0f;
 	static constexpr float kGrainMax     = 500.0f;
@@ -1596,6 +1601,43 @@ private:
 	std::atomic<int> lastObservedWindowParam_ { (int) kWindowDefault };
 	std::atomic<bool> windowFamiliesInitialised_ { false };
 
+	// JIT engine: deterministic drift/S&H sources shared by the per-engine mappings.
+	struct JitterEngine
+	{
+		float driftPhaseA = 0.0f;
+		float driftPhaseB = 0.0f;
+		float driftRateHzA = 0.0f;
+		float driftRateHzB = 0.0f;
+		float shCurr = 0.0f;
+		float shNext = 0.0f;
+		float shPhase = 0.0f;
+		juce::Random rng;
+	};
+
+	struct JitterRuntimeValues
+	{
+		float pitchScale = 1.0f;
+		float lengthScale = 1.0f;
+		double anchorOffsetSamples = 0.0;
+	};
+
+	JitterEngine jitterWindow_[2];
+	JitterEngine jitterAnchor_[2];
+	JitterEngine jitterPitch_[2];
+	JitterEngine jitterRapid_[2];
+	float jitterWindowOut_[2] = {};
+	float jitterAnchorOut_[2] = {};
+	float jitterPitchOut_[2] = {};
+	float jitterRapidOut_[2] = {};
+	float jitterSmoothed_ = 0.0f;       // normalized 0..1
+	float jitterSmoothStep_ = 0.001f;
+	void resetJitterEngines() noexcept;
+	float advanceJitterEngine (JitterEngine& engine, float fastRateHz, float fastBlend,
+	                           float maxFastRateHz = 32.0f, float maxBlend = 0.35f) noexcept;
+	void advanceJitterEngines (float amount) noexcept;
+	JitterRuntimeValues makeJitterRuntimeValues (int lane, float referenceSamples, float amountScale,
+	                                             bool allowAnchor) const noexcept;
+
 	struct WetFilterChannelState
 	{
 		WetFilterBiquadState hp[2];
@@ -1729,6 +1771,7 @@ private:
 
 	std::atomic<float>* amountParam  = nullptr;
 	std::atomic<float>* modParam     = nullptr;
+	std::atomic<float>* jitterParam  = nullptr;
 	std::atomic<float>* grainParam   = nullptr;
 	std::atomic<float>* engineParam  = nullptr;
 	std::atomic<float>* windowParam  = nullptr;
