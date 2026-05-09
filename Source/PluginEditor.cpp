@@ -47,6 +47,21 @@ static juce::String formatGainFaderDb (float dB)
     return juce::String (dB, 1) + " dB";
 }
 
+static juce::String formatChaosTooltip (float amountPercent, float speedHz)
+{
+    return "AMT " + juce::String (juce::roundToInt (juce::jlimit (0.0f, 100.0f, amountPercent))) + "%"
+         + " | SPD " + juce::String (juce::jlimit (STRETRAudioProcessor::kChaosSpdMin,
+                                                   STRETRAudioProcessor::kChaosSpdMax,
+                                                   speedHz), 1)
+         + " Hz";
+}
+
+static juce::String formatPdcTooltip (bool enabled, int maxWindow)
+{
+    juce::ignoreUnused (enabled);
+    return "MAX WINDOW " + juce::String (STRETRAudioProcessor::getCanonicalFftWindow (maxWindow));
+}
+
 static double modSliderToMultiplier (double v)
 {
     v = juce::jlimit (0.0, 1.0, v);
@@ -222,7 +237,7 @@ void STRETRAudioProcessorEditor::MinimalLNF::drawPopupMenuBackground (
 
 juce::Font STRETRAudioProcessorEditor::MinimalLNF::getComboBoxFont (juce::ComboBox& box)
 {
-    const float h = juce::jlimit (10.0f, 18.0f, box.getHeight() * 0.55f);
+    const float h = juce::jlimit (12.0f, 24.0f, box.getHeight() * 0.59f);
     return juce::Font (juce::FontOptions (h).withStyle ("Bold"));
 }
 
@@ -622,7 +637,7 @@ namespace
 
     constexpr const char* kLimLegendFull   = "-36.0 dB LIMIT";
     constexpr const char* kLimLegendShort  = "-36.0 dB LIM";
-    constexpr const char* kLimLegendInt    = "-36dB";
+    constexpr const char* kLimLegendInt    = "-36.0dB";
 
     constexpr int kValueAreaHeightPx = 44;
     constexpr int kValueAreaRightMarginPx = 24;
@@ -803,7 +818,7 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
         chaosFilterDisplay.setText ("", juce::dontSendNotification);
         chaosFilterDisplay.setInterceptsMouseClicks (true, false);
         chaosFilterDisplay.addMouseListener (this, false);
-        chaosFilterDisplay.setTooltip (juce::String (juce::roundToInt (savedAmtF)) + "% | " + juce::String (juce::roundToInt (savedSpdF)) + " Hz");
+        chaosFilterDisplay.setTooltip (formatChaosTooltip (savedAmtF, savedSpdF));
         chaosFilterDisplay.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
         chaosFilterDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
         chaosFilterDisplay.setOpaque (false);
@@ -821,7 +836,7 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
         chaosDelayDisplay.setText ("", juce::dontSendNotification);
         chaosDelayDisplay.setInterceptsMouseClicks (true, false);
         chaosDelayDisplay.addMouseListener (this, false);
-        chaosDelayDisplay.setTooltip (juce::String (juce::roundToInt (savedAmtD)) + "% | " + juce::String (juce::roundToInt (savedSpdD)) + " Hz");
+        chaosDelayDisplay.setTooltip (formatChaosTooltip (savedAmtD, savedSpdD));
         chaosDelayDisplay.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
         chaosDelayDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
         chaosDelayDisplay.setOpaque (false);
@@ -838,6 +853,15 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
     addAndMakeVisible (triggerButton);
     addAndMakeVisible (alignButton);
     addAndMakeVisible (pdcButton);
+
+    pdcDisplay.setText ("", juce::dontSendNotification);
+    pdcDisplay.setInterceptsMouseClicks (true, false);
+    pdcDisplay.addMouseListener (this, false);
+    pdcDisplay.setTooltip (formatPdcTooltip (pdcButton.getToggleState(), getCurrentMaxFftWindow()));
+    pdcDisplay.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+    pdcDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
+    pdcDisplay.setOpaque (false);
+    addAndMakeVisible (pdcDisplay);
 
     auto bindSlider = [&] (std::unique_ptr<SliderAttachment>& attachment,
                            const char* paramId, BarSlider& slider, double defaultValue)
@@ -950,7 +974,6 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
     // Disable numeric popup for discrete sliders
     engineSlider.setAllowNumericPopup (false);
     styleSlider.setAllowNumericPopup (false);
-    limThresholdSlider.setAllowNumericPopup (false);
 
     auto bindButton = [&] (std::unique_ptr<ButtonAttachment>& attachment,
                            const char* paramId, juce::Button& button)
@@ -967,6 +990,9 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
 
     for (auto* paramId : kUiMirrorParamIds)
         audioProcessor.apvts.addParameterListener (paramId, this);
+    audioProcessor.apvts.addParameterListener (STRETRAudioProcessor::kParamPdc, this);
+    audioProcessor.apvts.addParameterListener (STRETRAudioProcessor::kParamWindow, this);
+    audioProcessor.apvts.addParameterListener (STRETRAudioProcessor::kParamMaxWindow, this);
 
     juce::Component::SafePointer<STRETRAudioProcessorEditor> safeThis (this);
     juce::MessageManager::callAsync ([safeThis]() { if (safeThis) safeThis->applyPersistedUiStateFromProcessor (true, true); });
@@ -974,6 +1000,8 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
     juce::Timer::callAfterDelay (750, [safeThis]() { if (safeThis) safeThis->applyPersistedUiStateFromProcessor (true, true); });
 
     applyCrtState (crtEnabled);
+    syncFftWindowToMax (true);
+    updatePdcTooltip();
     refreshLegendTextCache();
     resized();
     updateEngineControls();
@@ -986,6 +1014,9 @@ STRETRAudioProcessorEditor::~STRETRAudioProcessorEditor()
 
     for (auto* paramId : kUiMirrorParamIds)
         audioProcessor.apvts.removeParameterListener (paramId, this);
+    audioProcessor.apvts.removeParameterListener (STRETRAudioProcessor::kParamPdc, this);
+    audioProcessor.apvts.removeParameterListener (STRETRAudioProcessor::kParamWindow, this);
+    audioProcessor.apvts.removeParameterListener (STRETRAudioProcessor::kParamMaxWindow, this);
 
     audioProcessor.setUiUseCustomPalette (useCustomPalette);
     audioProcessor.setUiCrtEnabled (crtEnabled);
@@ -1089,9 +1120,9 @@ void STRETRAudioProcessorEditor::setPromptOverlayActive (bool shouldBeActive)
     if (shouldBeActive) promptOverlay.toFront (false);
 
     const bool enable = ! shouldBeActive;
-    const std::array<juce::Component*, 11> controls {
+    const std::array<juce::Component*, 12> controls {
         &amountSlider, &modSlider, &jitterSlider, &grainSlider, &engineSlider, &windowSlider, &styleSlider,
-        &reverseButton, &triggerButton, &alignButton, &pdcButton
+        &reverseButton, &triggerButton, &alignButton, &pdcButton, &pdcDisplay
     };
     for (auto* c : controls) c->setEnabled (enable);
     if (resizerCorner) resizerCorner->setEnabled (enable);
@@ -1144,7 +1175,27 @@ void STRETRAudioProcessorEditor::parameterChanged (const juce::String& parameter
         juce::Component::SafePointer<STRETRAudioProcessorEditor> safeThis (this);
         juce::MessageManager::callAsync ([safeThis]()
         {
-            if (safeThis) safeThis->updateEngineControls();
+            if (safeThis)
+            {
+                safeThis->syncFftWindowToMax (true);
+                safeThis->updateEngineControls();
+                safeThis->updatePdcTooltip();
+            }
+        });
+    }
+
+    if (parameterID == STRETRAudioProcessor::kParamWindow
+        || parameterID == STRETRAudioProcessor::kParamMaxWindow
+        || parameterID == STRETRAudioProcessor::kParamPdc)
+    {
+        juce::Component::SafePointer<STRETRAudioProcessorEditor> safeThis (this);
+        juce::MessageManager::callAsync ([safeThis]()
+        {
+            if (safeThis == nullptr) return;
+            safeThis->syncFftWindowToMax (true);
+            safeThis->updatePdcTooltip();
+            safeThis->refreshLegendTextCache();
+            safeThis->repaint();
         });
     }
 }
@@ -1226,6 +1277,7 @@ void STRETRAudioProcessorEditor::updateEngineControls()
 
 	auto* engineP = audioProcessor.apvts.getRawParameterValue (STRETRAudioProcessor::kParamEngine);
 	const int engineVal = engineP ? (int) std::lround (engineP->load (std::memory_order_relaxed)) : 0;
+    syncFftWindowToMax (false);
 
 	const bool grainActive = (engineVal == 1);   // GRAIN only
 	grainSlider.setAlpha (grainActive ? 1.0f : 0.35f);
@@ -1409,10 +1461,61 @@ bool STRETRAudioProcessorEditor::isCurrentEngineFft() const
     return engineVal == 2 || engineVal == 3;
 }
 
+int STRETRAudioProcessorEditor::getCurrentMaxFftWindow() const
+{
+    return STRETRAudioProcessor::getCanonicalFftWindow ((int) std::lround (
+        audioProcessor.apvts.getRawParameterValue (STRETRAudioProcessor::kParamMaxWindow)->load()));
+}
+
+void STRETRAudioProcessorEditor::syncFftWindowToMax (bool notifyHost)
+{
+    const int maxWindow = getCurrentMaxFftWindow();
+    audioProcessor.clampFftWindowFamiliesToMax (maxWindow);
+
+    if (! isCurrentEngineFft())
+    {
+        windowSlider.setRange ((double) STRETRAudioProcessor::kWindowMin,
+                               (double) STRETRAudioProcessor::kWindowMax,
+                               1.0);
+        windowSlider.setSkewFactor (0.5);
+        return;
+    }
+
+    const int engineVal = getCurrentEngineValue();
+    const int clampedWindow = juce::jmin (audioProcessor.getStoredWindowForEngine (engineVal), maxWindow);
+    audioProcessor.setStoredWindowForEngine (engineVal, clampedWindow);
+
+    const double sliderMin = maxWindow > STRETRAudioProcessor::kFftWindowMin
+                           ? (double) STRETRAudioProcessor::kFftWindowMin
+                           : 0.0;
+    windowSlider.setRange (sliderMin, (double) maxWindow, 1.0);
+    windowSlider.setSkewFactor (1.0);
+
+    juce::ScopedValueSetter<bool> clampGuard (clampingWindowSlider_, true);
+    if (auto* p = audioProcessor.apvts.getParameter (STRETRAudioProcessor::kParamWindow))
+    {
+        const bool differs = std::abs (audioProcessor.apvts.getRawParameterValue (STRETRAudioProcessor::kParamWindow)->load()
+                                       - (float) clampedWindow) > 0.5f;
+        if (notifyHost && differs)
+            p->setValueNotifyingHost (p->convertTo0to1 ((float) clampedWindow));
+        else
+            audioProcessor.syncWindowParameterToEngine (engineVal);
+    }
+    windowSlider.setValue ((double) clampedWindow, juce::dontSendNotification);
+}
+
+void STRETRAudioProcessorEditor::updatePdcTooltip()
+{
+    const auto tooltip = formatPdcTooltip (pdcButton.getToggleState(), getCurrentMaxFftWindow());
+    pdcButton.setTooltip (tooltip);
+    pdcDisplay.setTooltip (tooltip);
+}
+
 int STRETRAudioProcessorEditor::getEffectiveWindowValue (double rawWindowValue) const
 {
-    return STRETRAudioProcessor::getCanonicalWindowForEngine (getCurrentEngineValue(),
-                                                              (int) std::lround (rawWindowValue));
+    const int canonical = STRETRAudioProcessor::getCanonicalWindowForEngine (getCurrentEngineValue(),
+                                                                             (int) std::lround (rawWindowValue));
+    return isCurrentEngineFft() ? juce::jmin (canonical, getCurrentMaxFftWindow()) : canonical;
 }
 
 juce::String STRETRAudioProcessorEditor::getWindowText() const
@@ -1537,16 +1640,12 @@ juce::String STRETRAudioProcessorEditor::getPanTextShort() const
 juce::String STRETRAudioProcessorEditor::getLimThresholdText() const
 {
     const float db = (float) limThresholdSlider.getValue();
-    if (std::abs (db) < 0.05f)
-        return "0 dB LIMIT";
     return juce::String (db, 1) + " dB LIMIT";
 }
 
 juce::String STRETRAudioProcessorEditor::getLimThresholdTextShort() const
 {
     const float db = (float) limThresholdSlider.getValue();
-    if (std::abs (db) < 0.05f)
-        return "0 dB LIM";
     return juce::String (db, 1) + " dB LIM";
 }
 
@@ -1627,10 +1726,7 @@ bool STRETRAudioProcessorEditor::refreshLegendTextCache()
     cachedLimThresholdTextShort = getLimThresholdTextShort();
     {
         const float limVal = (float) limThresholdSlider.getValue();
-        if (std::abs (limVal) < 0.05f)
-            cachedLimThresholdIntOnly = "0dB";
-        else
-            cachedLimThresholdIntOnly = juce::String ((int) limVal) + "dB";
+        cachedLimThresholdIntOnly = juce::String (limVal, 1) + "dB";
     }
 
     {
@@ -1700,10 +1796,9 @@ STRETRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY, bool io
     const int sliderBottomRef = ioExpanded ? m.chaosRowY : m.btnRow1Y;
     m.availableForSliders = juce::jmax (40, sliderBottomRef - m.betweenSlidersAndButtons - m.topMargin);
 
-    // 7 collapsed sliders (AMOUNT/MOD/JIT/GRAIN/ENGINE/WINDOW/STYLE)
-    // 9 expanded IO items (IN/OUT/TILT/FILTER/PAN/MIX/LIM/MODE_ROW/INV_ROW)
-    const int numSliders = ioExpanded ? 9 : 7;
-    const int numGaps    = ioExpanded ? 9 : 7;
+    // Keep the expanded compact-menu density identical to DISP/ECHO/GRA.
+    const int numSliders = ioExpanded ? 10 : 7;
+    const int numGaps    = ioExpanded ? 10 : 7;
 
     m.toggleBarH = 20;
     const int spaceForScale = juce::jmax (40, m.availableForSliders - m.toggleBarH);
@@ -1957,8 +2052,15 @@ void STRETRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
     if (alignButton.isVisible() && getAlignLabelArea().contains (p))
     { alignButton.setToggleState (! alignButton.getToggleState(), juce::sendNotificationSync); return; }
 
-    if (pdcButton.isVisible() && getPdcLabelArea().contains (p))
-    { pdcButton.setToggleState (! pdcButton.getToggleState(), juce::sendNotificationSync); return; }
+    if (pdcButton.isVisible() && (getPdcLabelArea().contains (p) || pdcDisplay.getBounds().contains (p)))
+    {
+        if (e.mods.isPopupMenu())
+            openPdcMaxWindowPrompt();
+        else
+            pdcButton.setToggleState (! pdcButton.getToggleState(), juce::sendNotificationSync);
+        updatePdcTooltip();
+        return;
+    }
 
     if (chaosFilterButton.isVisible() && (getChaosLabelArea().contains (p) || chaosFilterDisplay.getBounds().contains (p)))
     {
@@ -2183,15 +2285,15 @@ void STRETRAudioProcessorEditor::paint (juce::Graphics& g)
         if (limThresholdSlider.isVisible() && cachedLimThresholdValueArea_.getWidth() > 0)
             drawLegendForMode (cachedLimThresholdValueArea_, cachedLimThresholdTextFull, cachedLimThresholdTextShort, cachedLimThresholdIntOnly);
 
-        // Mode In / Mode Out / Sum Bus / Limiter Mode labels
+        // Compact-menu combo labels.
         if (modeInCombo.isVisible())
         {
-            const auto font = juce::Font (juce::FontOptions (11.0f).withStyle ("Bold"));
+            const auto font = juce::Font (juce::FontOptions (15.0f).withStyle ("Bold"));
             g.setColour (scheme.text);
             g.setFont (font);
             auto drawComboLabel = [&] (const juce::ComboBox& combo, const juce::String& full, const juce::String& shortTxt)
             {
-                const auto area = combo.getBounds().withHeight (14).translated (0, -15);
+                const auto area = combo.getBounds().withHeight (18).translated (0, -19);
                 const float comboW = (float) combo.getWidth();
                 juce::GlyphArrangement ga;
                 ga.addLineOfText (font, full, 0.0f, 0.0f);
@@ -2202,23 +2304,6 @@ void STRETRAudioProcessorEditor::paint (juce::Graphics& g)
             drawComboLabel (modeOutCombo, "MODE OUT", "OUT");
             drawComboLabel (sumBusCombo,  "SUM BUS",  "SUM");
             drawComboLabel (limModeCombo, "LIMIT",    "LIM");
-        }
-
-        // Invert Polarity / Invert Stereo labels above combos
-        if (invPolCombo.isVisible())
-        {
-            const auto font = juce::Font (juce::FontOptions (11.0f).withStyle ("Bold"));
-            g.setColour (scheme.text);
-            g.setFont (font);
-            auto drawComboLabel = [&] (const juce::ComboBox& combo, const juce::String& full, const juce::String& shortTxt)
-            {
-                const auto area = combo.getBounds().withHeight (14).translated (0, -15);
-                const float comboW = (float) combo.getWidth();
-                juce::GlyphArrangement ga;
-                ga.addLineOfText (font, full, 0.0f, 0.0f);
-                const bool useShort = ga.getBoundingBox (0, -1, false).getWidth() > comboW;
-                g.drawText (useShort ? shortTxt : full, area, juce::Justification::centred);
-            };
             drawComboLabel (mixModeCombo, "MIX", "MIX");
             drawComboLabel (filterPosCombo, "F / T", "F/T");
             drawComboLabel (invPolCombo, "INV POL", "POL");
@@ -2348,13 +2433,19 @@ void STRETRAudioProcessorEditor::resized()
         dualMixBar_.setBounds  (horizontalLayout.leftX, mainTop + 5 * step, horizontalLayout.barW, verticalLayout.barH);
         limThresholdSlider.setBounds (horizontalLayout.leftX, mainTop + 6 * step, horizontalLayout.barW, verticalLayout.barH);
 
-        const int modeRowPad = 10;
+        // Match the compact-menu combo block used by DISP/FREQ/ECHO/GRA.
         {
-            const int modeY = mainTop + 7 * step + modeRowPad;
             const int comboGap = 4;
             const int totalW = horizontalLayout.barW + horizontalLayout.valuePad + horizontalLayout.valueW;
             const int comboW = (totalW - comboGap * 3) / 4;
-            const int comboH = juce::jmax (24, verticalLayout.barH);
+            const int comboH = juce::jlimit (38, 48, verticalLayout.barH + 14);
+            const int labelOffset = 19;
+            const int comboBlockH = labelOffset + comboH + comboGap + labelOffset + comboH;
+            const int blockTopLimit = limThresholdSlider.getBottom() + verticalLayout.gapY;
+            const int blockBottomLimit = verticalLayout.chaosRowY - verticalLayout.gapY;
+            const int availableBlockH = juce::jmax (comboBlockH, blockBottomLimit - blockTopLimit);
+            const int visualTop = blockTopLimit + juce::jmax (0, (availableBlockH - comboBlockH) / 2);
+            const int modeY = visualTop + labelOffset;
             modeInCombo.setBounds  (horizontalLayout.leftX,                           modeY, comboW, comboH);
             modeOutCombo.setBounds (horizontalLayout.leftX + (comboW + comboGap),      modeY, comboW, comboH);
             sumBusCombo.setBounds  (horizontalLayout.leftX + (comboW + comboGap) * 2,  modeY, comboW, comboH);
@@ -2363,11 +2454,11 @@ void STRETRAudioProcessorEditor::resized()
 
         // Invert Polarity / Invert Stereo / Mix Mode / Filter Pos — 4 combos on row 8
         {
-            const int invY = mainTop + 7 * step + modeRowPad + juce::jmax (24, verticalLayout.barH) + 18;
+            const int invY = modeInCombo.getY() + modeInCombo.getHeight() + 4 + 19;
             const int comboGap = 4;
             const int totalW = horizontalLayout.barW + horizontalLayout.valuePad + horizontalLayout.valueW;
             const int comboW = (totalW - comboGap * 3) / 4;
-            const int comboH = juce::jmax (24, verticalLayout.barH);
+            const int comboH = juce::jlimit (38, 48, verticalLayout.barH + 14);
             mixModeCombo.setBounds  (horizontalLayout.leftX,                          invY, comboW, comboH);
             filterPosCombo.setBounds(horizontalLayout.leftX + (comboW + comboGap),     invY, comboW, comboH);
             invPolCombo.setBounds   (horizontalLayout.leftX + (comboW + comboGap) * 2, invY, comboW, comboH);
@@ -2405,6 +2496,7 @@ void STRETRAudioProcessorEditor::resized()
         triggerButton.setVisible (false);
         alignButton.setVisible (false);
         pdcButton.setVisible (false);
+        pdcDisplay.setVisible (false);
 
         amountSlider.setBounds (0, 0, 0, 0); modSlider.setBounds (0, 0, 0, 0);
         jitterSlider.setBounds (0, 0, 0, 0); grainSlider.setBounds (0, 0, 0, 0);
@@ -2452,6 +2544,7 @@ void STRETRAudioProcessorEditor::resized()
         triggerButton.setVisible (true);
         alignButton.setVisible (true);
         pdcButton.setVisible (true);
+        pdcDisplay.setVisible (true);
     }
 
     // Button rows
@@ -2469,6 +2562,7 @@ void STRETRAudioProcessorEditor::resized()
     pdcButton.setBounds      (rightBlockX, btnRow1Y, toggleHitW, verticalLayout.box);
     reverseButton.setBounds  (leftBlockX,  btnRow2Y, toggleHitW, verticalLayout.box);
     triggerButton.setBounds  (rightBlockX, btnRow2Y, toggleHitW, verticalLayout.box);
+    pdcDisplay.setBounds (pdcButton.getBounds().getUnion (getPdcLabelArea()));
 
     if (resizerCorner)
         resizerCorner->setBounds (W - kResizerCornerPx, H - kResizerCornerPx, kResizerCornerPx, kResizerCornerPx);
@@ -2503,6 +2597,7 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     else if (&s == &mixSlider)     { suffix = " % MIX";      suffixShort = " % MIX"; }
     else if (&s == &panSlider)     { suffix = " % PAN";      suffixShort = " %"; }
     else if (&s == &tiltSlider)    { suffix = " DB TILT";    suffixShort = " DB"; }
+    else if (&s == &limThresholdSlider) { suffix = " DB LIM"; suffixShort = " DB"; }
 
     const juce::String suffixText      = suffix.trimStart();
     const juce::String suffixTextShort = suffixShort.trimStart();
@@ -2557,6 +2652,7 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
         else if (&s == &mixSlider)     worstCaseText = "100.0";
         else if (&s == &panSlider)     worstCaseText = "100";
         else if (&s == &tiltSlider)    worstCaseText = "-100.0";
+        else if (&s == &limThresholdSlider) worstCaseText = "-36.0";
         else                           worstCaseText = "999.99";
 
         const int maxInputTextW = juce::jmax (1, stringWidth (f, worstCaseText));
@@ -2707,6 +2803,236 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
 
             targetSlider->setValue (val, juce::sendNotificationSync);
         }), false);
+}
+
+void STRETRAudioProcessorEditor::openPdcMaxWindowPrompt()
+{
+    lnf.setScheme (activeScheme);
+    const auto scheme = activeScheme;
+
+    const int currentMaxWindow = getCurrentMaxFftWindow();
+    const bool activeFft = isCurrentEngineFft();
+    const int currentPluginWindow = getEffectiveWindowValue (windowSlider.getValue());
+
+    auto windowToBar = [] (int window) noexcept
+    {
+        const int lane = STRETRAudioProcessor::getFftWindowLane (window);
+        return (float) lane / (float) (STRETRAudioProcessor::kNumFftWindows - 1);
+    };
+
+    auto barToWindow = [] (float value01) noexcept
+    {
+        const int lane = juce::jlimit (0, STRETRAudioProcessor::kNumFftWindows - 1,
+            (int) std::lround (juce::jlimit (0.0f, 1.0f, value01)
+                * (float) (STRETRAudioProcessor::kNumFftWindows - 1)));
+        return STRETRAudioProcessor::kFftWindows[lane];
+    };
+
+    auto setMaxWindowParam = [this] (int window)
+    {
+        if (auto* p = audioProcessor.apvts.getParameter (STRETRAudioProcessor::kParamMaxWindow))
+            p->setValueNotifyingHost (p->convertTo0to1 ((float) STRETRAudioProcessor::getCanonicalFftWindow (window)));
+        syncFftWindowToMax (true);
+        updatePdcTooltip();
+        refreshLegendTextCache();
+        repaint();
+    };
+
+    auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
+    aw->setLookAndFeel (&lnf);
+    aw->addTextEditor ("maxwin", juce::String (currentMaxWindow), juce::String());
+
+    struct WindowInputFilter : juce::TextEditor::InputFilter
+    {
+        juce::String filterNewText (juce::TextEditor& editor, const juce::String& newText) override
+        {
+            juce::String result;
+            for (auto c : newText)
+            {
+                if (juce::CharacterFunctions::isDigit (c))
+                    result += c;
+                if (result.length() >= 4)
+                    break;
+            }
+
+            juce::String proposed = editor.getText();
+            const int insertPos = editor.getCaretPosition();
+            proposed = proposed.substring (0, insertPos) + result
+                     + proposed.substring (insertPos + editor.getHighlightedText().length());
+
+            if (proposed.length() > 4 || proposed.getIntValue() > STRETRAudioProcessor::kWindowMax)
+                return {};
+
+            return result;
+        }
+    };
+
+    struct PromptBar : public juce::Component
+    {
+        STREScheme colours;
+        float value01 = 1.0f;
+        std::function<void (float)> onValueChanged;
+
+        PromptBar (const STREScheme& s, float initial01)
+            : colours (s), value01 (juce::jlimit (0.0f, 1.0f, initial01)) {}
+
+        void paint (juce::Graphics& g) override
+        {
+            const auto r = getLocalBounds().toFloat();
+            g.setColour (colours.outline);
+            g.drawRect (r, 4.0f);
+            auto inner = r.reduced (7.0f);
+            g.setColour (colours.bg);
+            g.fillRect (inner);
+            g.setColour (colours.fg);
+            g.fillRect (inner.withWidth (inner.getWidth() * value01));
+        }
+
+        void mouseDown (const juce::MouseEvent& e) override { updateFromMouse (e); }
+        void mouseDrag (const juce::MouseEvent& e) override { updateFromMouse (e); }
+        void mouseDoubleClick (const juce::MouseEvent&) override { setValue (1.0f); }
+
+        void setValue (float newValue01)
+        {
+            value01 = juce::jlimit (0.0f, 1.0f, newValue01);
+            repaint();
+            if (onValueChanged)
+                onValueChanged (value01);
+        }
+
+    private:
+        void updateFromMouse (const juce::MouseEvent& e)
+        {
+            const float innerW = (float) getWidth() - 14.0f;
+            const float next = innerW > 0.0f ? ((float) e.x - 7.0f) / innerW : 0.0f;
+            const int lane = juce::jlimit (0, STRETRAudioProcessor::kNumFftWindows - 1,
+                (int) std::lround (juce::jlimit (0.0f, 1.0f, next)
+                    * (float) (STRETRAudioProcessor::kNumFftWindows - 1)));
+            setValue ((float) lane / (float) (STRETRAudioProcessor::kNumFftWindows - 1));
+        }
+    };
+
+    const auto& f = kBoldFont40();
+    auto* nameLabel = new juce::Label ("maxwin_label", "MAX WIN");
+    nameLabel->setJustificationType (juce::Justification::centredLeft);
+    nameLabel->setBorderSize (juce::BorderSize<int> (0));
+    nameLabel->setFont (f);
+    applyLabelTextColour (*nameLabel, scheme.text);
+    aw->addAndMakeVisible (nameLabel);
+
+    auto* bar = new PromptBar (scheme, windowToBar (currentMaxWindow));
+    aw->addAndMakeVisible (bar);
+
+    if (auto* te = aw->getTextEditor ("maxwin"))
+    {
+        te->setFont (f);
+        te->applyFontToAllText (f);
+        te->setInputFilter (new WindowInputFilter(), true);
+    }
+
+    auto syncing = std::make_shared<bool> (false);
+    auto layoutRows = [aw, nameLabel, bar]()
+    {
+        auto* te = aw->getTextEditor ("maxwin");
+        if (te == nullptr || nameLabel == nullptr || bar == nullptr)
+            return;
+
+        const int buttonsTop = getAlertButtonsTop (*aw);
+        auto er = te->getBounds();
+        er.setHeight ((int) (te->getFont().getHeight() * kPromptEditorHeightScale) + kPromptEditorHeightPadPx);
+        const int rowH = er.getHeight();
+        const int barH = juce::jmax (12, rowH / 2);
+        const int barGap = juce::jmax (4, rowH / 4);
+        const int totalH = rowH + barGap + barH;
+        const int y = juce::jmax (kPromptEditorMinTopPx, (buttonsTop - totalH) / 2);
+        const int contentPad = kPromptInnerMargin;
+        const int contentW = aw->getWidth() - contentPad * 2;
+        const int labelW = stringWidth (nameLabel->getFont(), nameLabel->getText()) + 8;
+        const int textW = juce::jmax (stringWidth (te->getFont(), "8192"), stringWidth (te->getFont(), te->getText()));
+        const int editorW = juce::jmax (40, textW + 10);
+        const int gap = juce::jmax (8, stringWidth (te->getFont(), " "));
+        const int visualW = labelW + gap + editorW;
+        const int blockLeft = contentPad + juce::jmax (0, (contentW - visualW) / 2);
+
+        nameLabel->setBounds (blockLeft, y, labelW, rowH);
+        te->setBounds (blockLeft + labelW + gap, y, editorW, rowH);
+        bar->setBounds (contentPad, y + rowH + barGap, contentW, barH);
+    };
+
+    bar->onValueChanged = [aw, barToWindow, setMaxWindowParam, syncing, layoutRows] (float value01)
+    {
+        if (*syncing)
+            return;
+
+        *syncing = true;
+        const int window = barToWindow (value01);
+        if (auto* te = aw->getTextEditor ("maxwin"))
+        {
+            te->setText (juce::String (window), juce::sendNotification);
+            te->selectAll();
+        }
+        *syncing = false;
+        setMaxWindowParam (window);
+        layoutRows();
+    };
+
+    if (auto* te = aw->getTextEditor ("maxwin"))
+        te->onTextChange = [aw, bar, windowToBar, setMaxWindowParam, syncing, layoutRows]()
+        {
+            if (*syncing)
+                return;
+
+            *syncing = true;
+            int window = STRETRAudioProcessor::kFftMaxWindowDefault;
+            if (auto* editor = aw->getTextEditor ("maxwin"))
+                window = STRETRAudioProcessor::getCanonicalFftWindow (editor->getText().getIntValue());
+            bar->setValue (windowToBar (window));
+            *syncing = false;
+            setMaxWindowParam (window);
+            layoutRows();
+        };
+
+    aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("CANCEL", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    applyPromptShellSize (*aw);
+    layoutAlertWindowButtons (*aw);
+    preparePromptTextEditor (*aw, "maxwin", scheme.bg, scheme.text, scheme.fg, f, false);
+    layoutRows();
+    styleAlertButtons (*aw, lnf);
+
+    setPromptOverlayActive (true);
+    juce::Component::SafePointer<STRETRAudioProcessorEditor> safeThis (this);
+    fitAlertWindowToEditor (*aw, safeThis.getComponent(), [layoutRows] (juce::AlertWindow& a)
+    {
+        juce::ignoreUnused (a);
+        layoutAlertWindowButtons (a);
+        layoutRows();
+    });
+    embedAlertWindowInOverlay (safeThis.getComponent(), aw);
+
+    aw->enterModalState (true,
+        juce::ModalCallbackFunction::create (
+            [safeThis, aw, savedMaxWindow = currentMaxWindow,
+             savedPluginWindow = currentPluginWindow, restoreActiveFft = activeFft] (int result) mutable
+        {
+            std::unique_ptr<juce::AlertWindow> killer (aw);
+            if (safeThis != nullptr)
+                safeThis->setPromptOverlayActive (false);
+            if (safeThis == nullptr)
+                return;
+
+            if (result != 1)
+            {
+                if (auto* p = safeThis->audioProcessor.apvts.getParameter (STRETRAudioProcessor::kParamMaxWindow))
+                    p->setValueNotifyingHost (p->convertTo0to1 ((float) savedMaxWindow));
+                if (restoreActiveFft)
+                    if (auto* p = safeThis->audioProcessor.apvts.getParameter (STRETRAudioProcessor::kParamWindow))
+                        p->setValueNotifyingHost (p->convertTo0to1 ((float) juce::jmin (savedPluginWindow, savedMaxWindow)));
+            }
+            safeThis->syncFftWindowToMax (true);
+            safeThis->updatePdcTooltip();
+        }),
+        false);
 }
 
 void STRETRAudioProcessorEditor::openMixSendPrompt()
@@ -3307,9 +3633,11 @@ void STRETRAudioProcessorEditor::openChaosConfigPrompt (const char* amtParamId, 
             const float newAmt = juce::jlimit (0.0f, 100.0f, amtBar->value * 100.0f);
             const float newSpd = juce::jlimit (STRETRAudioProcessor::kChaosSpdMin, STRETRAudioProcessor::kChaosSpdMax,
                                                 std::exp (spdLogMin + juce::jlimit (0.0f, 1.0f, spdBar->value) * spdLogRange));
-            auto tip = juce::String (juce::roundToInt (newAmt)) + "% | " + juce::String (juce::roundToInt (newSpd)) + " Hz";
-            safeThis->chaosFilterDisplay.setTooltip (tip);
-            safeThis->chaosDelayDisplay.setTooltip (tip);
+            const auto tip = formatChaosTooltip (newAmt, newSpd);
+            if (juce::String (amtParamId) == STRETRAudioProcessor::kParamChaosAmtFilter)
+                safeThis->chaosFilterDisplay.setTooltip (tip);
+            else
+                safeThis->chaosDelayDisplay.setTooltip (tip);
         }), false);
 }
 

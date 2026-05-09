@@ -38,6 +38,7 @@ public:
 	static constexpr const char* kParamGrain     = "grain";
     static constexpr const char* kParamEngine    = "engine";     // 0=STRETCH 1=GRAIN 2=FFT1 3=FFT2
 	static constexpr const char* kParamWindow    = "window";     // 16..8192; FFT engines snap to powers of two
+	static constexpr const char* kParamMaxWindow = "max_window"; // FFT1/FFT2 max window for fixed PDC/ALIGN budget
 	static constexpr const char* kParamStyle     = "style";      // 0=MONO 1=STEREO 2=WIDE 3=DUAL
 	static constexpr const char* kParamInput     = "input";
 	static constexpr const char* kParamOutput    = "output";
@@ -124,6 +125,9 @@ public:
 	static constexpr int   kWindowMin     = 16;
 	static constexpr int   kWindowMax     = 8192;
 	static constexpr int   kFftWindowMin  = 64;
+	static constexpr int   kFftMaxWindowDefault = 8192;
+	static constexpr int   kNumFftWindows = 8;
+	static constexpr int   kFftWindows[kNumFftWindows] = { 64, 128, 256, 512, 1024, 2048, 4096, 8192 };
 	static constexpr float kWindowDefault = 1024.0f;
 
 	static constexpr int   kStyleMin     = 0;
@@ -190,6 +194,15 @@ public:
 		return juce::jlimit (kFftWindowMin, kWindowMax, nextPowerOf2 (clamped));
 	}
 
+	static int getFftWindowLane (int windowValue) noexcept
+	{
+		const int canonical = getCanonicalFftWindow (windowValue);
+		for (int i = 0; i < kNumFftWindows; ++i)
+			if (kFftWindows[i] == canonical)
+				return i;
+		return kNumFftWindows - 1;
+	}
+
 	static int getCanonicalWindowForEngine (int engineVal, int windowValue) noexcept
 	{
 		const int clamped = juce::jlimit (kWindowMin, kWindowMax, windowValue);
@@ -242,6 +255,8 @@ public:
 	int getStoredWindowForEngine (int engineVal) const noexcept;
 	void setStoredWindowForEngine (int engineVal, int windowValue) noexcept;
 	void syncWindowParameterToEngine (int engineVal);
+	int getCurrentMaxFftWindow() const noexcept;
+	void clampFftWindowFamiliesToMax (int maxWindow) noexcept;
 
 	void setUiCustomPaletteColour (int index, juce::Colour colour);
 	juce::Colour getUiCustomPaletteColour (int index) const noexcept;
@@ -1844,6 +1859,7 @@ private:
 	std::atomic<float>* grainParam   = nullptr;
 	std::atomic<float>* engineParam  = nullptr;
 	std::atomic<float>* windowParam  = nullptr;
+	std::atomic<float>* maxWindowParam = nullptr;
 	std::atomic<float>* styleParam   = nullptr;
 	std::atomic<float>* inputParam   = nullptr;
 	std::atomic<float>* outputParam  = nullptr;

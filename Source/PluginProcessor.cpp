@@ -216,9 +216,9 @@ STRETRAudioProcessor::WindowFamily STRETRAudioProcessor::getWindowFamilyForEngin
 int STRETRAudioProcessor::getCanonicalWindowForFamily (WindowFamily family, int windowValue) const noexcept
 {
 	const int clamped = juce::jlimit (kWindowMin, kWindowMax, windowValue);
-	return (family == WindowFamily::fft1 || family == WindowFamily::fft2)
-		? getCanonicalFftWindow (clamped)
-		: clamped;
+	if (family == WindowFamily::fft1 || family == WindowFamily::fft2)
+		return juce::jmin (getCanonicalFftWindow (clamped), getCurrentMaxFftWindow());
+	return clamped;
 }
 
 int STRETRAudioProcessor::getStoredWindowForFamily (WindowFamily family) const noexcept
@@ -304,6 +304,27 @@ void STRETRAudioProcessor::writeWindowFamilyStateToTree (juce::ValueTree& state)
 	                   nullptr);
 }
 
+int STRETRAudioProcessor::getCurrentMaxFftWindow() const noexcept
+{
+	return getCanonicalFftWindow (loadIntParamOrDefault (maxWindowParam, kFftMaxWindowDefault));
+}
+
+void STRETRAudioProcessor::clampFftWindowFamiliesToMax (int maxWindow) noexcept
+{
+	const int safeMax = getCanonicalFftWindow (maxWindow);
+	const int fft1 = getCanonicalFftWindow (windowFamilyValues_[(int) WindowFamily::fft1].load (std::memory_order_relaxed));
+	const int fft2 = getCanonicalFftWindow (windowFamilyValues_[(int) WindowFamily::fft2].load (std::memory_order_relaxed));
+
+	if (fft1 > safeMax)
+		setStoredWindowForFamily (WindowFamily::fft1, safeMax);
+	if (fft2 > safeMax)
+		setStoredWindowForFamily (WindowFamily::fft2, safeMax);
+
+	const auto activeFamily = (WindowFamily) activeWindowFamily_.load (std::memory_order_relaxed);
+	if (activeFamily == WindowFamily::fft1 || activeFamily == WindowFamily::fft2)
+		lastObservedWindowParam_.store (getStoredWindowForFamily (activeFamily), std::memory_order_relaxed);
+}
+
 //==============================================================================
 STRETRAudioProcessor::STRETRAudioProcessor()
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -324,6 +345,7 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 	grainParam   = apvts.getRawParameterValue (kParamGrain);
 	engineParam  = apvts.getRawParameterValue (kParamEngine);
 	windowParam  = apvts.getRawParameterValue (kParamWindow);
+	maxWindowParam = apvts.getRawParameterValue (kParamMaxWindow);
 	styleParam   = apvts.getRawParameterValue (kParamStyle);
 	inputParam   = apvts.getRawParameterValue (kParamInput);
 	outputParam  = apvts.getRawParameterValue (kParamOutput);
@@ -2904,6 +2926,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	                                         loadAtomicOrDefault (jitterParam, kJitterDefault) * 0.01f);
 	const int   rawWindowParamVal = juce::jlimit (kWindowMin, kWindowMax,
 	                                              loadIntParamOrDefault (windowParam, (int) kWindowDefault));
+	const int   maxFftWindowVal = getCurrentMaxFftWindow();
 	const int   styleVal   = loadIntParamOrDefault (styleParam, 1);
 	const float grainMs    = loadAtomicOrDefault (grainParam, kGrainDefault);     // 1..500 ms
 	const bool  reverseOn  = loadBoolParamOrDefault (reverseParam, false);
@@ -2914,6 +2937,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const bool engineChangedThisBlock = previousEngineVal >= 0 && engineVal != previousEngineVal;
 	if (! windowFamiliesInitialised_.load (std::memory_order_relaxed))
 		initialiseWindowFamilies (rawWindowParamVal);
+	clampFftWindowFamiliesToMax (maxFftWindowVal);
 	const WindowFamily windowFamily = getWindowFamilyForEngineInternal (engineVal);
 	const int previousWindowFamily = activeWindowFamily_.load (std::memory_order_relaxed);
 	const int previousObservedWindowParam = lastObservedWindowParam_.load (std::memory_order_relaxed);
@@ -3500,9 +3524,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	{
 		// PDC should only report the engine's real wet latency to the host.
 		// ALIGN can then use that same latency internally for the dry path.
-		const int fftLatencySize = (engineVal == 2 || engineVal == 3)
-			? ((requestedFftSize > 0) ? requestedFftSize : stft_.activeFftSize)
-			: 0;
+		const int fftLatencySize = (engineVal == 2 || engineVal == 3) ? maxFftWindowVal : 0;
 		const int fftSynthHopForAlign = (fftLatencySize > 0) ? recommendedFftSynthHop (fftLatencySize) : 0;
 		const int fftWetLatency = (fftLatencySize > 0) ? (fftLatencySize + fftSynthHopForAlign) : 0;
 
@@ -5955,6 +5977,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 		kParamWindow, "Window",
 		juce::NormalisableRange<float> ((float) kWindowMin, (float) kWindowMax, 1.0f, 0.5f), kWindowDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamMaxWindow, "Max Window",
+		juce::NormalisableRange<float> ((float) kFftWindowMin, (float) kWindowMax, 1.0f, 1.0f),
+		(float) kFftMaxWindowDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamStyle, "Style",
 		juce::NormalisableRange<float> ((float) kStyleMin, (float) kStyleMax, 1.0f, 1.0f), kStyleDefault));
 
@@ -6002,8 +6028,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 		                    juce::String::fromUTF8 (u8"F\u25bc T\u25b2") },
 		kFilterPosDefault));
 
-	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamAlign, "Align", true));
-	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamPdc, "PDC", true));
+	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamAlign, "Align", false));
+	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamPdc, "PDC", false));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamReverse, "Reverse", false));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamTrigger, "Trigger", false));
 

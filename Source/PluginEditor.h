@@ -32,6 +32,7 @@ private:
     void openChaosConfigPrompt (const char* amtParamId, const char* spdParamId, const juce::String& title);
     void openChaosFilterPrompt();
     void openChaosDelayPrompt();
+    void openPdcMaxWindowPrompt();
     void openMixSendPrompt();
     void openInfoPopup();
     void openGraphicsPopup();
@@ -58,7 +59,24 @@ private:
                 return;
             }
 
+            if (owner != nullptr && this == &owner->windowSlider && owner->isCurrentEngineFft())
+            {
+                setFftWindowFromMouse (e);
+                return;
+            }
+
             juce::Slider::mouseDown (e);
+        }
+
+        void mouseDrag (const juce::MouseEvent& e) override
+        {
+            if (owner != nullptr && this == &owner->windowSlider && owner->isCurrentEngineFft())
+            {
+                setFftWindowFromMouse (e);
+                return;
+            }
+
+            juce::Slider::mouseDrag (e);
         }
 
         juce::String getTextFromValue (double v) override
@@ -152,7 +170,57 @@ private:
             return t;
         }
 
+        double snapValue (double attemptedValue, DragMode dragMode) override
+        {
+            if (owner != nullptr && this == &owner->windowSlider && owner->isCurrentEngineFft())
+                return (double) owner->getEffectiveWindowValue (attemptedValue);
+
+            return juce::Slider::snapValue (attemptedValue, dragMode);
+        }
+
+        double valueToProportionOfLength (double value) override
+        {
+            if (owner != nullptr && this == &owner->windowSlider && owner->isCurrentEngineFft())
+            {
+                const int maxLane = STRETRAudioProcessor::getFftWindowLane (owner->getCurrentMaxFftWindow());
+                if (maxLane <= 0)
+                    return 1.0;
+
+                const int lane = juce::jlimit (0, maxLane,
+                    STRETRAudioProcessor::getFftWindowLane ((int) std::lround (value)));
+                return (double) lane / (double) maxLane;
+            }
+
+            return juce::Slider::valueToProportionOfLength (value);
+        }
+
+        double proportionOfLengthToValue (double proportion) override
+        {
+            if (owner != nullptr && this == &owner->windowSlider && owner->isCurrentEngineFft())
+            {
+                const int maxLane = STRETRAudioProcessor::getFftWindowLane (owner->getCurrentMaxFftWindow());
+                if (maxLane <= 0)
+                    return (double) STRETRAudioProcessor::kFftWindowMin;
+
+                const int lane = juce::jlimit (0, maxLane,
+                    (int) std::lround (juce::jlimit (0.0, 1.0, proportion) * (double) maxLane));
+                return (double) STRETRAudioProcessor::kFftWindows[lane];
+            }
+
+            return juce::Slider::proportionOfLengthToValue (proportion);
+        }
+
     private:
+        void setFftWindowFromMouse (const juce::MouseEvent& e)
+        {
+            const float innerW = (float) getWidth() - 14.0f;
+            const float proportion = innerW > 0.0f ? ((float) e.x - 7.0f) / innerW : 0.0f;
+            const int maxLane = STRETRAudioProcessor::getFftWindowLane (owner->getCurrentMaxFftWindow());
+            const int lane = juce::jlimit (0, maxLane,
+                (int) std::lround (juce::jlimit (0.0f, 1.0f, proportion) * (float) maxLane));
+            setValue ((double) STRETRAudioProcessor::kFftWindows[lane], juce::sendNotificationSync);
+        }
+
         STRETRAudioProcessorEditor* owner = nullptr;
         bool allowNumericPopup = true;
     };
@@ -182,6 +250,7 @@ private:
 
     juce::ToggleButton alignButton;
     juce::ToggleButton pdcButton;
+    juce::Label pdcDisplay;
     juce::ToggleButton reverseButton;
     juce::ToggleButton triggerButton;
     juce::ToggleButton chaosFilterButton;
@@ -320,7 +389,8 @@ private:
 
         void positionComboBoxText (juce::ComboBox& box, juce::Label& label) override
         {
-            label.setBounds (0, 0, box.getWidth(), box.getHeight());
+            label.setFont (getComboBoxFont (box));
+            label.setBounds (1, 1, box.getWidth() - 2, box.getHeight() - 2);
             label.setJustificationType (juce::Justification::centred);
         }
 
@@ -465,6 +535,9 @@ private:
 
     int getCurrentEngineValue() const;
     bool isCurrentEngineFft() const;
+    int getCurrentMaxFftWindow() const;
+    void syncFftWindowToMax (bool notifyHost);
+    void updatePdcTooltip();
     int getEffectiveWindowValue (double rawWindowValue) const;
     juce::String getWindowText() const;
     juce::String getWindowTextShort() const;
@@ -586,9 +659,9 @@ private:
     static constexpr double kDefaultLimThreshold = 0.0;
 
     static constexpr int kMinW = 360;
-    static constexpr int kMinH = 660;
+    static constexpr int kMinH = 740;
     static constexpr int kMaxW = 800;
-    static constexpr int kMaxH = 760;
+    static constexpr int kMaxH = 820;
 
     static constexpr int kLayoutVerticalBiasPx = 10;
 
