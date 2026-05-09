@@ -9,7 +9,7 @@
 // Compile-time gate for the temporary FFT amount/click CSV dump.
 // Keep disabled for release builds unless explicitly diagnosing this path.
 #ifndef STRETR_ENABLE_FFT1_CLICK_DUMP
-#define STRETR_ENABLE_FFT1_CLICK_DUMP 1
+#define STRETR_ENABLE_FFT1_CLICK_DUMP 0
 #endif
 
 #if STRETR_ENABLE_FFT1_CLICK_DUMP
