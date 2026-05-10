@@ -3,8 +3,17 @@
 
 namespace
 {
+	constexpr float powInt (float base, int exponent) noexcept
+	{
+		float result = 1.0f;
+		for (int i = 0; i < exponent; ++i)
+			result *= base;
+		return result;
+	}
+
 	constexpr float kGainSmoothCoeff = 0.9955f;
 	constexpr float kGainSmoothStep  = 1.0f - kGainSmoothCoeff;
+	constexpr float kStretchJitterPitchSmoothStep = 0.95f;
 
 	// Developer diagnostics are centralized here so temporary dumps can be
 	// switched off without touching DSP paths.
@@ -715,6 +724,7 @@ void STRETRAudioProcessor::resetJitterEngines() noexcept
 		jitterAnchorOut_[ch] = 0.0f;
 		jitterPitchOut_[ch] = 0.0f;
 		jitterRapidOut_[ch] = 0.0f;
+		stretchJitterPitchScaleSmoothed_[ch] = 1.0f;
 	}
 }
 
@@ -818,6 +828,30 @@ STRETRAudioProcessor::JitterRuntimeValues STRETRAudioProcessor::makeJitterRuntim
 		values.anchorOffsetSamples = (double) anchorMod * (double) anchorLimit;
 	}
 
+	return values;
+}
+
+STRETRAudioProcessor::JitterRuntimeValues STRETRAudioProcessor::makeStretchJitterRuntimeValues (int lane) const noexcept
+{
+	JitterRuntimeValues values;
+	const float amt = juce::jlimit (0.0f, 1.0f, jitterSmoothed_);
+	if (amt <= 1.0e-5f)
+		return values;
+
+	const int ch = juce::jlimit (0, 1, lane);
+	const float curveAmt = std::sqrt (amt);
+	const float depth = curveAmt * curveAmt;
+	const float finalRange = juce::jlimit (0.0f, 1.0f, (amt - 0.80f) / 0.20f);
+	const float finalShape = finalRange * finalRange * (3.0f - 2.0f * finalRange);
+	const float fastRange = juce::jlimit (0.0f, 1.0f, (curveAmt - 0.16f) / 0.84f);
+	const float fastShape = fastRange * fastRange * (3.0f - 2.0f * fastRange);
+	const float rapidWeight = 0.32f + 0.63f * fastShape;
+	const float modulator = juce::jlimit (-1.0f, 1.0f,
+		jitterPitchOut_[ch] * (1.0f - rapidWeight) + jitterRapidOut_[ch] * rapidWeight);
+
+	const float pitchDepthCents = (8.0f * curveAmt + 105.0f * depth) * (1.0f + 0.35f * finalShape);
+	const float pitchCents = juce::jlimit (-180.0f, 180.0f, modulator * pitchDepthCents);
+	values.pitchScale = std::exp2 (pitchCents / 1200.0f);
 	return values;
 }
 
@@ -3784,24 +3818,45 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 		const float controlSpeed = smoothedSpeed_;
 		const float basePitchRate = smoothedPitchRate_;
+		const bool stretchJitterActive = (engineVal == 0) && (jitterSmoothed_ > 1.0e-5f);
 		const bool fftJitterActive = (engineVal == 2 || engineVal == 3) && (jitterSmoothed_ > 1.0e-5f);
 		const float jitterAmountNorm = juce::jlimit (0.0f, 1.0f, 1.0f - controlSpeed);
-		const float jitterMotionAmountScale = (! fftJitterActive && jitterAmountNorm > 1.0e-5f)
+		const float jitterMotionAmountScale = (! stretchJitterActive && ! fftJitterActive && jitterAmountNorm > 1.0e-5f)
 			? std::sqrt (jitterAmountNorm)
 			: 0.0f;
 		const float jitterReferenceSamples = (engineVal == 1)
 			? (float) grainSamples
 			: (float) ((engineVal == 3) ? fft2GeometryWindowSamples : windowSamples);
 		const bool jitterAllowAnchor = (engineVal == 1);
-		const auto legacyJitterL = makeJitterRuntimeValues (0, jitterReferenceSamples, 1.0f, jitterMotionAmountScale, jitterAllowAnchor);
-		const auto legacyJitterR = makeJitterRuntimeValues ((styleVal == 0) ? 0 : 1,
-		                                                    jitterReferenceSamples, 1.0f, jitterMotionAmountScale, jitterAllowAnchor);
+		const auto grainJitterL = makeJitterRuntimeValues (0, jitterReferenceSamples, 1.0f, jitterMotionAmountScale, jitterAllowAnchor);
+		const auto grainJitterR = makeJitterRuntimeValues ((styleVal == 0) ? 0 : 1,
+		                                                   jitterReferenceSamples, 1.0f, jitterMotionAmountScale, jitterAllowAnchor);
+		auto stretchJitterL = stretchJitterActive ? makeStretchJitterRuntimeValues (0) : JitterRuntimeValues {};
+		auto stretchJitterR = stretchJitterActive
+			? makeStretchJitterRuntimeValues ((styleVal == 0) ? 0 : 1)
+			: JitterRuntimeValues {};
+		if (stretchJitterActive)
+		{
+			stretchJitterPitchScaleSmoothed_[0] += (stretchJitterL.pitchScale - stretchJitterPitchScaleSmoothed_[0])
+				* kStretchJitterPitchSmoothStep;
+			stretchJitterPitchScaleSmoothed_[1] += (stretchJitterR.pitchScale - stretchJitterPitchScaleSmoothed_[1])
+				* kStretchJitterPitchSmoothStep;
+			stretchJitterL.pitchScale = stretchJitterPitchScaleSmoothed_[0];
+			stretchJitterR.pitchScale = stretchJitterPitchScaleSmoothed_[1];
+		}
+		else
+		{
+			stretchJitterPitchScaleSmoothed_[0] += (1.0f - stretchJitterPitchScaleSmoothed_[0])
+				* kStretchJitterPitchSmoothStep;
+			stretchJitterPitchScaleSmoothed_[1] += (1.0f - stretchJitterPitchScaleSmoothed_[1])
+				* kStretchJitterPitchSmoothStep;
+		}
 		const auto fftJitterL = fftJitterActive ? makeFftJitterRuntimeValues (0) : JitterRuntimeValues {};
 		const auto fftJitterR = fftJitterActive
 			? makeFftJitterRuntimeValues ((styleVal == 0) ? 0 : 1)
 			: JitterRuntimeValues {};
-		const auto& jitterL = fftJitterActive ? fftJitterL : legacyJitterL;
-		const auto& jitterR = fftJitterActive ? fftJitterR : legacyJitterR;
+		const auto& jitterL = fftJitterActive ? fftJitterL : (stretchJitterActive ? stretchJitterL : grainJitterL);
+		const auto& jitterR = fftJitterActive ? fftJitterR : (stretchJitterActive ? stretchJitterR : grainJitterR);
 		const float speed = controlSpeed;
 		const float pitchRate = basePitchRate * jitterL.pitchScale;
 		if (engineVal == 3 && triggerOn)
@@ -4632,6 +4687,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			const bool stretchUnity = ! reverseOn
 				&& ! isDual
 				&& ! isWide
+				&& ! stretchJitterActive
 				&& std::abs (speed - 1.0f) <= 0.0005f
 				&& std::abs (pitchRate - 1.0f) <= 0.0005f;
 			if (stretchUnity)
@@ -4745,7 +4801,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					: (isWide ? basePitchRate * jitterR.pitchScale : pitchRate);
 				const double targetAnalysisHop = (double) synthesisHop * (double) speed * (double) pitchRate;
 				const bool nearUnity = std::abs (speed - 1.0f) <= 0.05f
-					&& std::abs (pitchRate - 1.0f) <= 0.05f;
+					&& std::abs (basePitchRate - 1.0f) <= 0.05f;
 				const int seekCap = juce::jlimit (24, 128, (int) std::round (currentSampleRate * 0.0025));
 				const int baseSeek = juce::jmin (juce::jmax (8, overlapLen / 3), inputBufLen_ / 4);
 				const int seekRadius = nearUnity
@@ -5832,17 +5888,27 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const float dumpJitterAmountNorm = juce::jlimit (0.0f, 1.0f, 1.0f - smoothedSpeed_);
 		const float dumpJitterAmountScale = (dumpJitterAmountNorm > 1.0e-5f) ? std::sqrt (dumpJitterAmountNorm) : 0.0f;
 		const float dumpJitterReferenceSamples = (float) ((engineVal == 3) ? fft2GeometryWindowSamples : windowSamples);
+		const bool dumpStretchJitterActive = (engineVal == 0) && (jitterSmoothed_ > 1.0e-5f);
 		const bool dumpFftJitterActive = (engineVal == 2 || engineVal == 3) && (jitterSmoothed_ > 1.0e-5f);
-		const float dumpMotionAmountScale = dumpFftJitterActive ? 0.0f : dumpJitterAmountScale;
+		const float dumpMotionAmountScale = (dumpStretchJitterActive || dumpFftJitterActive) ? 0.0f : dumpJitterAmountScale;
 		const auto dumpJitterL = makeJitterRuntimeValues (0, dumpJitterReferenceSamples, 1.0f, dumpMotionAmountScale, false);
 		const auto dumpJitterR = makeJitterRuntimeValues ((styleVal == 0) ? 0 : 1,
 		                                                  dumpJitterReferenceSamples, 1.0f, dumpMotionAmountScale, false);
+		auto dumpStretchJitterL = dumpStretchJitterActive ? makeStretchJitterRuntimeValues (0) : JitterRuntimeValues {};
+		auto dumpStretchJitterR = dumpStretchJitterActive
+			? makeStretchJitterRuntimeValues ((styleVal == 0) ? 0 : 1)
+			: JitterRuntimeValues {};
+		if (dumpStretchJitterActive)
+		{
+			dumpStretchJitterL.pitchScale = stretchJitterPitchScaleSmoothed_[0];
+			dumpStretchJitterR.pitchScale = stretchJitterPitchScaleSmoothed_[1];
+		}
 		const auto dumpFftJitterL = dumpFftJitterActive ? makeFftJitterRuntimeValues (0) : JitterRuntimeValues {};
 		const auto dumpFftJitterR = dumpFftJitterActive
 			? makeFftJitterRuntimeValues ((styleVal == 0) ? 0 : 1)
 			: JitterRuntimeValues {};
-		const auto& dumpEffectiveJitterL = dumpFftJitterActive ? dumpFftJitterL : dumpJitterL;
-		const auto& dumpEffectiveJitterR = dumpFftJitterActive ? dumpFftJitterR : dumpJitterR;
+		const auto& dumpEffectiveJitterL = dumpFftJitterActive ? dumpFftJitterL : (dumpStretchJitterActive ? dumpStretchJitterL : dumpJitterL);
+		const auto& dumpEffectiveJitterR = dumpFftJitterActive ? dumpFftJitterR : (dumpStretchJitterActive ? dumpStretchJitterR : dumpJitterR);
 		dbg.jitterTarget = jitterTarget;
 		dbg.jitterSmoothed = jitterSmoothed_;
 		dbg.jitterAmountScale = dumpMotionAmountScale;

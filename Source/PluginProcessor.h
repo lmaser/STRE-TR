@@ -1716,6 +1716,7 @@ private:
 	float jitterRapidOut_[2] = {};
 	float jitterSmoothed_ = 0.0f;       // normalized 0..1
 	float jitterSmoothStep_ = 0.001f;
+	float stretchJitterPitchScaleSmoothed_[2] = { 1.0f, 1.0f };
 	void resetJitterEngines() noexcept;
 	float advanceJitterEngine (JitterEngine& engine, float fastRateHz, float fastBlend,
 	                           float maxFastRateHz = 32.0f, float maxBlend = 0.35f) noexcept;
@@ -1723,6 +1724,7 @@ private:
 	JitterRuntimeValues makeJitterRuntimeValues (int lane, float referenceSamples,
 	                                             float pitchAmountScale, float motionAmountScale,
 	                                             bool allowAnchor) const noexcept;
+	JitterRuntimeValues makeStretchJitterRuntimeValues (int lane) const noexcept;
 	JitterRuntimeValues makeFftJitterRuntimeValues (int lane) const noexcept;
 
 	struct WetFilterChannelState
