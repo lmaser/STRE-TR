@@ -105,6 +105,18 @@ namespace
 		return (dB <= STRETRAudioProcessor::kGainFloorDb) ? 0.0f : std::exp2 (dB * 0.16609640474f);
 	}
 
+	inline float amountToSpeedForEngine (int engineVal, float amountPercent) noexcept
+	{
+		const float speed = juce::jmax (0.0f, 1.0f - amountPercent * 0.01f);
+		if (engineVal == 2 || engineVal == 3)
+		{
+			// FFT engines use <= 0.0001 as a hard hold/freeze route. Keep the
+			// endpoint perceptually at full amount without entering that branch.
+			return juce::jmax (speed, 0.0002f);
+		}
+		return speed;
+	}
+
 	inline juce::NormalisableRange<float> makeGainFaderRange() noexcept
 	{
 		return juce::NormalisableRange<float> (STRETRAudioProcessor::kGainFloorDb,
@@ -480,7 +492,7 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	const int initialEngineVal = loadIntParamOrDefault (engineParam, 0);
 	const bool initialTriggerOn = loadBoolParamOrDefault (triggerParam, false);
 	fft2GeometryLog2Window_ = std::log2 (juce::jlimit ((float) kWindowMin, (float) kWindowMax, smoothedWindow_));
-	smoothedSpeed_     = juce::jmax (0.0f, 1.0f - initialAmountVal / 100.0f);
+	smoothedSpeed_     = amountToSpeedForEngine (initialEngineVal, initialAmountVal);
 	smoothedPitchRate_ = std::exp2 ((loadAtomicOrDefault (modParam, kModDefault) - 0.5f) * 4.0f);
 	jitterSmoothed_ = juce::jlimit (0.0f, 1.0f,
 	                                loadAtomicOrDefault (jitterParam, kJitterDefault) * 0.01f);
@@ -3047,9 +3059,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	prevFftDuckEngineVal_ = engineVal;
 	prevFftDuckTriggerOn_ = triggerOn;
 
-    // Amount -> speed: 0%=1.0 (no stretch), 100%=0.0 (freeze)
-    // Unified mapping across all four engines - true freeze or full hold at 100%.
-	const float targetSpeed = juce::jmax (0.0f, 1.0f - amountVal / 100.0f);
+    // Amount -> speed: 0%=1.0 (no stretch), 100%=minimum speed.
+    // FFT engines keep a tiny floor so the endpoint does not enter hard hold/freeze.
+	const float targetSpeed = amountToSpeedForEngine (engineVal, amountVal);
 
     // Mod -> pitch rate: center (0.5)=1.0x, 0=0.0625x, 1=16x
 	const float targetPitchRate = std::exp2 ((modVal - 0.5f) * 4.0f);
