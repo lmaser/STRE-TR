@@ -3819,6 +3819,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const float controlSpeed = smoothedSpeed_;
 		const float basePitchRate = smoothedPitchRate_;
 		const bool stretchJitterActive = (engineVal == 0) && (jitterSmoothed_ > 1.0e-5f);
+		const bool grainJitterActive = (engineVal == 1) && (jitterSmoothed_ > 1.0e-5f);
 		const bool fftJitterActive = (engineVal == 2 || engineVal == 3) && (jitterSmoothed_ > 1.0e-5f);
 		const float jitterAmountNorm = juce::jlimit (0.0f, 1.0f, 1.0f - controlSpeed);
 		const float jitterMotionAmountScale = (! stretchJitterActive && ! fftJitterActive && jitterAmountNorm > 1.0e-5f)
@@ -5002,6 +5003,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			const bool grainUnity = ! reverseOn
 				&& ! isDual
 				&& ! isWide
+				&& ! grainJitterActive
 				&& std::abs (speed - 1.0f) <= 0.0005f
 				&& std::abs (pitchRate - 1.0f) <= 0.0005f;
 
