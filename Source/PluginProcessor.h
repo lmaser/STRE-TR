@@ -1549,6 +1549,7 @@ private:
 	int   fftAmountTraceRemaining_ = 0;
 	int   fft1ReentryTraceRemaining_ = 0;
 	float fft2HoldCoeffSmoothed_ = 0.0f;
+	float fft2AudioHoldCoeffSmoothed_ = 0.0f;
 	bool  fft2AmountZeroHoldBypassActive_ = false;
 	int   prevFftDuckWindowVal_ = 0;
 	float prevFftDuckAmountVal_ = 0.0f;
@@ -1719,8 +1720,10 @@ private:
 	float advanceJitterEngine (JitterEngine& engine, float fastRateHz, float fastBlend,
 	                           float maxFastRateHz = 32.0f, float maxBlend = 0.35f) noexcept;
 	void advanceJitterEngines (float amount) noexcept;
-	JitterRuntimeValues makeJitterRuntimeValues (int lane, float referenceSamples, float amountScale,
+	JitterRuntimeValues makeJitterRuntimeValues (int lane, float referenceSamples,
+	                                             float pitchAmountScale, float motionAmountScale,
 	                                             bool allowAnchor) const noexcept;
+	JitterRuntimeValues makeFftJitterRuntimeValues (int lane) const noexcept;
 
 	struct WetFilterChannelState
 	{
