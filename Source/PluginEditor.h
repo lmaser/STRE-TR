@@ -114,11 +114,13 @@ private:
                 return juce::String (rounded1, 1);
             }
 
-            // Mod (0-1 → x0.25 to x4.0)
-            if (owner != nullptr && this == &owner->modSlider)
+            // Pitch (0-1 -> -24st..+24st)
+            if (owner != nullptr && this == &owner->pitchSlider)
             {
-                const double m = std::exp2 ((juce::jlimit (0.0, 1.0, v) - 0.5) * 4.0);
-                return "x" + juce::String (m, 3);
+                double st = (juce::jlimit (0.0, 1.0, v) - 0.5) * 48.0;
+                if (std::abs (st) < 0.005)
+                    st = 0.0;
+                return (st >= 0.0 ? "+" : "") + juce::String (st, 2);
             }
 
             // Pan (0-1 → L/C/R)
@@ -226,7 +228,7 @@ private:
     };
 
     BarSlider amountSlider;
-    BarSlider modSlider;
+    BarSlider pitchSlider;
     BarSlider jitterSlider;
     BarSlider grainSlider;
     BarSlider engineSlider;
@@ -263,7 +265,7 @@ private:
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
 
     std::unique_ptr<SliderAttachment> amountAttachment;
-    std::unique_ptr<SliderAttachment> modAttachment;
+    std::unique_ptr<SliderAttachment> pitchAttachment;
     std::unique_ptr<SliderAttachment> jitterAttachment;
     std::unique_ptr<SliderAttachment> grainAttachment;
     std::unique_ptr<SliderAttachment> engineAttachment;
@@ -521,8 +523,8 @@ private:
     juce::String getAmountText() const;
     juce::String getAmountTextShort() const;
 
-    juce::String getModText() const;
-    juce::String getModTextShort() const;
+    juce::String getPitchText() const;
+    juce::String getPitchTextShort() const;
 
     juce::String getJitterText() const;
     juce::String getJitterTextShort() const;
@@ -595,8 +597,8 @@ private:
 
     juce::String cachedAmountTextFull;
     juce::String cachedAmountTextShort;
-    juce::String cachedModTextFull;
-    juce::String cachedModTextShort;
+    juce::String cachedPitchTextFull;
+    juce::String cachedPitchTextShort;
     juce::String cachedJitterTextFull;
     juce::String cachedJitterTextShort;
     juce::String cachedGrainTextFull;
@@ -620,7 +622,7 @@ private:
     juce::String cachedLimThresholdIntOnly;
 
     juce::String cachedAmountIntOnly;
-    juce::String cachedModIntOnly;
+    juce::String cachedPitchIntOnly;
     juce::String cachedJitterIntOnly;
     juce::String cachedGrainIntOnly;
     juce::String cachedEngineIntOnly;

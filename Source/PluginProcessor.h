@@ -33,7 +33,7 @@ public:
 
     // Parameter IDs
 	static constexpr const char* kParamAmount    = "amount";
-	static constexpr const char* kParamMod       = "mod";
+	static constexpr const char* kParamPitch     = "pitch";
 	static constexpr const char* kParamJitter    = "jitter";
 	static constexpr const char* kParamGrain     = "grain";
     static constexpr const char* kParamEngine    = "engine";     // 0=STRETCH 1=GRAIN 2=FFT1 3=FFT2
@@ -106,9 +106,9 @@ public:
 	static constexpr float kAmountMax     = 100.0f;
 	static constexpr float kAmountDefault = 0.0f;
 
-	static constexpr float kModMin     = 0.0f;
-	static constexpr float kModMax     = 1.0f;
-	static constexpr float kModDefault = 0.5f;
+	static constexpr float kPitchMin     = 0.0f;
+	static constexpr float kPitchMax     = 1.0f;
+	static constexpr float kPitchDefault = 0.5f;
 
 	static constexpr float kJitterMin     = 0.0f;
 	static constexpr float kJitterMax     = 100.0f;
@@ -394,7 +394,7 @@ private:
 		int    blockIndex      = 0;
 		int    sampleIndex     = 0;
 		float  amount          = 0.0f;
-		float  mod             = 0.0f;
+		float  pitch             = 0.0f;
 		float  speed           = 0.0f;
 		float  pitchRate       = 0.0f;
 		int    windowSamples   = 0;
@@ -447,7 +447,7 @@ private:
 			if (auto stream = f.createOutputStream())
 			{
 				stream->writeText (
-					"block_index,sample_index,event,amount,mod,speed,pitch_rate,window_samples,seg_len,overlap_len,"
+					"block_index,sample_index,event,amount,pitch,speed,pitch_rate,window_samples,seg_len,overlap_len,"
 					"analysis_hop,seg_input_start,nominal_pos,prev_best_offset,best_offset,style,reverse_on,trigger_on,"
 					"has_prev_tail,near_unity,best_score,best_norm_corr,center_penalty,drift_penalty,start_delta_l,"
 					"start_delta_r,overlap_rmse_l,overlap_rmse_r\n",
@@ -467,7 +467,7 @@ private:
 					     << e.sampleIndex << ","
 					     << eventName << ","
 					     << juce::String (e.amount, 4) << ","
-					     << juce::String (e.mod, 4) << ","
+					     << juce::String (e.pitch, 4) << ","
 					     << juce::String (e.speed, 6) << ","
 					     << juce::String (e.pitchRate, 6) << ","
 					     << e.windowSamples << ","
@@ -535,7 +535,7 @@ private:
 		int    sampleIndex    = 0;
 		int    eventType      = 0; // 0=spawn, 1=trigger_reset, 2=engine_reset, 3=transport_reset
 		float  amount         = 0.0f;
-		float  mod            = 0.0f;
+		float  pitch            = 0.0f;
 		float  speed          = 0.0f;
 		float  pitchRate      = 0.0f;
 		int    windowSamples  = 0;
@@ -580,7 +580,7 @@ private:
 			if (auto stream = f.createOutputStream())
 			{
 				stream->writeText (
-					"block_index,sample_index,event,amount,mod,speed,pitch_rate,window_samples,grain_samples,"
+					"block_index,sample_index,event,amount,pitch,speed,pitch_rate,window_samples,grain_samples,"
 					"density,spawn_interval,style,reverse_on,trigger_on,active_grains,capture_pos,"
 					"read_pos_before,spawn_pos,read_pos_after,look_behind,future_margin\n",
 					false, false, nullptr);
@@ -600,7 +600,7 @@ private:
 					     << e.sampleIndex << ","
 					     << eventName << ","
 					     << juce::String (e.amount, 4) << ","
-					     << juce::String (e.mod, 4) << ","
+					     << juce::String (e.pitch, 4) << ","
 					     << juce::String (e.speed, 6) << ","
 					     << juce::String (e.pitchRate, 6) << ","
 					     << e.windowSamples << ","
@@ -646,7 +646,7 @@ private:
 		int   sampleIndex   = 0;
 		int   engine        = 0;
 		float amount        = 0.0f;
-		float mod           = 0.0f;
+		float pitch           = 0.0f;
 		float speed         = 0.0f;
 		float pitchRate     = 1.0f;
 		float targetAnalysisHop = 0.0f;
@@ -711,7 +711,7 @@ private:
 		int    eventType          = 0; // 0=cycle, 1=trigger_reset, 2=engine_reset, 3=size_reset, 4=unity_exit_reset, 5=window_change, 6=amount_change, 7=window_trace, 8=amount_trace, 9=fft1_reentry_trace
 		int    engine             = 0;
 		float  amount             = 0.0f;
-		float  mod                = 0.0f;
+		float  pitch                = 0.0f;
 		float  speed              = 0.0f;
 		float  pitchRate          = 1.0f;
 		int    windowSamples      = 0;
@@ -826,7 +826,7 @@ private:
 			if (auto stream = f.createOutputStream())
 			{
 				stream->writeText (
-					"block_index,sample_index,event,engine,amount,mod,speed,pitch_rate,window_samples,fft_size,"
+					"block_index,sample_index,event,engine,amount,pitch,speed,pitch_rate,window_samples,fft_size,"
 					"target_analysis_hop,filtered_analysis_hop,analysis_hop_quant_error,last_analysis_hop,freeze_entry_warmup_cycles,fft_startup_warmup_remaining,fft_explicit_freeze_active,fft_explicit_freeze_capture_pending,fft_target_freeze,analysis_hop,synthesis_hop,style,reverse_on,trigger_on,wide_mode,passthrough,peak_count_l,"
 					"peak_count_r,locked_bins_l,locked_bins_r,analysis_read_before,analysis_read_after,frame_rms_l,"
 					"frame_rms_r,output_rms_l,output_rms_r,output_start_delta_l,output_start_delta_r,"
@@ -868,7 +868,7 @@ private:
 					     << eventName << ","
 					     << e.engine << ","
 					     << juce::String (e.amount, 4) << ","
-					     << juce::String (e.mod, 4) << ","
+					     << juce::String (e.pitch, 4) << ","
 					     << juce::String (e.speed, 6) << ","
 					     << juce::String (e.pitchRate, 6) << ","
 					     << e.windowSamples << ","
@@ -1004,7 +1004,7 @@ private:
 		int   wideMode = 0;
 		int   dualMode = 0;
 		float amount = 0.0f;
-		float mod = 0.0f;
+		float pitch = 0.0f;
 		float speed = 0.0f;
 		float smoothedSpeed = 0.0f;
 		float pitchRate = 1.0f;
@@ -1172,7 +1172,7 @@ private:
 					"block_index,engine,trigger_on,align_on,pdc_on,trigger_edge,fft_window_motion_active,fft_amount_motion_active,"
 					"fft_size_changed,fft_output_fade_pos,fft_output_fade_total,fft_duck_hold_start,"
 					"fft_duck_hold_end,fft_duck_bridge_remaining,fft_duck_bridge_total,fft_duck_gain_start,fft_duck_gain_end,"
-					"amount,mod,speed,pitch_rate,jitter_target,jitter_smoothed,jitter_amount_scale,"
+					"amount,pitch,speed,pitch_rate,jitter_target,jitter_smoothed,jitter_amount_scale,"
 					"effective_pitch_rate_l,effective_pitch_rate_r,window_samples,fft_size,"
 					"raw_window_param,stored_window,effective_window,target_window,smoothed_window,"
 					"captured_window,pending_window,fft_window_capture_remaining,fft_window_apply_delay_remaining,"
@@ -1251,7 +1251,7 @@ private:
 					     << e.fftDuckGainStart << ","
 					     << e.fftDuckGainEnd << ","
 					     << e.amount << ","
-					     << e.mod << ","
+					     << e.pitch << ","
 					     << e.speed << ","
 					     << e.pitchRate << ","
 					     << e.jitterTarget << ","
@@ -1420,7 +1420,7 @@ private:
 	{
 		double readPos   = 0.0;   // start position in input buffer
 		double playPos   = 0.0;   // current position within grain (fractional)
-		double rate      = 1.0;   // playback rate (for pitch via mod)
+		double rate      = 1.0;   // playback rate (for pitch playback)
 		int    length    = 0;     // grain length in samples
 		int    elapsed   = 0;     // samples played so far
 		int    dualCh    = -1;    // -1=both, 0=L-only, 1=R-only (DUAL mode)
@@ -1680,6 +1680,7 @@ private:
 	float fft2GeometryLog2Window_ = 0.0f;               // FFT2-only geometry smoother in log2 domain
 	float smoothedSpeed_     = 1.0f;   // smoothed stretch speed (0=freeze, 1=normal)
 	float smoothedPitchRate_ = 1.0f;   // smoothed pitch ratio
+	float smoothedGrainLogMs_ = 4.60517019f; // ln(100 ms), smoothed before sample quantization
 	float windowSmoothStep_  = 0.0045f;
 	std::atomic<int> windowFamilyValues_[4] {};
 	std::atomic<int> activeWindowFamily_ { (int) WindowFamily::stretch };
@@ -1859,7 +1860,7 @@ private:
 	std::atomic<juce::uint32> uiCustomPalette[2] {};
 
 	std::atomic<float>* amountParam  = nullptr;
-	std::atomic<float>* modParam     = nullptr;
+	std::atomic<float>* pitchParam     = nullptr;
 	std::atomic<float>* jitterParam  = nullptr;
 	std::atomic<float>* grainParam   = nullptr;
 	std::atomic<float>* engineParam  = nullptr;

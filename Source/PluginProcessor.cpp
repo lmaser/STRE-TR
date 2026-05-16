@@ -14,6 +14,7 @@ namespace
 	constexpr float kGainSmoothCoeff = 0.9955f;
 	constexpr float kGainSmoothStep  = 1.0f - kGainSmoothCoeff;
 	constexpr float kStretchJitterPitchSmoothStep = 0.95f;
+	constexpr float kGrainSizeSmoothSeconds = 0.045f;
 
 	// Developer diagnostics are centralized here so temporary dumps can be
 	// switched off without touching DSP paths.
@@ -361,7 +362,7 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 	, apvts (*this, nullptr, "Parameters", createParameterLayout())
 {
 	amountParam  = apvts.getRawParameterValue (kParamAmount);
-	modParam     = apvts.getRawParameterValue (kParamMod);
+	pitchParam     = apvts.getRawParameterValue (kParamPitch);
 	jitterParam  = apvts.getRawParameterValue (kParamJitter);
 	grainParam   = apvts.getRawParameterValue (kParamGrain);
 	engineParam  = apvts.getRawParameterValue (kParamEngine);
@@ -502,7 +503,9 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	const bool initialTriggerOn = loadBoolParamOrDefault (triggerParam, false);
 	fft2GeometryLog2Window_ = std::log2 (juce::jlimit ((float) kWindowMin, (float) kWindowMax, smoothedWindow_));
 	smoothedSpeed_     = amountToSpeedForEngine (initialEngineVal, initialAmountVal);
-	smoothedPitchRate_ = std::exp2 ((loadAtomicOrDefault (modParam, kModDefault) - 0.5f) * 4.0f);
+	smoothedPitchRate_ = std::exp2 ((loadAtomicOrDefault (pitchParam, kPitchDefault) - 0.5f) * 4.0f);
+	smoothedGrainLogMs_ = std::log (juce::jlimit (kGrainMin, kGrainMax,
+		loadAtomicOrDefault (grainParam, kGrainDefault)));
 	jitterSmoothed_ = juce::jlimit (0.0f, 1.0f,
 	                                loadAtomicOrDefault (jitterParam, kJitterDefault) * 0.01f);
 	{
@@ -815,17 +818,17 @@ STRETRAudioProcessor::JitterRuntimeValues STRETRAudioProcessor::makeJitterRuntim
 		const float motionFinalRange = juce::jlimit (0.0f, 1.0f, (motionAmt - 0.80f) / 0.20f);
 		const float motionFinalShape = motionFinalRange * motionFinalRange * (3.0f - 2.0f * motionFinalRange);
 		const float lengthDepth = (0.004f * motionAmt + 0.018f * motionDepth) * (1.0f + 0.55f * motionFinalShape);
-		const float lengthMod = juce::jlimit (-1.0f, 1.0f,
+		const float lengthModulator = juce::jlimit (-1.0f, 1.0f,
 			jitterWindowOut_[ch] + rapid * motionFinalShape * 0.45f);
-		values.lengthScale = juce::jlimit (0.88f, 1.12f, 1.0f + lengthMod * lengthDepth);
+		values.lengthScale = juce::jlimit (0.88f, 1.12f, 1.0f + lengthModulator * lengthDepth);
 
 		const float ref = juce::jmax (1.0f, referenceSamples);
 		const float anchorDepth = (0.003f * motionAmt + 0.012f * motionDepth) * (1.0f + 0.60f * motionFinalShape);
 		const float anchorLimit = juce::jmin (ref * anchorDepth,
 		                                      (float) currentSampleRate * (0.010f + 0.010f * motionFinalShape));
-		const float anchorMod = juce::jlimit (-1.0f, 1.0f,
+		const float anchorModulator = juce::jlimit (-1.0f, 1.0f,
 			jitterAnchorOut_[ch] + jitterWindowOut_[ch] * 0.35f + rapid * motionFinalShape * 0.75f);
-		values.anchorOffsetSamples = (double) anchorMod * (double) anchorLimit;
+		values.anchorOffsetSamples = (double) anchorModulator * (double) anchorLimit;
 	}
 
 	return values;
@@ -873,7 +876,7 @@ STRETRAudioProcessor::JitterRuntimeValues STRETRAudioProcessor::makeFftJitterRun
 	const float rapidWeight = 0.20f + 0.75f * fastShape;
 	const float modulator = juce::jlimit (-1.0f, 1.0f,
 		jitterPitchOut_[ch] * (1.0f - rapidWeight) + rapid * rapidWeight);
-	const float modDepthNorm = (0.012f * amt + 0.088f * depth) * (1.0f + 0.30f * finalShape);
+	const float modDepthNorm = (0.006f * amt + 0.044f * depth) * (1.0f + 0.30f * finalShape);
 	const float modOffsetNorm = juce::jlimit (-0.14f, 0.14f,
 		modulator * modDepthNorm);
 	values.pitchScale = std::exp2 (modOffsetNorm * 4.0f);
@@ -2423,7 +2426,7 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 		dbg.eventType = 0;
 		dbg.engine = fftDebugContext_.engine;
 		dbg.amount = fftDebugContext_.amount;
-		dbg.mod = fftDebugContext_.mod;
+		dbg.pitch = fftDebugContext_.pitch;
 		dbg.speed = fftDebugContext_.speed;
 		dbg.pitchRate = pitchRate;
 		dbg.windowSamples = fftDebugContext_.windowSamples;
@@ -2838,7 +2841,7 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 		dbg.eventType = 0;
 		dbg.engine = fftDebugContext_.engine;
 		dbg.amount = fftDebugContext_.amount;
-		dbg.mod = fftDebugContext_.mod;
+		dbg.pitch = fftDebugContext_.pitch;
 		dbg.speed = fftDebugContext_.speed;
 		dbg.pitchRate = pitchRate;
 		dbg.windowSamples = fftDebugContext_.windowSamples;
@@ -3005,14 +3008,20 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // Engine params
 	const int   engineVal  = loadIntParamOrDefault (engineParam, 0);
 	const float amountVal  = loadAtomicOrDefault (amountParam, kAmountDefault);   // 0..100
-	const float modVal     = loadAtomicOrDefault (modParam, kModDefault);         // 0..1
+	const float pitchVal     = loadAtomicOrDefault (pitchParam, kPitchDefault);         // 0..1
 	const float jitterTarget = juce::jlimit (0.0f, 1.0f,
 	                                         loadAtomicOrDefault (jitterParam, kJitterDefault) * 0.01f);
 	const int   rawWindowParamVal = juce::jlimit (kWindowMin, kWindowMax,
 	                                              loadIntParamOrDefault (windowParam, (int) kWindowDefault));
 	const int   maxFftWindowVal = getCurrentMaxFftWindow();
 	const int   styleVal   = loadIntParamOrDefault (styleParam, 1);
-	const float grainMs    = loadAtomicOrDefault (grainParam, kGrainDefault);     // 1..500 ms
+	const float grainMsTarget = juce::jlimit (kGrainMin, kGrainMax,
+		loadAtomicOrDefault (grainParam, kGrainDefault)); // 1..500 ms
+	const float grainTargetLogMs = std::log (grainMsTarget);
+	const float grainSizeBlockStep = 1.0f - std::exp (- (float) numSamples
+		/ (juce::jmax (1.0f, (float) currentSampleRate) * kGrainSizeSmoothSeconds));
+	smoothedGrainLogMs_ += (grainTargetLogMs - smoothedGrainLogMs_) * grainSizeBlockStep;
+	const float grainMs = std::exp (smoothedGrainLogMs_);
 	const bool  reverseOn  = loadBoolParamOrDefault (reverseParam, false);
 	const bool  triggerOn  = loadBoolParamOrDefault (triggerParam, false);
 	const bool  alignOn    = loadBoolParamOrDefault (alignParam, false);
@@ -3135,8 +3144,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // FFT engines keep a tiny floor so the endpoint does not enter hard hold/freeze.
 	const float targetSpeed = amountToSpeedForEngine (engineVal, amountVal);
 
-    // Mod -> pitch rate: center (0.5)=1.0x, 0=0.0625x, 1=16x
-	const float targetPitchRate = std::exp2 ((modVal - 0.5f) * 4.0f);
+    // Pitch -> playback rate: center (0.5)=1.0x, 0=-24st, 1=+24st.
+	const float targetPitchRate = std::exp2 ((pitchVal - 0.5f) * 4.0f);
 
 	// Window -> stored per engine; FFT engines receive canonical powers of two.
 	smoothedWindow_ = smoothedWindowByFamily_[(size_t) windowFamily];
@@ -3216,7 +3225,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		dbg.eventType = eventType;
 		dbg.engine = engineVal;
 		dbg.amount = amountVal;
-		dbg.mod = modVal;
+		dbg.pitch = pitchVal;
 		dbg.speed = targetSpeed;
 		dbg.pitchRate = targetPitchRate;
 		dbg.windowSamples = (engineVal == 3) ? fft2GeometryWindowSamples : windowSamples;
@@ -3256,7 +3265,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		dbg.eventType = eventType;
 		dbg.engine = engineVal;
 		dbg.amount = amountVal;
-		dbg.mod = modVal;
+		dbg.pitch = pitchVal;
 		dbg.speed = targetSpeed;
 		dbg.pitchRate = targetPitchRate;
 		dbg.windowSamples = (engineVal == 3) ? fft2GeometryWindowSamples : windowSamples;
@@ -3403,7 +3412,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		dbg.sampleIndex = 0;
 		dbg.eventType = 1;
 		dbg.amount = amountVal;
-		dbg.mod = modVal;
+		dbg.pitch = pitchVal;
 		dbg.speed = targetSpeed;
 		dbg.pitchRate = targetPitchRate;
 		dbg.windowSamples = windowSamples;
@@ -3446,7 +3455,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		dbg.sampleIndex = 0;
 		dbg.eventType = 2;
 		dbg.amount = amountVal;
-		dbg.mod = modVal;
+		dbg.pitch = pitchVal;
 		dbg.speed = targetSpeed;
 		dbg.pitchRate = targetPitchRate;
 		dbg.windowSamples = windowSamples;
@@ -3470,7 +3479,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		dbg.sampleIndex = 0;
 		dbg.eventType = 3;
 		dbg.amount = amountVal;
-		dbg.mod = modVal;
+		dbg.pitch = pitchVal;
 		dbg.speed = targetSpeed;
 		dbg.pitchRate = targetPitchRate;
 		dbg.windowSamples = windowSamples;
@@ -3528,7 +3537,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			dbg.sampleIndex = 0;
 			dbg.eventType = 2;
 			dbg.amount = amountVal;
-			dbg.mod = modVal;
+			dbg.pitch = pitchVal;
 			dbg.speed = targetSpeed;
 			dbg.pitchRate = targetPitchRate;
 			dbg.windowSamples = windowSamples;
@@ -3606,53 +3615,20 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 	// PDC and Align
 	{
-		// PDC should only report the engine's real wet latency to the host.
-		// ALIGN can then use that same latency internally for the dry path.
+		// PDC/ALIGN are FFT-only. GRAIN/STRETCH look-behind is part of the
+		// effect behavior and must not move host timing or the dry path.
 		const int fftLatencySize = (engineVal == 2 || engineVal == 3) ? maxFftWindowVal : 0;
 		const int fftSynthHopForAlign = (fftLatencySize > 0) ? recommendedFftSynthHop (fftLatencySize) : 0;
 		const int fftWetLatency = (fftLatencySize > 0) ? (fftLatencySize + fftSynthHopForAlign) : 0;
-
-		const bool grainWideMode = (styleVal == 2 && numChannels >= 2);
-		const int grainWetLatency = (engineVal == 1)
-			? juce::jlimit (0, kDryDelayBufLen - 1,
-			                (int) std::lround (computeGrainLookBehind (grainSamples, targetPitchRate,
-			                                                                 reverseOn, grainWideMode)))
-			: 0;
-
-		int stretchWetLatency = 0;
-		if (engineVal == 0 && inputBufLen_ > 0)
-		{
-			const bool stretchWideMode = (styleVal == 2 && numChannels >= 2);
-			const int stretchWindowSamples = windowSamples;
-			const int segLen = juce::jmax (64, stretchWindowSamples);
-			const int overlapLen = wsolaRecommendedOverlapLen (segLen, currentSampleRate);
-			const bool nearUnity = std::abs (targetSpeed - 1.0f) <= 0.05f
-				&& std::abs (targetPitchRate - 1.0f) <= 0.05f;
-			const int seekCap = juce::jlimit (24, 128, (int) std::round (currentSampleRate * 0.0025));
-			const int baseSeek = juce::jmin (juce::jmax (8, overlapLen / 3), inputBufLen_ / 4);
-			const int seekRadius = nearUnity
-				? juce::jmin (baseSeek, juce::jmax (8, seekCap / 2))
-				: juce::jmin (baseSeek, seekCap);
-			const double wideExtra = stretchWideMode ? (double) (segLen / 2) : 0.0;
-			stretchWetLatency = juce::jlimit (0, kDryDelayBufLen - 1,
-				(int) std::lround ((double) seekRadius
-					+ wideExtra
-					+ ((double) (segLen - 1) * std::abs ((double) targetPitchRate))
-					+ 8.0));
-		}
-
-		const int engineWetLatency = (fftWetLatency > 0) ? fftWetLatency
-			: (grainWetLatency > 0) ? grainWetLatency
-			: stretchWetLatency;
-		const int activeEngineWetLatency = triggerOn ? engineWetLatency : 0;
-		reportedLatency = (pdcOn && activeEngineWetLatency > 0) ? activeEngineWetLatency : 0;
+		const int activeFftLatency = fftWetLatency;
+		reportedLatency = (pdcOn && activeFftLatency > 0) ? activeFftLatency : 0;
 		if (reportedLatency != lastReportedLatency_)
 		{
 			setLatencySamples (reportedLatency);
 			lastReportedLatency_ = reportedLatency;
 		}
-		dryDelayLen_ = (alignOn && activeEngineWetLatency > 0)
-			? juce::jmin (activeEngineWetLatency, kDryDelayBufLen - 1)
+		dryDelayLen_ = (alignOn && activeFftLatency > 0)
+			? juce::jmin (activeFftLatency, kDryDelayBufLen - 1)
 			: 0;
 		fftOutputPadLen = 0;
 	}
@@ -4156,7 +4132,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					fftDebugContext_.sampleIndex = i;
 					fftDebugContext_.engine = engineVal;
 					fftDebugContext_.amount = amountVal;
-					fftDebugContext_.mod = modVal;
+					fftDebugContext_.pitch = pitchVal;
 					fftDebugContext_.speed = cycleSpeed;
 					fftDebugContext_.pitchRate = cyclePitchRate;
 					fftDebugContext_.targetAnalysisHop = 0.0f;
@@ -4726,7 +4702,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					dbg.sampleIndex = i;
 					dbg.eventType = 1;
 					dbg.amount = amountVal;
-					dbg.mod = modVal;
+					dbg.pitch = pitchVal;
 					dbg.speed = speed;
 					dbg.pitchRate = pitchRate;
 					dbg.windowSamples = windowSamples;
@@ -4924,7 +4900,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					dbg.sampleIndex = i;
 					dbg.eventType = 0;
 					dbg.amount = amountVal;
-					dbg.mod = modVal;
+					dbg.pitch = pitchVal;
 					dbg.speed = speed;
 					dbg.pitchRate = pitchRate;
 					dbg.windowSamples = stretchWindowSamples;
@@ -5011,7 +4987,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			{
 				if (grainFreezeHold)
 				{
-					// In true freeze, keep the captured anchor stable when MOD changes so
+					// In true freeze, keep the captured anchor stable when PITCH changes so
 					// pitch returning to x1 does not pull the frozen grain toward newer audio.
 					const double minPos = grainCapturePos - (double) (inputBufLen_ - 4);
 					grainReadPos_ = juce::jmax (minPos, grainReadPos_);
@@ -5143,7 +5119,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				dbg.sampleIndex = i;
 				dbg.eventType = 0;
 				dbg.amount = amountVal;
-				dbg.mod = modVal;
+				dbg.pitch = pitchVal;
 				dbg.speed = speed;
 				dbg.pitchRate = pitchRate;
 				dbg.windowSamples = grainWindowSamples;
@@ -5631,7 +5607,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			dbg.eventType = eventType;
 			dbg.engine = engineVal;
 			dbg.amount = amountVal;
-			dbg.mod = modVal;
+			dbg.pitch = pitchVal;
 			dbg.speed = smoothedSpeed_;
 			dbg.pitchRate = smoothedPitchRate_;
 			dbg.windowSamples = (engineVal == 3) ? fft2GeometryWindowSamples : windowSamples;
@@ -5883,7 +5859,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		dbg.wideMode = (styleVal == 2 && numChannels >= 2) ? 1 : 0;
 		dbg.dualMode = (styleVal == 3 && numChannels >= 2) ? 1 : 0;
 		dbg.amount = amountVal;
-		dbg.mod = modVal;
+		dbg.pitch = pitchVal;
 		dbg.speed = targetSpeed;
 		dbg.smoothedSpeed = smoothedSpeed_;
 		dbg.pitchRate = targetPitchRate;
@@ -6106,8 +6082,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 		kParamAmount, "Amount",
 		juce::NormalisableRange<float> (kAmountMin, kAmountMax, 0.01f, 1.0f), kAmountDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
-		kParamMod, "Mod",
-		juce::NormalisableRange<float> (kModMin, kModMax, 0.0f, 1.0f), kModDefault));
+		kParamPitch, "Pitch",
+		juce::NormalisableRange<float> (kPitchMin, kPitchMax, 0.0f, 1.0f), kPitchDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamJitter, "Jitter",
 		juce::NormalisableRange<float> (kJitterMin, kJitterMax, 0.01f, 1.0f), kJitterDefault));
