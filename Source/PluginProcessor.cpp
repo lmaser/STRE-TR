@@ -363,11 +363,11 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 {
 	amountParam  = apvts.getRawParameterValue (kParamAmount);
 	pitchParam     = apvts.getRawParameterValue (kParamPitch);
-	jitterParam  = apvts.getRawParameterValue (kParamJitter);
 	grainParam   = apvts.getRawParameterValue (kParamGrain);
 	engineParam  = apvts.getRawParameterValue (kParamEngine);
 	windowParam  = apvts.getRawParameterValue (kParamWindow);
 	maxWindowParam = apvts.getRawParameterValue (kParamMaxWindow);
+	jitterParam  = apvts.getRawParameterValue (kParamJitter);
 	styleParam   = apvts.getRawParameterValue (kParamStyle);
 	inputParam   = apvts.getRawParameterValue (kParamInput);
 	outputParam  = apvts.getRawParameterValue (kParamOutput);
@@ -383,10 +383,10 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 	dryLevelParam  = apvts.getRawParameterValue (kParamDryLevel);
 	wetLevelParam  = apvts.getRawParameterValue (kParamWetLevel);
 	filterPosParam = apvts.getRawParameterValue (kParamFilterPos);
+	reverseParam = apvts.getRawParameterValue (kParamReverse);
+	triggerParam = apvts.getRawParameterValue (kParamTrigger);
 	alignParam   = apvts.getRawParameterValue (kParamAlign);
 	pdcParam     = apvts.getRawParameterValue (kParamPdc);
-	triggerParam = apvts.getRawParameterValue (kParamTrigger);
-	reverseParam = apvts.getRawParameterValue (kParamReverse);
 
 	filterHpFreqParam  = apvts.getRawParameterValue (kParamFilterHpFreq);
 	filterLpFreqParam  = apvts.getRawParameterValue (kParamFilterLpFreq);
@@ -3144,7 +3144,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // FFT engines keep a tiny floor so the endpoint does not enter hard hold/freeze.
 	const float targetSpeed = amountToSpeedForEngine (engineVal, amountVal);
 
-    // MOD -> playback rate: center (0.5)=1.0x, 0=-24st, 1=+24st.
+    // Pitch -> playback rate: center (0.5)=1.0x, 0=-24st, 1=+24st.
 	const float targetPitchRate = std::exp2 ((pitchVal - 0.5f) * 4.0f);
 
 	// Window -> stored per engine; FFT engines receive canonical powers of two.
@@ -4987,7 +4987,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			{
 				if (grainFreezeHold)
 				{
-					// In true freeze, keep the captured anchor stable when MOD changes so
+					// In true freeze, keep the captured anchor stable when pitch changes so
 					// pitch returning to x1 does not pull the frozen grain toward newer audio.
 					const double minPos = grainCapturePos - (double) (inputBufLen_ - 4);
 					grainReadPos_ = juce::jmax (minPos, grainReadPos_);
@@ -6082,11 +6082,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 		kParamAmount, "Amount",
 		juce::NormalisableRange<float> (kAmountMin, kAmountMax, 0.01f, 1.0f), kAmountDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
-		kParamPitch, "Mod",
+		kParamPitch, "Pitch",
 		juce::NormalisableRange<float> (kPitchMin, kPitchMax, 0.0f, 1.0f), kPitchDefault));
-	params.push_back (std::make_unique<juce::AudioParameterFloat> (
-		kParamJitter, "Jitter",
-		juce::NormalisableRange<float> (kJitterMin, kJitterMax, 0.01f, 1.0f), kJitterDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamGrain, "Grain",
 		juce::NormalisableRange<float> (kGrainMin, kGrainMax, 0.001f, 0.25f), kGrainDefault));
@@ -6100,6 +6097,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 		kParamMaxWindow, "Max Window",
 		juce::NormalisableRange<float> ((float) kFftWindowMin, (float) kWindowMax, 1.0f, 1.0f),
 		(float) kFftMaxWindowDefault));
+	params.push_back (std::make_unique<juce::AudioParameterFloat> (
+		kParamJitter, "Jitter",
+		juce::NormalisableRange<float> (kJitterMin, kJitterMax, 0.01f, 1.0f), kJitterDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamStyle, "Style",
 		juce::NormalisableRange<float> ((float) kStyleMin, (float) kStyleMax, 1.0f, 1.0f), kStyleDefault));
@@ -6148,10 +6148,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 		                    juce::String::fromUTF8 (u8"F\u25bc T\u25b2") },
 		kFilterPosDefault));
 
-	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamAlign, "Align", false));
-	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamPdc, "PDC", false));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamReverse, "Reverse", false));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamTrigger, "Trigger", false));
+	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamAlign, "Align", false));
+	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamPdc, "PDC", false));
 
 	// HP/LP wet-signal filter
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (

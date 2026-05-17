@@ -25,15 +25,15 @@ namespace UiStateKeys
 static constexpr int   kCrtTimerHz   = 10;
 static constexpr int   kIdleTimerHz  = 4;
 static constexpr float kSilenceDb    = -80.0f;
-static constexpr float kModZeroEpsilon = 0.005f;
+static constexpr float kPitchZeroEpsilon = 0.005f;
 
-// MOD stays internally normalised 0..1. The UI exposes semitones because that
+// Pitch stays internally normalised 0..1. The UI exposes semitones because that
 // is the real role of this parameter in STRE-TR.
-static constexpr double kModCenter       = 0.5;
-static constexpr double kModOctaves      = 4.0;
-static constexpr double kModSemitoneSpan = kModOctaves * 12.0;
-static constexpr double kModMinSemitones = -24.0;
-static constexpr double kModMaxSemitones =  24.0;
+static constexpr double kPitchCenter       = 0.5;
+static constexpr double kPitchOctaves      = 4.0;
+static constexpr double kPitchSemitoneSpan = kPitchOctaves * 12.0;
+static constexpr double kPitchMinSemitones = -24.0;
+static constexpr double kPitchMaxSemitones =  24.0;
 
 static bool isGainFaderFloor (float dB) noexcept
 {
@@ -73,21 +73,21 @@ static juce::String formatPdcTooltip (bool enabled, int maxWindow)
          + " | MAX WIN " + juce::String (STRETRAudioProcessor::getCanonicalFftWindow (maxWindow));
 }
 
-static double modSliderToSemitones (double v)
+static double pitchSliderToSemitones (double v)
 {
     v = juce::jlimit (0.0, 1.0, v);
-    return (v - kModCenter) * kModSemitoneSpan;
+    return (v - kPitchCenter) * kPitchSemitoneSpan;
 }
 
-static double semitonesToModSlider (double semitones)
+static double semitonesToPitchSlider (double semitones)
 {
-    semitones = juce::jlimit (kModMinSemitones, kModMaxSemitones, semitones);
-    return juce::jlimit (0.0, 1.0, kModCenter + (semitones / kModSemitoneSpan));
+    semitones = juce::jlimit (kPitchMinSemitones, kPitchMaxSemitones, semitones);
+    return juce::jlimit (0.0, 1.0, kPitchCenter + (semitones / kPitchSemitoneSpan));
 }
 
-static juce::String formatModSemitones (double semitones, int decimals)
+static juce::String formatPitchSemitones (double semitones, int decimals)
 {
-    if (std::abs (semitones) < kModZeroEpsilon)
+    if (std::abs (semitones) < kPitchZeroEpsilon)
         semitones = 0.0;
 
     return (semitones >= 0.0 ? "+" : "") + juce::String (semitones, decimals);
@@ -618,9 +618,9 @@ namespace
     constexpr const char* kAmountLegendShort  = "100% AMT";
     constexpr const char* kAmountLegendInt    = "100%";
 
-    constexpr const char* kModLegendFull   = "+24.00st MOD";
-    constexpr const char* kModLegendShort  = "+24.00st MOD";
-    constexpr const char* kModLegendInt    = "+24.00st";
+    constexpr const char* kPitchLegendFull   = "+24.00 st PITCH";
+    constexpr const char* kPitchLegendShort  = "+24.00st";
+    constexpr const char* kPitchLegendInt    = "+24.00st";
 
     constexpr const char* kJitterLegendFull  = "100% JIT";
     constexpr const char* kJitterLegendShort = "100% JIT";
@@ -748,7 +748,7 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
     : AudioProcessorEditor (&p), audioProcessor (p)
 {
     const std::array<BarSlider*, 13> barSliders {
-        &amountSlider, &modSlider, &jitterSlider, &grainSlider, &engineSlider, &windowSlider, &styleSlider,
+        &amountSlider, &pitchSlider, &grainSlider, &engineSlider, &windowSlider, &jitterSlider, &styleSlider,
         &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider, &limThresholdSlider
     };
 
@@ -798,11 +798,11 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
     }
 
     amountSlider.setNumDecimalPlacesToDisplay (2);
-    modSlider.setNumDecimalPlacesToDisplay (2);
-    jitterSlider.setNumDecimalPlacesToDisplay (2);
+    pitchSlider.setNumDecimalPlacesToDisplay (2);
     grainSlider.setNumDecimalPlacesToDisplay (1);
     engineSlider.setNumDecimalPlacesToDisplay (0);
     windowSlider.setNumDecimalPlacesToDisplay (0);
+    jitterSlider.setNumDecimalPlacesToDisplay (2);
     styleSlider.setNumDecimalPlacesToDisplay (0);
     inputSlider.setNumDecimalPlacesToDisplay (1);
     outputSlider.setNumDecimalPlacesToDisplay (1);
@@ -890,11 +890,11 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
     };
 
     bindSlider (amountAttachment,  STRETRAudioProcessor::kParamAmount,  amountSlider,  kDefaultAmount);
-    bindSlider (modAttachment,       STRETRAudioProcessor::kParamPitch,     modSlider,       0.5);
-    bindSlider (jitterAttachment,  STRETRAudioProcessor::kParamJitter,  jitterSlider,  (double) STRETRAudioProcessor::kJitterDefault);
+    bindSlider (pitchAttachment,     STRETRAudioProcessor::kParamPitch,     pitchSlider,     0.5);
     bindSlider (grainAttachment,   STRETRAudioProcessor::kParamGrain,   grainSlider,   (double) STRETRAudioProcessor::kGrainDefault);
     bindSlider (engineAttachment,  STRETRAudioProcessor::kParamEngine,  engineSlider,  (double) STRETRAudioProcessor::kEngineDefault);
     bindSlider (windowAttachment,  STRETRAudioProcessor::kParamWindow,  windowSlider,  (double) STRETRAudioProcessor::kWindowDefault);
+    bindSlider (jitterAttachment,  STRETRAudioProcessor::kParamJitter,  jitterSlider,  (double) STRETRAudioProcessor::kJitterDefault);
     bindSlider (styleAttachment,   STRETRAudioProcessor::kParamStyle,   styleSlider,   (double) STRETRAudioProcessor::kStyleDefault);
     bindSlider (inputAttachment,   STRETRAudioProcessor::kParamInput,   inputSlider,   kDefaultInput);
     bindSlider (outputAttachment,  STRETRAudioProcessor::kParamOutput,  outputSlider,  kDefaultOutput);
@@ -1045,7 +1045,7 @@ STRETRAudioProcessorEditor::~STRETRAudioProcessorEditor()
     setPromptOverlayActive (false);
 
     const std::array<BarSlider*, 13> barSliders {
-        &amountSlider, &modSlider, &jitterSlider, &grainSlider, &engineSlider, &windowSlider, &styleSlider,
+        &amountSlider, &pitchSlider, &grainSlider, &engineSlider, &windowSlider, &jitterSlider, &styleSlider,
         &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider, &limThresholdSlider
     };
     for (auto* slider : barSliders)
@@ -1123,7 +1123,7 @@ void STRETRAudioProcessorEditor::sliderValueChanged (juce::Slider* slider)
 
     auto isBar = [&] (const juce::Slider* s)
     {
-        return s == &amountSlider || s == &modSlider || s == &jitterSlider || s == &grainSlider
+        return s == &amountSlider || s == &pitchSlider || s == &jitterSlider || s == &grainSlider
             || s == &inputSlider  || s == &outputSlider || s == &mixSlider;
     };
 
@@ -1141,7 +1141,7 @@ void STRETRAudioProcessorEditor::setPromptOverlayActive (bool shouldBeActive)
 
     const bool enable = ! shouldBeActive;
     const std::array<juce::Component*, 12> controls {
-        &amountSlider, &modSlider, &jitterSlider, &grainSlider, &engineSlider, &windowSlider, &styleSlider,
+        &amountSlider, &pitchSlider, &grainSlider, &engineSlider, &windowSlider, &jitterSlider, &styleSlider,
         &reverseButton, &triggerButton, &alignButton, &pdcButton, &pdcDisplay
     };
     for (auto* c : controls) c->setEnabled (enable);
@@ -1401,13 +1401,14 @@ juce::String STRETRAudioProcessorEditor::getAmountTextShort() const
     return juce::String (juce::roundToInt (v)) + "% AMT";
 }
 
-juce::String STRETRAudioProcessorEditor::getModText() const
+juce::String STRETRAudioProcessorEditor::getPitchText() const
 {
-    return formatModSemitones (modSliderToSemitones (modSlider.getValue()), 2) + "st MOD";
+    return formatPitchSemitones (pitchSliderToSemitones (pitchSlider.getValue()), 2) + " st PITCH";
 }
-juce::String STRETRAudioProcessorEditor::getModTextShort() const
+
+juce::String STRETRAudioProcessorEditor::getPitchTextShort() const
 {
-    return formatModSemitones (modSliderToSemitones (modSlider.getValue()), 2) + "st MOD";
+    return formatPitchSemitones (pitchSliderToSemitones (pitchSlider.getValue()), 2) + "st";
 }
 
 juce::String STRETRAudioProcessorEditor::getJitterText() const
@@ -1668,7 +1669,7 @@ juce::String STRETRAudioProcessorEditor::getLimThresholdTextShort() const
 bool STRETRAudioProcessorEditor::refreshLegendTextCache()
 {
     const auto oldAmountFull  = cachedAmountTextFull;
-    const auto oldModFull       = cachedModTextFull;
+    const auto oldPitchFull     = cachedPitchTextFull;
     const auto oldJitterFull  = cachedJitterTextFull;
     const auto oldGrainFull   = cachedGrainTextFull;
     const auto oldEngineFull  = cachedEngineTextFull;
@@ -1682,7 +1683,7 @@ bool STRETRAudioProcessorEditor::refreshLegendTextCache()
     const auto oldLimFull     = cachedLimThresholdTextFull;
 
     cachedAmountTextFull  = getAmountText();    cachedAmountTextShort  = getAmountTextShort();
-    cachedModTextFull       = getModText();          cachedModTextShort       = getModTextShort();
+    cachedPitchTextFull     = getPitchText();        cachedPitchTextShort     = getPitchTextShort();
     cachedJitterTextFull  = getJitterText();     cachedJitterTextShort  = getJitterTextShort();
     cachedGrainTextFull   = getGrainText();      cachedGrainTextShort   = getGrainTextShort();
     cachedEngineTextFull  = getEngineText();      cachedEngineTextShort  = getEngineTextShort();
@@ -1696,7 +1697,7 @@ bool STRETRAudioProcessorEditor::refreshLegendTextCache()
 
     // Int-only representations
     cachedAmountIntOnly  = juce::String ((int) std::lround (amountSlider.getValue())) + "%";
-    cachedModIntOnly = formatModSemitones (modSliderToSemitones (modSlider.getValue()), 2) + "st";
+    cachedPitchIntOnly = formatPitchSemitones (pitchSliderToSemitones (pitchSlider.getValue()), 2) + "st";
     cachedJitterIntOnly  = juce::String ((int) std::lround (jitterSlider.getValue())) + "%";
     cachedGrainIntOnly   = (getCurrentEngineValue() == 1)
                            ? juce::String ((int) std::lround (grainSlider.getValue())) + "ms"
@@ -1747,7 +1748,7 @@ bool STRETRAudioProcessorEditor::refreshLegendTextCache()
         else                   cachedPanIntOnly = "R" + juce::String (panPct);
     }
 
-    return oldAmountFull != cachedAmountTextFull || oldModFull != cachedModTextFull
+    return oldAmountFull != cachedAmountTextFull || oldPitchFull != cachedPitchTextFull
         || oldJitterFull != cachedJitterTextFull || oldGrainFull != cachedGrainTextFull
         || oldEngineFull != cachedEngineTextFull
         || oldWindowFull != cachedWindowTextFull  || oldStyleFull != cachedStyleTextFull
@@ -1833,7 +1834,7 @@ void STRETRAudioProcessorEditor::updateCachedLayout()
     cachedVLayout_ = buildVerticalLayout (getHeight(), kLayoutVerticalBiasPx, ioSectionExpanded_);
 
     const juce::Slider* sliders[12] = {
-        &amountSlider, &modSlider, &jitterSlider, &grainSlider, &engineSlider, &windowSlider, &styleSlider,
+        &amountSlider, &pitchSlider, &grainSlider, &engineSlider, &windowSlider, &jitterSlider, &styleSlider,
         &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider
     };
 
@@ -1919,7 +1920,7 @@ int STRETRAudioProcessorEditor::getTargetValueColumnWidth() const
     { return juce::jmax (stringWidth (font, a), juce::jmax (stringWidth (font, b), stringWidth (font, c))); };
 
     int maxW = maxSW (kAmountLegendFull, kAmountLegendShort, kAmountLegendInt);
-    maxW = juce::jmax (maxW, maxSW (kModLegendFull,      kModLegendShort,      kModLegendInt));
+    maxW = juce::jmax (maxW, maxSW (kPitchLegendFull,    kPitchLegendShort,    kPitchLegendInt));
     maxW = juce::jmax (maxW, maxSW (kJitterLegendFull, kJitterLegendShort, kJitterLegendInt));
     maxW = juce::jmax (maxW, maxSW (kGrainLegendFull,  kGrainLegendShort,  kGrainLegendInt));
     maxW = juce::jmax (maxW, maxSW (kEngineLegendFull, kEngineLegendShort, kEngineLegendInt));
@@ -1952,7 +1953,7 @@ juce::Rectangle<int> STRETRAudioProcessorEditor::getValueAreaFor (const juce::Re
 juce::Slider* STRETRAudioProcessorEditor::getSliderForValueAreaPoint (juce::Point<int> p)
 {
     juce::Slider* sliders[12] = {
-        &amountSlider, &modSlider, &jitterSlider, &grainSlider, &engineSlider, &windowSlider, &styleSlider,
+        &amountSlider, &pitchSlider, &grainSlider, &engineSlider, &windowSlider, &jitterSlider, &styleSlider,
         &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider
     };
     for (int i = 0; i < 12; ++i)
@@ -2108,7 +2109,7 @@ void STRETRAudioProcessorEditor::mouseDoubleClick (const juce::MouseEvent& e)
     if (auto* slider = getSliderForValueAreaPoint (p))
     {
         if (slider == &amountSlider)      slider->setValue (kDefaultAmount, juce::sendNotificationSync);
-        else if (slider == &modSlider)      slider->setValue (0.5, juce::sendNotificationSync);
+        else if (slider == &pitchSlider)    slider->setValue (0.5, juce::sendNotificationSync);
         else if (slider == &jitterSlider) slider->setValue ((double) STRETRAudioProcessor::kJitterDefault, juce::sendNotificationSync);
         else if (slider == &grainSlider)  slider->setValue ((double) STRETRAudioProcessor::kGrainDefault, juce::sendNotificationSync);
         else if (slider == &inputSlider)  slider->setValue (kDefaultInput, juce::sendNotificationSync);
@@ -2255,26 +2256,26 @@ void STRETRAudioProcessorEditor::paint (juce::Graphics& g)
     // ── Slider legends ──
     {
         const juce::String* fullTexts[12]  = {
-            &cachedAmountTextFull, &cachedModTextFull, &cachedJitterTextFull, &cachedGrainTextFull,
-            &cachedEngineTextFull, &cachedWindowTextFull, &cachedStyleTextFull,
+            &cachedAmountTextFull, &cachedPitchTextFull, &cachedGrainTextFull, &cachedEngineTextFull,
+            &cachedWindowTextFull, &cachedJitterTextFull, &cachedStyleTextFull,
             &cachedInputTextFull, &cachedOutputTextFull, &cachedTiltTextFull,
             &cachedPanTextFull, &cachedMixTextFull
         };
         const juce::String* shortTexts[12] = {
-            &cachedAmountTextShort, &cachedModTextShort, &cachedJitterTextShort, &cachedGrainTextShort,
-            &cachedEngineTextShort, &cachedWindowTextShort, &cachedStyleTextShort,
+            &cachedAmountTextShort, &cachedPitchTextShort, &cachedGrainTextShort, &cachedEngineTextShort,
+            &cachedWindowTextShort, &cachedJitterTextShort, &cachedStyleTextShort,
             &cachedInputTextShort, &cachedOutputTextShort, &cachedTiltTextShort,
             &cachedPanTextShort, &cachedMixTextShort
         };
         const juce::String* intTexts[12] = {
-            &cachedAmountIntOnly, &cachedModIntOnly, &cachedJitterIntOnly, &cachedGrainIntOnly,
-            &cachedEngineIntOnly, &cachedWindowIntOnly, &cachedStyleIntOnly,
+            &cachedAmountIntOnly, &cachedPitchIntOnly, &cachedGrainIntOnly, &cachedEngineIntOnly,
+            &cachedWindowIntOnly, &cachedJitterIntOnly, &cachedStyleIntOnly,
             &cachedInputIntOnly, &cachedOutputIntOnly, &cachedTiltIntOnly,
             &cachedPanIntOnly, &cachedMixIntOnly
         };
 
         const juce::Slider* sliders[12] = {
-            &amountSlider, &modSlider, &jitterSlider, &grainSlider, &engineSlider, &windowSlider, &styleSlider,
+            &amountSlider, &pitchSlider, &grainSlider, &engineSlider, &windowSlider, &jitterSlider, &styleSlider,
             &inputSlider, &outputSlider, &tiltSlider, &panSlider, &mixSlider
         };
 
@@ -2508,29 +2509,29 @@ void STRETRAudioProcessorEditor::resized()
         pdcButton.setVisible (false);
         pdcDisplay.setVisible (false);
 
-        amountSlider.setBounds (0, 0, 0, 0); modSlider.setBounds (0, 0, 0, 0);
-        jitterSlider.setBounds (0, 0, 0, 0); grainSlider.setBounds (0, 0, 0, 0);
-        engineSlider.setBounds (0, 0, 0, 0);
-        windowSlider.setBounds (0, 0, 0, 0); styleSlider.setBounds (0, 0, 0, 0);
-        amountSlider.setVisible (false); modSlider.setVisible (false);
-        jitterSlider.setVisible (false); grainSlider.setVisible (false);
-        engineSlider.setVisible (false);
-        windowSlider.setVisible (false); styleSlider.setVisible (false);
+        amountSlider.setBounds (0, 0, 0, 0); pitchSlider.setBounds (0, 0, 0, 0);
+        grainSlider.setBounds (0, 0, 0, 0); engineSlider.setBounds (0, 0, 0, 0);
+        windowSlider.setBounds (0, 0, 0, 0); jitterSlider.setBounds (0, 0, 0, 0);
+        styleSlider.setBounds (0, 0, 0, 0);
+        amountSlider.setVisible (false); pitchSlider.setVisible (false);
+        grainSlider.setVisible (false); engineSlider.setVisible (false);
+        windowSlider.setVisible (false); jitterSlider.setVisible (false);
+        styleSlider.setVisible (false);
     }
     else
     {
         amountSlider.setBounds (horizontalLayout.leftX, mainTop + 0 * step, horizontalLayout.barW, verticalLayout.barH);
-        modSlider.setBounds      (horizontalLayout.leftX, mainTop + 1 * step, horizontalLayout.barW, verticalLayout.barH);
-        jitterSlider.setBounds (horizontalLayout.leftX, mainTop + 2 * step, horizontalLayout.barW, verticalLayout.barH);
-        grainSlider.setBounds  (horizontalLayout.leftX, mainTop + 3 * step, horizontalLayout.barW, verticalLayout.barH);
-        engineSlider.setBounds (horizontalLayout.leftX, mainTop + 4 * step, horizontalLayout.barW, verticalLayout.barH);
-        windowSlider.setBounds (horizontalLayout.leftX, mainTop + 5 * step, horizontalLayout.barW, verticalLayout.barH);
+        pitchSlider.setBounds    (horizontalLayout.leftX, mainTop + 1 * step, horizontalLayout.barW, verticalLayout.barH);
+        grainSlider.setBounds  (horizontalLayout.leftX, mainTop + 2 * step, horizontalLayout.barW, verticalLayout.barH);
+        engineSlider.setBounds (horizontalLayout.leftX, mainTop + 3 * step, horizontalLayout.barW, verticalLayout.barH);
+        windowSlider.setBounds (horizontalLayout.leftX, mainTop + 4 * step, horizontalLayout.barW, verticalLayout.barH);
+        jitterSlider.setBounds (horizontalLayout.leftX, mainTop + 5 * step, horizontalLayout.barW, verticalLayout.barH);
         styleSlider.setBounds  (horizontalLayout.leftX, mainTop + 6 * step, horizontalLayout.barW, verticalLayout.barH);
 
-        amountSlider.setVisible (true); modSlider.setVisible (true);
-        jitterSlider.setVisible (true); grainSlider.setVisible (true);
-        engineSlider.setVisible (true);
-        windowSlider.setVisible (true); styleSlider.setVisible (true);
+        amountSlider.setVisible (true); pitchSlider.setVisible (true);
+        grainSlider.setVisible (true); engineSlider.setVisible (true);
+        windowSlider.setVisible (true); jitterSlider.setVisible (true);
+        styleSlider.setVisible (true);
 
         inputSlider.setBounds (0, 0, 0, 0);  outputSlider.setBounds (0, 0, 0, 0);
         tiltSlider.setBounds (0, 0, 0, 0);   mixSlider.setBounds (0, 0, 0, 0);
@@ -2568,10 +2569,10 @@ void STRETRAudioProcessorEditor::resized()
     const int btnRow1Y = verticalLayout.btnRow1Y;
     const int btnRow2Y = verticalLayout.btnRow2Y;
 
-    alignButton.setBounds    (leftBlockX,  btnRow1Y, toggleHitW, verticalLayout.box);
-    pdcButton.setBounds      (rightBlockX, btnRow1Y, toggleHitW, verticalLayout.box);
-    reverseButton.setBounds  (leftBlockX,  btnRow2Y, toggleHitW, verticalLayout.box);
-    triggerButton.setBounds  (rightBlockX, btnRow2Y, toggleHitW, verticalLayout.box);
+    reverseButton.setBounds  (leftBlockX,  btnRow1Y, toggleHitW, verticalLayout.box);
+    triggerButton.setBounds  (rightBlockX, btnRow1Y, toggleHitW, verticalLayout.box);
+    alignButton.setBounds    (leftBlockX,  btnRow2Y, toggleHitW, verticalLayout.box);
+    pdcButton.setBounds      (rightBlockX, btnRow2Y, toggleHitW, verticalLayout.box);
     pdcDisplay.setBounds (pdcButton.getBounds().getUnion (getPdcLabelArea()));
 
     if (resizerCorner)
@@ -2598,7 +2599,7 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     juce::String suffix;
     juce::String suffixShort;
     if (&s == &amountSlider)       { suffix = " % AMT";      suffixShort = " % AMT"; }
-    else if (&s == &modSlider)     { suffix = " ST MOD";     suffixShort = " ST MOD"; }
+    else if (&s == &pitchSlider)   { suffix = " ST PITCH";   suffixShort = " ST"; }
     else if (&s == &jitterSlider)  { suffix = " % JIT";      suffixShort = " % JIT"; }
     else if (&s == &grainSlider)   { suffix = " MS GRN";     suffixShort = " MS GRN"; }
     else if (&s == &windowSlider)  { suffix = " WINDOW";     suffixShort = " WIN"; }
@@ -2616,8 +2617,8 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     aw->setLookAndFeel (&lnf);
 
     juce::String currentDisplay;
-    if (&s == &modSlider)
-        currentDisplay = formatModSemitones (modSliderToSemitones (s.getValue()), 2);
+    if (&s == &pitchSlider)
+        currentDisplay = formatPitchSemitones (pitchSliderToSemitones (s.getValue()), 2);
     else if (&s == &grainSlider)
         currentDisplay = juce::String (s.getValue(), 3);
     else if (&s == &panSlider)
@@ -2653,7 +2654,7 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
 
         juce::String worstCaseText;
         if (&s == &amountSlider)       worstCaseText = "100.00";
-        else if (&s == &modSlider)       worstCaseText = "+24.00";
+        else if (&s == &pitchSlider)     worstCaseText = "+24.00";
         else if (&s == &jitterSlider)  worstCaseText = "100.00";
         else if (&s == &grainSlider)   worstCaseText = "500.000";
         else if (&s == &windowSlider)  worstCaseText = "8192";
@@ -2801,10 +2802,10 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
             if (txt.isEmpty()) return;
 
             double val = txt.getDoubleValue();
-            if (targetSlider == &safeThis->modSlider)
+            if (targetSlider == &safeThis->pitchSlider)
             {
                 val = std::round (val * 100.0) / 100.0;
-                val = semitonesToModSlider (val);
+                val = semitonesToPitchSlider (val);
             }
             else if (targetSlider == &safeThis->panSlider)
                 val = juce::jlimit (0.0, 1.0, val / 100.0);

@@ -114,8 +114,8 @@ private:
                 return juce::String (rounded1, 1);
             }
 
-            // MOD (0-1 -> -24st..+24st)
-            if (owner != nullptr && this == &owner->modSlider)
+            // PITCH (0-1 -> -24st..+24st)
+            if (owner != nullptr && this == &owner->pitchSlider)
             {
                 double st = (juce::jlimit (0.0, 1.0, v) - 0.5) * 48.0;
                 if (std::abs (st) < 0.005)
@@ -228,11 +228,11 @@ private:
     };
 
     BarSlider amountSlider;
-    BarSlider modSlider;
-    BarSlider jitterSlider;
+    BarSlider pitchSlider;
     BarSlider grainSlider;
     BarSlider engineSlider;
     BarSlider windowSlider;
+    BarSlider jitterSlider;
     BarSlider styleSlider;
     BarSlider inputSlider;
     BarSlider outputSlider;
@@ -250,11 +250,11 @@ private:
     juce::ComboBox mixModeCombo;
     juce::ComboBox filterPosCombo;
 
+    juce::ToggleButton reverseButton;
+    juce::ToggleButton triggerButton;
     juce::ToggleButton alignButton;
     juce::ToggleButton pdcButton;
     juce::Label pdcDisplay;
-    juce::ToggleButton reverseButton;
-    juce::ToggleButton triggerButton;
     juce::ToggleButton chaosFilterButton;
     juce::ToggleButton chaosDelayButton;
 
@@ -265,11 +265,11 @@ private:
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
 
     std::unique_ptr<SliderAttachment> amountAttachment;
-    std::unique_ptr<SliderAttachment> modAttachment;
-    std::unique_ptr<SliderAttachment> jitterAttachment;
+    std::unique_ptr<SliderAttachment> pitchAttachment;
     std::unique_ptr<SliderAttachment> grainAttachment;
     std::unique_ptr<SliderAttachment> engineAttachment;
     std::unique_ptr<SliderAttachment> windowAttachment;
+    std::unique_ptr<SliderAttachment> jitterAttachment;
     std::unique_ptr<SliderAttachment> styleAttachment;
     std::unique_ptr<SliderAttachment> inputAttachment;
     std::unique_ptr<SliderAttachment> outputAttachment;
@@ -288,10 +288,10 @@ private:
     std::unique_ptr<ComboBoxAttachment> mixModeAttachment;
     std::unique_ptr<ComboBoxAttachment> filterPosAttachment;
 
-    std::unique_ptr<ButtonAttachment> alignAttachment;
-    std::unique_ptr<ButtonAttachment> pdcAttachment;
     std::unique_ptr<ButtonAttachment> reverseAttachment;
     std::unique_ptr<ButtonAttachment> triggerAttachment;
+    std::unique_ptr<ButtonAttachment> alignAttachment;
+    std::unique_ptr<ButtonAttachment> pdcAttachment;
     std::unique_ptr<ButtonAttachment> chaosFilterAttachment;
     std::unique_ptr<ButtonAttachment> chaosDelayAttachment;
 
@@ -523,8 +523,8 @@ private:
     juce::String getAmountText() const;
     juce::String getAmountTextShort() const;
 
-    juce::String getModText() const;
-    juce::String getModTextShort() const;
+    juce::String getPitchText() const;
+    juce::String getPitchTextShort() const;
 
     juce::String getJitterText() const;
     juce::String getJitterTextShort() const;
@@ -597,8 +597,8 @@ private:
 
     juce::String cachedAmountTextFull;
     juce::String cachedAmountTextShort;
-    juce::String cachedModTextFull;
-    juce::String cachedModTextShort;
+    juce::String cachedPitchTextFull;
+    juce::String cachedPitchTextShort;
     juce::String cachedJitterTextFull;
     juce::String cachedJitterTextShort;
     juce::String cachedGrainTextFull;
@@ -622,7 +622,7 @@ private:
     juce::String cachedLimThresholdIntOnly;
 
     juce::String cachedAmountIntOnly;
-    juce::String cachedModIntOnly;
+    juce::String cachedPitchIntOnly;
     juce::String cachedJitterIntOnly;
     juce::String cachedGrainIntOnly;
     juce::String cachedEngineIntOnly;

@@ -34,11 +34,11 @@ public:
     // Parameter IDs
 	static constexpr const char* kParamAmount    = "amount";
 	static constexpr const char* kParamPitch     = "pitch";
-	static constexpr const char* kParamJitter    = "jitter";
 	static constexpr const char* kParamGrain     = "grain";
     static constexpr const char* kParamEngine    = "engine";     // 0=STRETCH 1=GRAIN 2=FFT1 3=FFT2
 	static constexpr const char* kParamWindow    = "window";     // 16..8192; FFT engines snap to powers of two
 	static constexpr const char* kParamMaxWindow = "max_window"; // FFT1/FFT2 max window for fixed PDC/ALIGN budget
+	static constexpr const char* kParamJitter    = "jitter";
 	static constexpr const char* kParamStyle     = "style";      // 0=MONO 1=STEREO 2=WIDE 3=DUAL
 	static constexpr const char* kParamInput     = "input";
 	static constexpr const char* kParamOutput    = "output";
@@ -110,10 +110,6 @@ public:
 	static constexpr float kPitchMax     = 1.0f;
 	static constexpr float kPitchDefault = 0.5f;
 
-	static constexpr float kJitterMin     = 0.0f;
-	static constexpr float kJitterMax     = 100.0f;
-	static constexpr float kJitterDefault = 0.0f;
-
 	static constexpr float kGrainMin     = 1.0f;
 	static constexpr float kGrainMax     = 500.0f;
 	static constexpr float kGrainDefault = 100.0f;
@@ -129,6 +125,10 @@ public:
 	static constexpr int   kNumFftWindows = 8;
 	static constexpr int   kFftWindows[kNumFftWindows] = { 64, 128, 256, 512, 1024, 2048, 4096, 8192 };
 	static constexpr float kWindowDefault = 1024.0f;
+
+	static constexpr float kJitterMin     = 0.0f;
+	static constexpr float kJitterMax     = 100.0f;
+	static constexpr float kJitterDefault = 0.0f;
 
 	static constexpr int   kStyleMin     = 0;
 	static constexpr int   kStyleMax     = 3;
@@ -1859,28 +1859,32 @@ private:
 	std::atomic<int> uiCrtEnabled  { 0 };
 	std::atomic<juce::uint32> uiCustomPalette[2] {};
 
-	std::atomic<float>* amountParam  = nullptr;
-	std::atomic<float>* pitchParam     = nullptr;
-	std::atomic<float>* jitterParam  = nullptr;
-	std::atomic<float>* grainParam   = nullptr;
-	std::atomic<float>* engineParam  = nullptr;
-	std::atomic<float>* windowParam  = nullptr;
-	std::atomic<float>* maxWindowParam = nullptr;
-	std::atomic<float>* styleParam   = nullptr;
-	std::atomic<float>* inputParam   = nullptr;
-	std::atomic<float>* outputParam  = nullptr;
-	std::atomic<float>* mixParam     = nullptr;
-	std::atomic<float>* modeInParam  = nullptr;
-	std::atomic<float>* modeOutParam = nullptr;
-	std::atomic<float>* sumBusParam  = nullptr;	std::atomic<float>* limThresholdParam = nullptr;
-	std::atomic<float>* limModeParam     = nullptr;	std::atomic<float>* invPolParam      = nullptr;
-	std::atomic<float>* invStrParam      = nullptr;	std::atomic<float>* mixModeParam   = nullptr;
-	std::atomic<float>* dryLevelParam  = nullptr;
-	std::atomic<float>* wetLevelParam  = nullptr;
-	std::atomic<float>* filterPosParam = nullptr;	std::atomic<float>* alignParam   = nullptr;
-	std::atomic<float>* pdcParam     = nullptr;
-	std::atomic<float>* triggerParam = nullptr;
-	std::atomic<float>* reverseParam = nullptr;
+	std::atomic<float>* amountParam      = nullptr;
+	std::atomic<float>* pitchParam       = nullptr;
+	std::atomic<float>* grainParam       = nullptr;
+	std::atomic<float>* engineParam      = nullptr;
+	std::atomic<float>* windowParam      = nullptr;
+	std::atomic<float>* maxWindowParam   = nullptr;
+	std::atomic<float>* jitterParam      = nullptr;
+	std::atomic<float>* styleParam       = nullptr;
+	std::atomic<float>* inputParam       = nullptr;
+	std::atomic<float>* outputParam      = nullptr;
+	std::atomic<float>* mixParam         = nullptr;
+	std::atomic<float>* modeInParam      = nullptr;
+	std::atomic<float>* modeOutParam     = nullptr;
+	std::atomic<float>* sumBusParam      = nullptr;
+	std::atomic<float>* limThresholdParam = nullptr;
+	std::atomic<float>* limModeParam     = nullptr;
+	std::atomic<float>* invPolParam      = nullptr;
+	std::atomic<float>* invStrParam      = nullptr;
+	std::atomic<float>* mixModeParam     = nullptr;
+	std::atomic<float>* dryLevelParam    = nullptr;
+	std::atomic<float>* wetLevelParam    = nullptr;
+	std::atomic<float>* filterPosParam   = nullptr;
+	std::atomic<float>* reverseParam     = nullptr;
+	std::atomic<float>* triggerParam     = nullptr;
+	std::atomic<float>* alignParam       = nullptr;
+	std::atomic<float>* pdcParam         = nullptr;
 
 	std::atomic<float>* filterHpFreqParam  = nullptr;
 	std::atomic<float>* filterLpFreqParam  = nullptr;

@@ -6,14 +6,14 @@ STRE-TR is a real-time time-stretch and freeze effect with four engines:
 - `FFT1`
 - `FFT2`
 
-It combines stretch intensity, independent semitone modulation, reverse playback, wet-only filtering, chaos modulation, stereo routing, and a dual-stage limiter inside the same compact UI language as the rest of the series.
+It combines stretch intensity, independent semitone pitch control, reverse playback, wet-only filtering, chaos modulation, stereo routing, and a dual-stage limiter inside the same compact UI language as the rest of the series.
 
 ## Concept
 
 STRE-TR is designed as a playable stretch instrument rather than a clinical offline stretcher.
 
 - `AMOUNT` controls engine advance or hold intensity. It is not a fixed "1x to 4x" ratio.
-- `MOD` controls pitch-rate in semitones independently of `AMOUNT`.
+- `PITCH` controls pitch-rate in semitones independently of `AMOUNT`.
 - `TRG` arms the engine. With `TRG` off, the wet path is dry passthrough.
 - `ALIGN` delays the dry path only for FFT1/FFT2 latency alignment.
 - `PDC` only reports FFT1/FFT2 latency to the host; it does not change the DSP path.
@@ -61,7 +61,7 @@ Spectral-hold engine built on the same FFT framework.
 
 STRE-TR uses the same text-first horizontal bar language as the rest of the series.
 
-- Left view: `AMOUNT`, `MOD`, `JIT`, `GRAIN`, `ENGINE`, `WINDOW`, `STYLE`
+- Left view: `AMOUNT`, `PITCH`, `JIT`, `GRAIN`, `ENGINE`, `WINDOW`, `STYLE`
 - Expanded IO view: `INPUT`, `OUTPUT`, `TILT`, `PAN`, `MIX`, `LIM`
 - Bottom controls: routing, limiter mode, invert modes, mix mode, filter/tilt position
 - Toggle rows: `ALIGN`, `PDC`, `RVS`, `TRG`
@@ -107,7 +107,7 @@ Controls how far the active engine moves away from normal read/analysis advance 
 - `STRETCH`, `GRAIN`, `FFT1`: `0%` = normal advance, `100%` = freeze
 - `FFT2`: `0%` = minimal hold, `100%` = strongest hold
 
-### MOD (-24st to +24st)
+### PITCH (-24st to +24st)
 
 Pitch-rate control centered at `1.0x`.
 
@@ -297,7 +297,7 @@ Independent inversion modes for polarity and stereo:
 - `GRAIN`: up to `64` grains with Hann envelopes and deterministic trigger/loop state
 - `FFT1`: phase vocoder with freeze reached by reducing FFT analysis advance, plus signed reverse phase tracking
 - `FFT2`: spectral hold built on the FFT engine, with hold intensity controlled by `AMOUNT` and signed reverse phase tracking
-- `JIT`: deterministic per-channel drift/S&H modulation, mapped to `MOD`/pitch-rate and safe granular read geometry
+- `JIT`: deterministic per-channel drift/S&H modulation, mapped to `PITCH`/pitch-rate and safe granular read geometry
 - Wet filter: HP/LP biquads with periodic coefficient updates
 - Tilt: first-order wet tilt
 - Chaos: Hermite-interpolated random targets with drift
@@ -319,7 +319,7 @@ STRE-TR currently smooths the user-facing continuous controls that matter for fa
 - `LIM`
 - `WINDOW`
 - `AMOUNT` -> engine speed/hold behavior
-- `MOD` -> pitch rate
+- `PITCH` -> pitch rate
 - `JIT` -> engine jitter depth
 - `PAN`
 
@@ -341,7 +341,7 @@ Filter, tilt, and chaos subsystems also have their own internal smoothing/update
 - Smoothed `SEND DRY/WET` and `LIM` to match the rest of the series
 - Hardened `PDC` so it reports latency without changing the underlying engine behavior
 - Made `WINDOW` state independent per engine while keeping a single compact UI slot
-- Stabilized `AMOUNT`/`MOD` automation consistency across `STRETCH`, `GRAIN`, `FFT1`, and `FFT2`
+- Stabilized `AMOUNT`/`PITCH` automation consistency across `STRETCH`, `GRAIN`, `FFT1`, and `FFT2`
 - Hardened FFT output normalization and FFT1 freeze transitions to avoid edge-case automation clicks on large windows
 - Added `JIT` as a deterministic organic-motion control for pitch drift and granular instability
 - Improved FFT reverse behavior, including FFT1 full-reverse hold and signed reverse phase tracking
