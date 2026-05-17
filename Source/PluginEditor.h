@@ -52,9 +52,9 @@ private:
 
         void mouseDown (const juce::MouseEvent& e) override
         {
-            if (e.mods.isPopupMenu() && allowNumericPopup)
+            if (e.mods.isPopupMenu())
             {
-                if (owner != nullptr)
+                if (allowNumericPopup && owner != nullptr)
                     owner->openNumericEntryPopupForSlider (*this);
                 return;
             }
@@ -84,19 +84,19 @@ private:
             if (owner != nullptr && this == &owner->mixSlider)
             {
                 double percent = v * 100.0;
-                return juce::String (percent, 1);
+                return juce::String (percent, 2);
             }
 
             // Amount (0-100%)
             if (owner != nullptr && this == &owner->amountSlider)
             {
-                return juce::String (v, 1);
+                return juce::String (v, 2);
             }
 
             // Jitter (0-100%)
             if (owner != nullptr && this == &owner->jitterSlider)
             {
-                return juce::String (v, 1);
+                return juce::String (v, 2);
             }
 
             // Grain (ms)
@@ -108,14 +108,14 @@ private:
             // Input/output gain
             if (owner != nullptr && (this == &owner->inputSlider || this == &owner->outputSlider))
             {
-                if (this == &owner->inputSlider && v <= -80.0)
+                if (v <= STRETRAudioProcessor::kGainFloorDb + 0.001)
                     return "-INF";
                 const double rounded1 = std::round (v * 10.0) / 10.0;
                 return juce::String (rounded1, 1);
             }
 
-            // Pitch (0-1 -> -24st..+24st)
-            if (owner != nullptr && this == &owner->pitchSlider)
+            // MOD (0-1 -> -24st..+24st)
+            if (owner != nullptr && this == &owner->modSlider)
             {
                 double st = (juce::jlimit (0.0, 1.0, v) - 0.5) * 48.0;
                 if (std::abs (st) < 0.005)
@@ -228,7 +228,7 @@ private:
     };
 
     BarSlider amountSlider;
-    BarSlider pitchSlider;
+    BarSlider modSlider;
     BarSlider jitterSlider;
     BarSlider grainSlider;
     BarSlider engineSlider;
@@ -265,7 +265,7 @@ private:
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
 
     std::unique_ptr<SliderAttachment> amountAttachment;
-    std::unique_ptr<SliderAttachment> pitchAttachment;
+    std::unique_ptr<SliderAttachment> modAttachment;
     std::unique_ptr<SliderAttachment> jitterAttachment;
     std::unique_ptr<SliderAttachment> grainAttachment;
     std::unique_ptr<SliderAttachment> engineAttachment;
@@ -523,8 +523,8 @@ private:
     juce::String getAmountText() const;
     juce::String getAmountTextShort() const;
 
-    juce::String getPitchText() const;
-    juce::String getPitchTextShort() const;
+    juce::String getModText() const;
+    juce::String getModTextShort() const;
 
     juce::String getJitterText() const;
     juce::String getJitterTextShort() const;
@@ -597,8 +597,8 @@ private:
 
     juce::String cachedAmountTextFull;
     juce::String cachedAmountTextShort;
-    juce::String cachedPitchTextFull;
-    juce::String cachedPitchTextShort;
+    juce::String cachedModTextFull;
+    juce::String cachedModTextShort;
     juce::String cachedJitterTextFull;
     juce::String cachedJitterTextShort;
     juce::String cachedGrainTextFull;
@@ -622,7 +622,7 @@ private:
     juce::String cachedLimThresholdIntOnly;
 
     juce::String cachedAmountIntOnly;
-    juce::String cachedPitchIntOnly;
+    juce::String cachedModIntOnly;
     juce::String cachedJitterIntOnly;
     juce::String cachedGrainIntOnly;
     juce::String cachedEngineIntOnly;

@@ -3144,7 +3144,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // FFT engines keep a tiny floor so the endpoint does not enter hard hold/freeze.
 	const float targetSpeed = amountToSpeedForEngine (engineVal, amountVal);
 
-    // Pitch -> playback rate: center (0.5)=1.0x, 0=-24st, 1=+24st.
+    // MOD -> playback rate: center (0.5)=1.0x, 0=-24st, 1=+24st.
 	const float targetPitchRate = std::exp2 ((pitchVal - 0.5f) * 4.0f);
 
 	// Window -> stored per engine; FFT engines receive canonical powers of two.
@@ -4987,7 +4987,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			{
 				if (grainFreezeHold)
 				{
-					// In true freeze, keep the captured anchor stable when PITCH changes so
+					// In true freeze, keep the captured anchor stable when MOD changes so
 					// pitch returning to x1 does not pull the frozen grain toward newer audio.
 					const double minPos = grainCapturePos - (double) (inputBufLen_ - 4);
 					grainReadPos_ = juce::jmax (minPos, grainReadPos_);
@@ -6082,7 +6082,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 		kParamAmount, "Amount",
 		juce::NormalisableRange<float> (kAmountMin, kAmountMax, 0.01f, 1.0f), kAmountDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
-		kParamPitch, "Pitch",
+		kParamPitch, "Mod",
 		juce::NormalisableRange<float> (kPitchMin, kPitchMax, 0.0f, 1.0f), kPitchDefault));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamJitter, "Jitter",
