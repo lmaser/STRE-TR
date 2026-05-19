@@ -2599,16 +2599,16 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     juce::String suffix;
     juce::String suffixShort;
     if (&s == &amountSlider)       { suffix = " % AMT";      suffixShort = " % AMT"; }
-    else if (&s == &pitchSlider)   { suffix = " ST PITCH";   suffixShort = " ST"; }
+    else if (&s == &pitchSlider)   { suffix = " st PITCH";   suffixShort = " st PCH"; }
     else if (&s == &jitterSlider)  { suffix = " % JIT";      suffixShort = " % JIT"; }
-    else if (&s == &grainSlider)   { suffix = " MS GRN";     suffixShort = " MS GRN"; }
+    else if (&s == &grainSlider)   { suffix = " ms";         suffixShort = " ms"; }
     else if (&s == &windowSlider)  { suffix = " WINDOW";     suffixShort = " WIN"; }
-    else if (&s == &inputSlider)   { suffix = " DB INPUT";   suffixShort = " DB IN"; }
-    else if (&s == &outputSlider)  { suffix = " DB OUTPUT";  suffixShort = " DB OUT"; }
+    else if (&s == &inputSlider)   { suffix = " dB INPUT";   suffixShort = " dB IN"; }
+    else if (&s == &outputSlider)  { suffix = " dB OUTPUT";  suffixShort = " dB OUT"; }
     else if (&s == &mixSlider)     { suffix = " % MIX";      suffixShort = " % MIX"; }
-    else if (&s == &panSlider)     { suffix = " % PAN";      suffixShort = " %"; }
-    else if (&s == &tiltSlider)    { suffix = " DB TILT";    suffixShort = " DB TILT"; }
-    else if (&s == &limThresholdSlider) { suffix = " DB LIM"; suffixShort = " DB LIM"; }
+    else if (&s == &panSlider)     { suffix = " % PAN";      suffixShort = " % PAN"; }
+    else if (&s == &tiltSlider)    { suffix = " dB TILT";    suffixShort = " dB TILT"; }
+    else if (&s == &limThresholdSlider) { suffix = " dB LIM"; suffixShort = " dB LIM"; }
 
     const juce::String suffixText      = suffix.trimStart();
     const juce::String suffixTextShort = suffixShort.trimStart();

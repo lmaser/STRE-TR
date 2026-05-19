@@ -102,7 +102,7 @@ private:
             // Grain (ms)
             if (owner != nullptr && this == &owner->grainSlider)
             {
-                return juce::String (v, 1);
+                return juce::String (v, 1) + "ms";
             }
 
             // Input/output gain
@@ -661,9 +661,9 @@ private:
     static constexpr double kDefaultLimThreshold = 0.0;
 
     static constexpr int kMinW = 360;
-    static constexpr int kMinH = 740;
-    static constexpr int kMaxW = 800;
-    static constexpr int kMaxH = 820;
+    static constexpr int kMinH = 752;
+    static constexpr int kMaxW = kMinW * 2;
+    static constexpr int kMaxH = kMinH;
 
     static constexpr int kLayoutVerticalBiasPx = 10;
 

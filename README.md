@@ -70,7 +70,7 @@ STRE-TR uses the same text-first horizontal bar language as the rest of the seri
 - `WINDOW` is edited from its bar only; it does not open a numeric prompt
 - `PDC` tooltip shows `MAX WIN`, and right-click opens the FFT max-window prompt
 - Gear icon for the info/graphics popup
-- Resizable editor with persisted size and graphics state
+- Resizable editor width with persisted width and graphics state
 
 ## Signal Flow
 
