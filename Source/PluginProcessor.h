@@ -1854,7 +1854,7 @@ private:
 	float dcBlockPrevOut_[2] = {};
 
 	std::atomic<int> uiEditorWidth  { 360 };
-	std::atomic<int> uiEditorHeight { 540 };
+	std::atomic<int> uiEditorHeight { 752 };
 	std::atomic<int> uiUseCustomPalette { 0 };
 	std::atomic<int> uiCrtEnabled  { 0 };
 	std::atomic<juce::uint32> uiCustomPalette[2] {};
