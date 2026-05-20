@@ -328,6 +328,7 @@ private:
         int availableForSliders = 0;
         int barH = 0;
         int gapY = 0;
+        int firstGapY = 0;
         int topY = 0;
         int toggleBarH = 0;
         int toggleBarY = 0;

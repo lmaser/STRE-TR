@@ -1811,15 +1811,26 @@ STRETRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY, bool io
 
     m.toggleBarH = 20;
     const int spaceForScale = juce::jmax (40, m.availableForSliders - m.toggleBarH);
-    const int nominalStack = numSliders * nominalBarH + numGaps * nominalGapY;
-    const double stackScale = nominalStack > 0 ? juce::jmin (1.0, (double) spaceForScale / (double) nominalStack) : 1.0;
 
-    m.barH = juce::jmax (14, (int) std::round (nominalBarH * stackScale));
-    m.gapY = juce::jmax (4,  (int) std::round (nominalGapY * stackScale));
+    auto fitStack = [&] (int stackSliders, int stackGaps)
+    {
+        const int nominalStack = stackSliders * nominalBarH + stackGaps * nominalGapY;
+        const double stackScale = nominalStack > 0 ? juce::jmin (1.0, (double) spaceForScale / (double) nominalStack) : 1.0;
 
-    auto stackHeight = [&]() { return numSliders * m.barH + numGaps * m.gapY; };
-    while (stackHeight() > spaceForScale && m.gapY > 4) --m.gapY;
-    while (stackHeight() > spaceForScale && m.barH > 14) --m.barH;
+        int barH = juce::jmax (14, (int) std::round (nominalBarH * stackScale));
+        int gapY = juce::jmax (4,  (int) std::round (nominalGapY * stackScale));
+
+        auto stackHeight = [&]() { return stackSliders * barH + stackGaps * gapY; };
+        while (stackHeight() > spaceForScale && gapY > 4) --gapY;
+        while (stackHeight() > spaceForScale && barH > 14) --barH;
+
+        return std::pair<int, int> { barH, gapY };
+    };
+
+    const auto fittedStack = fitStack (numSliders, numGaps);
+    m.barH = fittedStack.first;
+    m.gapY = fittedStack.second;
+    m.firstGapY = fitStack (10, 10).second;
 
     m.topY = m.topMargin;
     m.toggleBarY = m.topY;
@@ -2428,7 +2439,7 @@ void STRETRAudioProcessorEditor::resized()
     const auto horizontalLayout = buildHorizontalLayout (W, getTargetValueColumnWidth());
     const auto verticalLayout = buildVerticalLayout (H, kLayoutVerticalBiasPx, ioSectionExpanded_);
 
-    const int mainTop = verticalLayout.toggleBarY + verticalLayout.toggleBarH + verticalLayout.gapY;
+    const int mainTop = verticalLayout.toggleBarY + verticalLayout.toggleBarH + verticalLayout.firstGapY;
     const int step = verticalLayout.barH + verticalLayout.gapY;
 
     if (ioSectionExpanded_)
