@@ -27,3 +27,15 @@ JuceLibraryCode/*.sdf
 
 # macOS
 .DS_Store
+
+# Other
+*.log
+*.csv
+*.tmp
+*.bak
+*.orig
+*.rej
+*.vspscc
+_ReSharper*/
+/.vscode/
+_codex_backups/
