@@ -1128,8 +1128,9 @@ void STRETRAudioProcessorEditor::sliderValueChanged (juce::Slider* slider)
 
     auto isBar = [&] (const juce::Slider* s)
     {
-        return s == &amountSlider || s == &pitchSlider || s == &jitterSlider || s == &grainSlider
-            || s == &inputSlider  || s == &outputSlider || s == &mixSlider;
+        return s == &amountSlider || s == &pitchSlider || s == &grainSlider || s == &engineSlider || s == &windowSlider
+            || s == &jitterSlider || s == &styleSlider || s == &inputSlider || s == &outputSlider || s == &tiltSlider
+            || s == &panSlider || s == &mixSlider || s == &limThresholdSlider;
     };
 
     if (isBar (slider)) { repaint (getRowRepaintBounds (*slider)); return; }
