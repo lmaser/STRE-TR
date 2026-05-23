@@ -246,6 +246,8 @@ STRETRAudioProcessor::WindowFamily STRETRAudioProcessor::getWindowFamilyForEngin
 int STRETRAudioProcessor::getCanonicalWindowForFamily (WindowFamily family, int windowValue) const noexcept
 {
 	const int clamped = juce::jlimit (kWindowMin, kWindowMax, windowValue);
+	if (family == WindowFamily::grain)
+		return juce::jlimit (kWindowMin, kGrainWindowMax, clamped);
 	if (family == WindowFamily::fft1 || family == WindowFamily::fft2)
 		return juce::jmin (getCanonicalFftWindow (clamped), getCurrentMaxFftWindow());
 	return clamped;

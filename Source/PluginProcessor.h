@@ -36,7 +36,7 @@ public:
 	static constexpr const char* kParamPitch     = "pitch";
 	static constexpr const char* kParamGrain     = "grain";
     static constexpr const char* kParamEngine    = "engine";     // 0=STRETCH 1=GRAIN 2=FFT1 3=FFT2
-	static constexpr const char* kParamWindow    = "window";     // 16..8192; FFT engines snap to powers of two
+	static constexpr const char* kParamWindow    = "window";     // 16..8192; Grain caps at 2048, FFT snaps to powers of two
 	static constexpr const char* kParamMaxWindow = "max_window"; // FFT1/FFT2 max window for fixed PDC/ALIGN budget
 	static constexpr const char* kParamJitter    = "jitter";
 	static constexpr const char* kParamStyle     = "style";      // 0=MONO 1=STEREO 2=WIDE 3=DUAL
@@ -120,6 +120,7 @@ public:
 
 	static constexpr int   kWindowMin     = 16;
 	static constexpr int   kWindowMax     = 8192;
+	static constexpr int   kGrainWindowMax = 2048;
 	static constexpr int   kFftWindowMin  = 64;
 	static constexpr int   kFftMaxWindowDefault = 8192;
 	static constexpr int   kNumFftWindows = 8;
@@ -206,6 +207,8 @@ public:
 	static int getCanonicalWindowForEngine (int engineVal, int windowValue) noexcept
 	{
 		const int clamped = juce::jlimit (kWindowMin, kWindowMax, windowValue);
+		if (engineVal == 1)
+			return juce::jlimit (kWindowMin, kGrainWindowMax, clamped);
 		return (engineVal == 2 || engineVal == 3) ? getCanonicalFftWindow (clamped) : clamped;
 	}
 

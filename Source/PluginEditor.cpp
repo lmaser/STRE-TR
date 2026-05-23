@@ -1110,7 +1110,7 @@ void STRETRAudioProcessorEditor::sliderValueChanged (juce::Slider* slider)
     {
         const int engineVal = getCurrentEngineValue();
         const int effectiveWindow = getEffectiveWindowValue (windowSlider.getValue());
-        if (isCurrentEngineFft() && (int) std::lround (windowSlider.getValue()) != effectiveWindow)
+        if ((int) std::lround (windowSlider.getValue()) != effectiveWindow)
         {
             juce::ScopedValueSetter<bool> clampGuard (clampingWindowSlider_, true);
             audioProcessor.setStoredWindowForEngine (engineVal, effectiveWindow);
@@ -1492,10 +1492,28 @@ void STRETRAudioProcessorEditor::syncFftWindowToMax (bool notifyHost)
 
     if (! isCurrentEngineFft())
     {
+        const double windowMax = (getCurrentEngineValue() == 1)
+                               ? (double) STRETRAudioProcessor::kGrainWindowMax
+                               : (double) STRETRAudioProcessor::kWindowMax;
         windowSlider.setRange ((double) STRETRAudioProcessor::kWindowMin,
-                               (double) STRETRAudioProcessor::kWindowMax,
+                               windowMax,
                                1.0);
         windowSlider.setSkewFactor (0.5);
+        const int clampedWindow = audioProcessor.getStoredWindowForEngine (getCurrentEngineValue());
+        juce::ScopedValueSetter<bool> clampGuard (clampingWindowSlider_, true);
+        if (auto* p = audioProcessor.apvts.getParameter (STRETRAudioProcessor::kParamWindow))
+        {
+            const bool differs = std::abs (audioProcessor.apvts.getRawParameterValue (STRETRAudioProcessor::kParamWindow)->load()
+                                           - (float) clampedWindow) > 0.5f;
+            if (notifyHost && differs)
+                p->setValueNotifyingHost (p->convertTo0to1 ((float) clampedWindow));
+            else
+                audioProcessor.syncWindowParameterToEngine (getCurrentEngineValue());
+        }
+        if ((int) std::lround (windowSlider.getValue()) != clampedWindow)
+        {
+            windowSlider.setValue ((double) clampedWindow, juce::dontSendNotification);
+        }
         return;
     }
 
