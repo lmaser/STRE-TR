@@ -3814,7 +3814,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const bool fftJitterActive = (engineVal == 2 || engineVal == 3) && (jitterSmoothed_ > 1.0e-5f);
 		const float jitterAmountNorm = juce::jlimit (0.0f, 1.0f, 1.0f - controlSpeed);
 		const float jitterMotionAmountScale = (! stretchJitterActive && ! fftJitterActive && jitterAmountNorm > 1.0e-5f)
-			? std::sqrt (jitterAmountNorm)
+			? (0.5f + 0.5f * std::sqrt (jitterAmountNorm))
 			: 0.0f;
 		const float jitterReferenceSamples = (engineVal == 1)
 			? (float) grainSamples
@@ -5879,7 +5879,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		dbg.smoothedSpeed = smoothedSpeed_;
 		dbg.pitchRate = targetPitchRate;
 		const float dumpJitterAmountNorm = juce::jlimit (0.0f, 1.0f, 1.0f - smoothedSpeed_);
-		const float dumpJitterAmountScale = (dumpJitterAmountNorm > 1.0e-5f) ? std::sqrt (dumpJitterAmountNorm) : 0.0f;
+		const float dumpJitterAmountScale = (dumpJitterAmountNorm > 1.0e-5f) ? (0.5f + 0.5f * std::sqrt (dumpJitterAmountNorm)) : 0.0f;
 		const float dumpJitterReferenceSamples = (float) ((engineVal == 3) ? fft2GeometryWindowSamples : windowSamples);
 		const bool dumpStretchJitterActive = (engineVal == 0) && (jitterSmoothed_ > 1.0e-5f);
 		const bool dumpFftJitterActive = (engineVal == 2 || engineVal == 3) && (jitterSmoothed_ > 1.0e-5f);
