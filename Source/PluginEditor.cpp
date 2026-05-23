@@ -58,6 +58,11 @@ static juce::String formatGainFaderDbCompact (float dB)
     return juce::String (dB, 1) + "dB";
 }
 
+static juce::String formatFilterPromptFrequency (float hz)
+{
+    return juce::String (juce::roundToInt (juce::jlimit (20.0f, 20000.0f, hz)));
+}
+
 static juce::String formatChaosTooltip (float amountPercent, float speedHz)
 {
     return "AMT " + juce::String (juce::roundToInt (juce::jlimit (0.0f, 100.0f, amountPercent))) + "%"
@@ -3348,36 +3353,419 @@ void STRETRAudioProcessorEditor::openFilterPrompt()
     auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
     aw->setLookAndFeel (&lnf);
 
-    aw->addTextEditor ("hpFreq", juce::String (hpFreq, 2), juce::String());
-    aw->addTextEditor ("lpFreq", juce::String (lpFreq, 2), juce::String());
+    struct PromptBar : public juce::Component
+    {
+        STREScheme colours;
+        float value01 = 0.5f;
+        float default01 = 0.5f;
+        std::function<void (float)> onValueChanged;
+
+        PromptBar (const STREScheme& s, float initial01, float def01)
+            : colours (s), value01 (initial01), default01 (def01) {}
+
+        void paint (juce::Graphics& g) override
+        {
+            const auto r = getLocalBounds().toFloat();
+            g.setColour (colours.outline);
+            g.drawRect (r, 4.0f);
+
+            const float pad = 7.0f;
+            auto inner = r.reduced (pad);
+            g.setColour (colours.bg);
+            g.fillRect (inner);
+
+            const float fillW = juce::jlimit (0.0f, inner.getWidth(), inner.getWidth() * value01);
+            g.setColour (colours.fg);
+            g.fillRect (inner.withWidth (fillW));
+        }
+
+        void mouseDown (const juce::MouseEvent& e) override { updateFromMouse (e); }
+        void mouseDrag (const juce::MouseEvent& e) override { updateFromMouse (e); }
+        void mouseDoubleClick (const juce::MouseEvent&) override { setValue (default01); }
+
+        void setValue (float v)
+        {
+            value01 = juce::jlimit (0.0f, 1.0f, v);
+            repaint();
+            if (onValueChanged)
+                onValueChanged (value01);
+        }
+
+    private:
+        void updateFromMouse (const juce::MouseEvent& e)
+        {
+            const float pad = 7.0f;
+            const float innerW = (float) getWidth() - pad * 2.0f;
+            setValue (innerW > 0.0f ? ((float) e.x - pad) / innerW : 0.0f);
+        }
+    };
+
+    auto freqToNorm = [] (float freq) -> float
+    {
+        constexpr float minF = 20.0f, maxF = 20000.0f;
+        return std::log2 (juce::jlimit (minF, maxF, freq) / minF) / std::log2 (maxF / minF);
+    };
+
+    auto normToFreq = [] (float n) -> float
+    {
+        constexpr float minF = 20.0f, maxF = 20000.0f;
+        return minF * std::pow (2.0f, juce::jlimit (0.0f, 1.0f, n) * std::log2 (maxF / minF));
+    };
+
+    aw->addTextEditor ("hpFreq", formatFilterPromptFrequency (hpFreq), juce::String());
+    auto* hpBar = new PromptBar (scheme, freqToNorm (hpFreq), freqToNorm (STRETRAudioProcessor::kFilterHpFreqDefault));
+    aw->addAndMakeVisible (hpBar);
+
+    aw->addTextEditor ("lpFreq", formatFilterPromptFrequency (lpFreq), juce::String());
+    auto* lpBar = new PromptBar (scheme, freqToNorm (lpFreq), freqToNorm (STRETRAudioProcessor::kFilterLpFreqDefault));
+    aw->addAndMakeVisible (lpBar);
+
+    auto* hpToggle = new juce::ToggleButton ("");
+    hpToggle->setToggleState (hpOn, juce::dontSendNotification);
+    hpToggle->setLookAndFeel (&lnf);
+    aw->addAndMakeVisible (hpToggle);
+
+    auto* lpToggle = new juce::ToggleButton ("");
+    lpToggle->setToggleState (lpOn, juce::dontSendNotification);
+    lpToggle->setLookAndFeel (&lnf);
+    aw->addAndMakeVisible (lpToggle);
+
+    auto slopeToText = [] (int s) -> juce::String
+    {
+        if (s == 0) return "6dB";
+        if (s == 1) return "12dB";
+        return "24dB";
+    };
+
+    auto* hpSlopeLabel = new juce::Label ("", slopeToText (hpSlope));
+    hpSlopeLabel->setJustificationType (juce::Justification::centredRight);
+    hpSlopeLabel->setColour (juce::Label::textColourId, scheme.text);
+    aw->addAndMakeVisible (hpSlopeLabel);
+
+    auto* lpSlopeLabel = new juce::Label ("", slopeToText (lpSlope));
+    lpSlopeLabel->setJustificationType (juce::Justification::centredRight);
+    lpSlopeLabel->setColour (juce::Label::textColourId, scheme.text);
+    aw->addAndMakeVisible (lpSlopeLabel);
+
+    auto hpSlopeVal = std::make_shared<int> (hpSlope);
+    auto lpSlopeVal = std::make_shared<int> (lpSlope);
+    auto syncing = std::make_shared<bool> (false);
+    auto layoutFn = std::make_shared<std::function<void()>> ([] {});
+
+    juce::Component::SafePointer<STRETRAudioProcessorEditor> safeThis (this);
+
+    auto pushParams = [safeThis, hpToggle, lpToggle, hpSlopeVal, lpSlopeVal, aw] ()
+    {
+        if (safeThis == nullptr)
+            return;
+
+        auto& p = safeThis->audioProcessor;
+        auto setP = [&p] (const char* id, float plain)
+        {
+            if (auto* param = p.apvts.getParameter (id))
+                param->setValueNotifyingHost (param->convertTo0to1 (plain));
+        };
+
+        auto* hpTe = aw->getTextEditor ("hpFreq");
+        auto* lpTe = aw->getTextEditor ("lpFreq");
+        float hpF = hpTe ? juce::jlimit (20.0f, 20000.0f, (float) hpTe->getText().getFloatValue()) : 20.0f;
+        float lpF = lpTe ? juce::jlimit (20.0f, 20000.0f, (float) lpTe->getText().getFloatValue()) : 20000.0f;
+        if (hpF > lpF)
+        {
+            const float mid = (hpF + lpF) * 0.5f;
+            hpF = mid;
+            lpF = mid;
+        }
+
+        if (hpTe) setP (STRETRAudioProcessor::kParamFilterHpFreq, hpF);
+        if (lpTe) setP (STRETRAudioProcessor::kParamFilterLpFreq, lpF);
+        setP (STRETRAudioProcessor::kParamFilterHpSlope, (float) *hpSlopeVal);
+        setP (STRETRAudioProcessor::kParamFilterLpSlope, (float) *lpSlopeVal);
+
+        if (auto* hpOnParam = p.apvts.getParameter (STRETRAudioProcessor::kParamFilterHpOn))
+            hpOnParam->setValueNotifyingHost (hpToggle->getToggleState() ? 1.0f : 0.0f);
+        if (auto* lpOnParam = p.apvts.getParameter (STRETRAudioProcessor::kParamFilterLpOn))
+            lpOnParam->setValueNotifyingHost (lpToggle->getToggleState() ? 1.0f : 0.0f);
+
+        safeThis->filterBar_.updateFromProcessor();
+    };
+
+    hpSlopeLabel->setInterceptsMouseClicks (true, false);
+    struct SlopeCycler : public juce::MouseListener
+    {
+        std::shared_ptr<int> val;
+        juce::Label* label = nullptr;
+        std::function<juce::String (int)> toText;
+        std::function<void()> push;
+        std::shared_ptr<std::function<void()>> layout;
+
+        void mouseDown (const juce::MouseEvent&) override
+        {
+            *val = (*val + 1) % 3;
+            label->setText (toText (*val), juce::dontSendNotification);
+            push();
+            if (layout && *layout)
+                (*layout)();
+        }
+    };
+
+    auto* hpCycler = new SlopeCycler();
+    hpCycler->val = hpSlopeVal;
+    hpCycler->label = hpSlopeLabel;
+    hpCycler->toText = slopeToText;
+    hpCycler->push = pushParams;
+    hpCycler->layout = layoutFn;
+    hpSlopeLabel->addMouseListener (hpCycler, false);
+
+    lpSlopeLabel->setInterceptsMouseClicks (true, false);
+    auto* lpCycler = new SlopeCycler();
+    lpCycler->val = lpSlopeVal;
+    lpCycler->label = lpSlopeLabel;
+    lpCycler->toText = slopeToText;
+    lpCycler->push = pushParams;
+    lpCycler->layout = layoutFn;
+    lpSlopeLabel->addMouseListener (lpCycler, false);
+
+    auto hpCyclerGuard = std::shared_ptr<SlopeCycler> (hpCycler);
+    auto lpCyclerGuard = std::shared_ptr<SlopeCycler> (lpCycler);
+
+    hpToggle->onClick = pushParams;
+    lpToggle->onClick = pushParams;
+
+    auto* hpTe = aw->getTextEditor ("hpFreq");
+    auto* lpTe = aw->getTextEditor ("lpFreq");
+
+    auto barToText = [aw, syncing, normToFreq, pushParams, hpBar, lpBar] (const char* editorId, float v01, bool isHp)
+    {
+        if (*syncing)
+            return;
+
+        *syncing = true;
+        if (isHp)
+            v01 = juce::jmin (v01, lpBar->value01);
+        else
+            v01 = juce::jmax (v01, hpBar->value01);
+
+        if (isHp)
+        {
+            hpBar->value01 = v01;
+            hpBar->repaint();
+        }
+        else
+        {
+            lpBar->value01 = v01;
+            lpBar->repaint();
+        }
+
+        if (auto* te = aw->getTextEditor (editorId))
+        {
+            te->setText (formatFilterPromptFrequency (normToFreq (v01)), juce::sendNotification);
+            te->selectAll();
+        }
+
+        *syncing = false;
+        pushParams();
+    };
+
+    hpBar->onValueChanged = [barToText] (float v) { barToText ("hpFreq", v, true); };
+    lpBar->onValueChanged = [barToText] (float v) { barToText ("lpFreq", v, false); };
+
+    auto textToBar = [syncing, freqToNorm, pushParams, aw, hpBar, lpBar] (juce::TextEditor* te, PromptBar* bar, bool isHp)
+    {
+        if (*syncing || te == nullptr || bar == nullptr)
+            return;
+
+        *syncing = true;
+        float freq = juce::jlimit (20.0f, 20000.0f, (float) te->getText().getFloatValue());
+        auto* otherTe = aw->getTextEditor (isHp ? "lpFreq" : "hpFreq");
+        const float otherFreq = otherTe ? juce::jlimit (20.0f, 20000.0f, (float) otherTe->getText().getFloatValue())
+                                        : (isHp ? 20000.0f : 20.0f);
+        if (isHp)
+            freq = juce::jmin (freq, otherFreq);
+        else
+            freq = juce::jmax (freq, otherFreq);
+
+        te->setText (formatFilterPromptFrequency (freq), juce::dontSendNotification);
+        bar->value01 = freqToNorm (freq);
+        bar->repaint();
+        *syncing = false;
+        pushParams();
+    };
+
+    if (hpTe != nullptr)
+        hpTe->onTextChange = [textToBar, hpTe, hpBar, layoutFn] ()
+        {
+            textToBar (hpTe, hpBar, true);
+            if (*layoutFn)
+                (*layoutFn)();
+        };
+    if (lpTe != nullptr)
+        lpTe->onTextChange = [textToBar, lpTe, lpBar, layoutFn] ()
+        {
+            textToBar (lpTe, lpBar, false);
+            if (*layoutFn)
+                (*layoutFn)();
+        };
 
     aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
     aw->addButton ("CANCEL", 0, juce::KeyPress (juce::KeyPress::escapeKey));
     applyPromptShellSize (*aw);
     layoutAlertWindowButtons (*aw);
-    styleAlertButtons (*aw, lnf);
 
-    for (const char* id : { "hpFreq", "lpFreq" })
+    const int margin = kPromptInnerMargin;
+    const int toggleSide = 26;
+    const juce::Font promptFont (juce::FontOptions (34.0f).withStyle ("Bold"));
+    const juce::Font slopeFont  (juce::FontOptions (24.0f).withStyle ("Bold"));
+
+    auto* hpNameLabel = new juce::Label ("", "HP");
+    hpNameLabel->setJustificationType (juce::Justification::centredLeft);
+    hpNameLabel->setColour (juce::Label::textColourId, scheme.text);
+    hpNameLabel->setBorderSize (juce::BorderSize<int> (0));
+    hpNameLabel->setFont (promptFont);
+    aw->addAndMakeVisible (hpNameLabel);
+
+    auto* lpNameLabel = new juce::Label ("", "LP");
+    lpNameLabel->setJustificationType (juce::Justification::centredLeft);
+    lpNameLabel->setColour (juce::Label::textColourId, scheme.text);
+    lpNameLabel->setBorderSize (juce::BorderSize<int> (0));
+    lpNameLabel->setFont (promptFont);
+    aw->addAndMakeVisible (lpNameLabel);
+
+    auto* hpHzLabel = new juce::Label ("", "Hz");
+    hpHzLabel->setJustificationType (juce::Justification::centredLeft);
+    hpHzLabel->setColour (juce::Label::textColourId, scheme.text);
+    hpHzLabel->setBorderSize (juce::BorderSize<int> (0));
+    hpHzLabel->setFont (promptFont);
+    aw->addAndMakeVisible (hpHzLabel);
+
+    auto* lpHzLabel = new juce::Label ("", "Hz");
+    lpHzLabel->setJustificationType (juce::Justification::centredLeft);
+    lpHzLabel->setColour (juce::Label::textColourId, scheme.text);
+    lpHzLabel->setBorderSize (juce::BorderSize<int> (0));
+    lpHzLabel->setFont (promptFont);
+    aw->addAndMakeVisible (lpHzLabel);
+
+    preparePromptTextEditor (*aw, "hpFreq", scheme.bg, scheme.text, scheme.fg, promptFont, false);
+    preparePromptTextEditor (*aw, "lpFreq", scheme.bg, scheme.text, scheme.fg, promptFont, false);
+
+    struct ToggleForwarder : public juce::MouseListener
     {
-        if (auto* te = aw->getTextEditor (id))
+        juce::ToggleButton* toggle = nullptr;
+        void mouseDown (const juce::MouseEvent&) override
         {
-            te->setInputFilter (new juce::TextEditor::LengthAndCharacterRestriction (9, "0123456789."), true);
-            preparePromptTextEditor (*aw, id, scheme.bg, scheme.text, scheme.fg, kBoldFont40(), false);
+            if (toggle != nullptr)
+                toggle->setToggleState (! toggle->getToggleState(), juce::sendNotification);
         }
-    }
+    };
 
-    juce::Component::SafePointer<STRETRAudioProcessorEditor> safeThis (this);
-    setPromptOverlayActive (true);
+    hpNameLabel->setInterceptsMouseClicks (true, false);
+    auto* hpFwd = new ToggleForwarder();
+    hpFwd->toggle = hpToggle;
+    hpNameLabel->addMouseListener (hpFwd, false);
+
+    lpNameLabel->setInterceptsMouseClicks (true, false);
+    auto* lpFwd = new ToggleForwarder();
+    lpFwd->toggle = lpToggle;
+    lpNameLabel->addMouseListener (lpFwd, false);
+
+    auto hpFwdGuard = std::shared_ptr<ToggleForwarder> (hpFwd);
+    auto lpFwdGuard = std::shared_ptr<ToggleForwarder> (lpFwd);
+
+    auto layoutRows = [aw, hpToggle, lpToggle,
+                       hpNameLabel, lpNameLabel, hpHzLabel, lpHzLabel,
+                       hpSlopeLabel, lpSlopeLabel, hpBar, lpBar,
+                       promptFont, slopeFont, toggleSide, margin] ()
+    {
+        auto* hpEditor = aw->getTextEditor ("hpFreq");
+        auto* lpEditor = aw->getTextEditor ("lpFreq");
+        if (hpEditor == nullptr || lpEditor == nullptr)
+            return;
+
+        const int buttonsTop = getAlertButtonsTop (*aw);
+        const int rowH = hpEditor->getHeight();
+        const int barH = juce::jmax (10, rowH / 2);
+        const int barGap = juce::jmax (2, rowH / 6);
+        const int gap = juce::jmax (4, rowH / 3);
+        const int rowTotal = rowH + barGap + barH;
+        const int totalH = rowTotal * 2 + gap;
+        const int startY = juce::jmax (kPromptEditorMinTopPx, (buttonsTop - totalH) / 2);
+
+        const int barX = margin;
+        const int barR = aw->getWidth() - margin;
+
+        constexpr int toggleVisualInsetLeft = 2;
+        constexpr int tglGap = 4;
+        const int toggleVisualSide = juce::jlimit (14, juce::jmax (14, toggleSide - 2),
+                                                   (int) std::lround ((double) toggleSide * 0.65));
+        const int labelOffset = toggleVisualInsetLeft + toggleVisualSide + tglGap;
+
+        const int nameW = stringWidth (slopeFont, "LP") + 2;
+        const int slopeW = stringWidth (slopeFont, "24dB") + 4;
+        const int hzGap = 2;
+        const int hzW = stringWidth (promptFont, "Hz") + 2;
+
+        auto placeRow = [&] (juce::ToggleButton* toggle, juce::Label* nameLabel,
+                             juce::TextEditor* te, juce::Label* hzLabel,
+                             juce::Label* slopeLabel, PromptBar* bar, int y)
+        {
+            nameLabel->setFont (slopeFont);
+            hzLabel->setFont (promptFont);
+            slopeLabel->setFont (slopeFont);
+
+            toggle->setBounds (barX, y + (rowH - toggleSide) / 2, toggleSide, toggleSide);
+            const int nameX = barX + labelOffset;
+            nameLabel->setBounds (nameX, y, nameW, rowH);
+
+            const int slopeX = barR - slopeW;
+            slopeLabel->setBounds (slopeX, y, slopeW, rowH);
+
+            const int midL = nameX + nameW;
+            const int midR = slopeX;
+            const int midW = midR - midL;
+            const int textW = juce::jmax (1, stringWidth (promptFont, te->getText()));
+            constexpr int kEditorPad = 6;
+            const int editorW = textW + kEditorPad * 2;
+            const int groupW = editorW + hzGap + hzW;
+            const int groupX = midL + juce::jmax (0, (midW - groupW) / 2);
+
+            te->setBounds (groupX, y, editorW, rowH);
+            hzLabel->setBounds (groupX + editorW + hzGap, y, hzW, rowH);
+
+            const int barW = juce::jmax (60, barR - barX);
+            bar->setBounds (barX, y + rowH + barGap, barW, barH);
+        };
+
+        placeRow (hpToggle, hpNameLabel, hpEditor, hpHzLabel, hpSlopeLabel, hpBar, startY);
+        placeRow (lpToggle, lpNameLabel, lpEditor, lpHzLabel, lpSlopeLabel, lpBar, startY + rowTotal + gap);
+    };
+
+    layoutRows();
+    *layoutFn = layoutRows;
+
+    preparePromptTextEditor (*aw, "hpFreq", scheme.bg, scheme.text, scheme.fg, promptFont, false);
+    preparePromptTextEditor (*aw, "lpFreq", scheme.bg, scheme.text, scheme.fg, promptFont, false);
+    if (auto* te = aw->getTextEditor ("hpFreq"))
+        te->setInputRestrictions (5, "0123456789");
+    if (auto* te = aw->getTextEditor ("lpFreq"))
+        te->setInputRestrictions (5, "0123456789");
+    layoutRows();
+
+    styleAlertButtons (*aw, lnf);
 
     const float origHpFreq = hpFreq, origLpFreq = lpFreq;
     const int origHpSlope = hpSlope, origLpSlope = lpSlope;
     const bool origHpOn = hpOn, origLpOn = lpOn;
 
-    fitAlertWindowToEditor (*aw, safeThis.getComponent(), [] (juce::AlertWindow& a) { layoutAlertWindowButtons (a); });
+    fitAlertWindowToEditor (*aw, safeThis.getComponent(), [layoutRows] (juce::AlertWindow& a)
+    {
+        layoutAlertWindowButtons (a);
+        layoutRows();
+    });
     embedAlertWindowInOverlay (safeThis.getComponent(), aw);
 
     aw->enterModalState (true,
-        juce::ModalCallbackFunction::create ([safeThis, aw, origHpFreq, origLpFreq, origHpSlope, origLpSlope, origHpOn, origLpOn] (int result)
+        juce::ModalCallbackFunction::create ([safeThis, aw, origHpFreq, origLpFreq, origHpSlope, origLpSlope,
+                                              origHpOn, origLpOn, hpCyclerGuard, lpCyclerGuard, hpFwdGuard, lpFwdGuard] (int result)
         {
             std::unique_ptr<juce::AlertWindow> killer (aw);
             if (safeThis == nullptr) return;
@@ -3388,25 +3776,12 @@ void STRETRAudioProcessorEditor::openFilterPrompt()
                 { if (auto* param = p.apvts.getParameter (id)) param->setValueNotifyingHost (param->convertTo0to1 (plain)); };
                 setP (STRETRAudioProcessor::kParamFilterHpFreq, origHpFreq);
                 setP (STRETRAudioProcessor::kParamFilterLpFreq, origLpFreq);
-                safeThis->filterBar_.updateFromProcessor();
-            }
-            else
-            {
-                auto& p = safeThis->audioProcessor;
-                const auto hpTxt = aw->getTextEditorContents ("hpFreq").trim();
-                const auto lpTxt = aw->getTextEditorContents ("lpFreq").trim();
-                if (hpTxt.isNotEmpty())
-                {
-                    float f = juce::jlimit (20.0f, 20000.0f, (float) hpTxt.getDoubleValue());
-                    if (auto* param = p.apvts.getParameter (STRETRAudioProcessor::kParamFilterHpFreq))
-                        param->setValueNotifyingHost (param->convertTo0to1 (f));
-                }
-                if (lpTxt.isNotEmpty())
-                {
-                    float f = juce::jlimit (20.0f, 20000.0f, (float) lpTxt.getDoubleValue());
-                    if (auto* param = p.apvts.getParameter (STRETRAudioProcessor::kParamFilterLpFreq))
-                        param->setValueNotifyingHost (param->convertTo0to1 (f));
-                }
+                setP (STRETRAudioProcessor::kParamFilterHpSlope, (float) origHpSlope);
+                setP (STRETRAudioProcessor::kParamFilterLpSlope, (float) origLpSlope);
+                if (auto* hpOnParam = p.apvts.getParameter (STRETRAudioProcessor::kParamFilterHpOn))
+                    hpOnParam->setValueNotifyingHost (origHpOn ? 1.0f : 0.0f);
+                if (auto* lpOnParam = p.apvts.getParameter (STRETRAudioProcessor::kParamFilterLpOn))
+                    lpOnParam->setValueNotifyingHost (origLpOn ? 1.0f : 0.0f);
                 safeThis->filterBar_.updateFromProcessor();
             }
             safeThis->setPromptOverlayActive (false);
