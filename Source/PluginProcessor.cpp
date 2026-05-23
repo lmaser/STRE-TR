@@ -876,7 +876,7 @@ STRETRAudioProcessor::JitterRuntimeValues STRETRAudioProcessor::makeStretchJitte
 STRETRAudioProcessor::JitterRuntimeValues STRETRAudioProcessor::makeFftJitterRuntimeValues (int lane) const noexcept
 {
 	JitterRuntimeValues values;
-	const float amt = juce::jlimit (0.0f, 1.0f, jitterSmoothed_);
+	const float amt = remapStretchGrainJitterControl (jitterSmoothed_);
 	if (amt <= 1.0e-5f)
 		return values;
 
