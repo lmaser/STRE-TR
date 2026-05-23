@@ -149,10 +149,12 @@ Selects the active engine:
 
 Shared UI slot with independent stored values per engine.
 
-- `STRETCH` and `GRAIN` use the smoothed value directly
+- `STRETCH` uses the smoothed value directly
+- `GRAIN` uses the smoothed value directly up to a safe effective maximum of `2048`
 - `FFT1` and `FFT2` snap it to valid power-of-two FFT sizes, with a minimum effective FFT size of `64`
 - `WINDOW` has no numeric prompt; FFT windows are selected as stepped values
 - `MAX WIN` is configured from the `PDC` right-click prompt and clamps FFT1/FFT2 window choices
+- Default `MAX WIN` is `2048`
 
 ### STYLE
 
@@ -331,7 +333,7 @@ Filter, tilt, and chaos subsystems also have their own internal smoothing/update
 - `ALIGN` and `PDC` are FFT-only and are intentionally independent from the sound of the engine
 - `TRG` is central to the creative workflow of this plugin; with `TRG` off the wet path stays clean
 - `WINDOW` uses one UI slot but stores independent values for `STRETCH`, `GRAIN`, `FFT1`, and `FFT2`
-- `FFT1` and `FFT2` quantize `WINDOW` to power-of-two FFT sizes internally, while `STRETCH` and `GRAIN` use the smoothed value directly
+- `FFT1` and `FFT2` quantize `WINDOW` to power-of-two FFT sizes internally, while `STRETCH` uses the smoothed value directly and `GRAIN` caps its effective window at `2048`
 
 ## Changelog
 
@@ -348,5 +350,6 @@ Filter, tilt, and chaos subsystems also have their own internal smoothing/update
 - Improved FFT reverse behavior, including FFT1 full-reverse hold and signed reverse phase tracking
 - Fixed `DUAL` pitch mapping in FFT routes so each channel uses its own pitch rate consistently
 - Fixed the `GRAIN` size row so it is enabled only for the `GRAIN` engine
+- Capped the effective `GRAIN` window at `2048` and set the default FFT `MAX WIN` budget to `2048`
 - Cleaned documentation and removed stale or incorrect legacy descriptions
 - Release hardening: developer traces are now opt-in and kept out of normal release behavior

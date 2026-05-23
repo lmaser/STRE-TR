@@ -1304,8 +1304,6 @@ void STRETRAudioProcessor::ensureFft (int fftSize)
 			fftWindow_[j] = 0.5f * (1.0f - std::cos (juce::MathConstants<float>::twoPi
 			                * (float) j / (float) fftSize));
 	}
-
-	stft_.activeFftSize = fftSize;
 }
 
 void STRETRAudioProcessor::resetStftAtPos (double capturePos, int fftSize) noexcept
@@ -3195,9 +3193,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		desiredFftSizeForDump = desiredFftSize;
 		previousFftSizeForDump = previousFftSize;
 		const bool delayWindowApply = triggerOn && (previousFftSize > 0) && (fftWindowApplyDelayRemaining_ > 0);
-		if (triggerOn)
-			ensureFft (desiredFftSize);
 		requestedFftSize = delayWindowApply ? previousFftSize : desiredFftSize;
+		if (triggerOn)
+			ensureFft (requestedFftSize);
 		fftSizeChanged = triggerOn && ! delayWindowApply && (requestedFftSize != previousFftSize);
 		if (fftWindowApplyDelayRemaining_ > 0)
 			fftWindowApplyDelayRemaining_ = juce::jmax (0, fftWindowApplyDelayRemaining_ - numSamples);

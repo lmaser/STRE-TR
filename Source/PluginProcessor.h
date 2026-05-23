@@ -122,7 +122,7 @@ public:
 	static constexpr int   kWindowMax     = 8192;
 	static constexpr int   kGrainWindowMax = 2048;
 	static constexpr int   kFftWindowMin  = 64;
-	static constexpr int   kFftMaxWindowDefault = 8192;
+	static constexpr int   kFftMaxWindowDefault = 2048;
 	static constexpr int   kNumFftWindows = 8;
 	static constexpr int   kFftWindows[kNumFftWindows] = { 64, 128, 256, 512, 1024, 2048, 4096, 8192 };
 	static constexpr float kWindowDefault = 1024.0f;
