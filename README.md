@@ -125,6 +125,7 @@ Organic jitter/instability for the active stretch engine.
 - Adds deterministic pitch-rate drift in all engines
 - Adds safe grain-length and grain-anchor movement in `GRAIN`
 - Keeps non-pitch grain motion bounded around neutral settings to avoid discontinuities
+- Uses a stronger calibrated depth in `STRETCH` and `GRAIN`, while `FFT1`/`FFT2` keep their own spectral jitter scale
 - Uses deterministic drift and smoothed sample-and-hold sources
 
 ### GRAIN (1-500 ms)
@@ -297,7 +298,7 @@ Independent inversion modes for polarity and stereo:
 - `GRAIN`: up to `64` grains with Hann envelopes and deterministic trigger/loop state
 - `FFT1`: phase vocoder with freeze reached by reducing FFT analysis advance, plus signed reverse phase tracking
 - `FFT2`: spectral hold built on the FFT engine, with hold intensity controlled by `AMOUNT` and signed reverse phase tracking
-- `JIT`: deterministic per-channel drift/S&H modulation, mapped to `PITCH`/pitch-rate and safe granular read geometry
+- `JIT`: deterministic per-channel drift/S&H modulation, mapped to `PITCH`/pitch-rate and safe granular read geometry, with stronger `STRETCH`/`GRAIN` depth than the FFT engines
 - Wet filter: HP/LP biquads with periodic coefficient updates
 - Tilt: first-order wet tilt
 - Chaos: Hermite-interpolated random targets with drift
@@ -343,7 +344,7 @@ Filter, tilt, and chaos subsystems also have their own internal smoothing/update
 - Made `WINDOW` state independent per engine while keeping a single compact UI slot
 - Stabilized `AMOUNT`/`PITCH` automation consistency across `STRETCH`, `GRAIN`, `FFT1`, and `FFT2`
 - Hardened FFT output normalization and FFT1 freeze transitions to avoid edge-case automation clicks on large windows
-- Added `JIT` as a deterministic organic-motion control for pitch drift and granular instability
+- Added `JIT` as a deterministic organic-motion control for pitch drift and granular instability, with calibrated `STRETCH`/`GRAIN` depth and separate FFT scaling
 - Improved FFT reverse behavior, including FFT1 full-reverse hold and signed reverse phase tracking
 - Fixed `DUAL` pitch mapping in FFT routes so each channel uses its own pitch rate consistently
 - Fixed the `GRAIN` size row so it is enabled only for the `GRAIN` engine

@@ -15,7 +15,7 @@ namespace
 	constexpr float kGainSmoothStep  = 1.0f - kGainSmoothCoeff;
 	constexpr float kStretchJitterPitchSmoothStep = 0.95f;
 	constexpr float kStretchGrainJitterControlPower = 6.0f;
-	constexpr float kStretchGrainJitterIntensityScale = 1.5f;
+	constexpr float kStretchGrainJitterIntensityScale = 3.0f;
 	constexpr float kGrainSizeSmoothSeconds = 0.045f;
 
 	// Developer diagnostics are centralized here so temporary dumps can be
