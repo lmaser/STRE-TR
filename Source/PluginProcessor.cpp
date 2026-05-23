@@ -2572,6 +2572,7 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 	const float expBase    = twoPi / (float) fftSize;
 	const float blend      = 1.0f - holdCoeff;  // 1 = transparent, 0 = full freeze
 	const float phaseAnalysisHop = reverseOn ? - (float) synthesisHop : (float) synthesisHop;
+	const bool  useFastLargeFftAnalysis = (fftSize > 1024);
 	const double analysisReadBefore = stft_.analysisReadPos;
 #if STRETR_ENABLE_FFT1_CLICK_DUMP
 	if constexpr (DeveloperDiagnosticsConfig::kEnableFft1AmountFreezeDump)
@@ -2677,7 +2678,8 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 				const float re  = fftWork_[k * 2];
 				const float im  = fftWork_[k * 2 + 1];
 				const float mag = std::sqrt (re * re + im * im);
-				const float ph  = std::atan2 (im, re);
+				const float ph  = useFastLargeFftAnalysis ? fastAtan2Approx (im, re)
+				                                          : std::atan2 (im, re);
 
 				// Instantaneous frequency via phase difference
 				float phaseDiff = ph - stft_.prevPhase[ch][k];
