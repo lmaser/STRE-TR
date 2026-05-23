@@ -1725,7 +1725,7 @@ private:
 	JitterRuntimeValues makeJitterRuntimeValues (int lane, float referenceSamples,
 	                                             float pitchAmountScale, float motionAmountScale,
 	                                             bool allowAnchor) const noexcept;
-	JitterRuntimeValues makeStretchJitterRuntimeValues (int lane) const noexcept;
+	JitterRuntimeValues makeStretchJitterRuntimeValues (int lane, float speed) const noexcept;
 	JitterRuntimeValues makeFftJitterRuntimeValues (int lane) const noexcept;
 
 	struct WetFilterChannelState

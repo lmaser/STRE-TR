@@ -14,6 +14,8 @@ namespace
 	constexpr float kGainSmoothCoeff = 0.9955f;
 	constexpr float kGainSmoothStep  = 1.0f - kGainSmoothCoeff;
 	constexpr float kStretchJitterPitchSmoothStep = 0.95f;
+	constexpr float kStretchGrainJitterControlPower = 6.0f;
+	constexpr float kStretchGrainJitterIntensityScale = 1.5f;
 	constexpr float kGrainSizeSmoothSeconds = 0.045f;
 
 	// Developer diagnostics are centralized here so temporary dumps can be
@@ -125,6 +127,12 @@ namespace
 			return juce::jmax (speed, 0.0002f);
 		}
 		return speed;
+	}
+
+	inline float remapStretchGrainJitterControl (float amount) noexcept
+	{
+		const float amt = juce::jlimit (0.0f, 1.0f, amount);
+		return 1.0f - std::pow (1.0f - amt, kStretchGrainJitterControlPower);
 	}
 
 	inline juce::NormalisableRange<float> makeGainFaderRange() noexcept
@@ -793,8 +801,9 @@ STRETRAudioProcessor::JitterRuntimeValues STRETRAudioProcessor::makeJitterRuntim
                                                                                          bool allowAnchor) const noexcept
 {
 	JitterRuntimeValues values;
-	const float pitchAmt = juce::jlimit (0.0f, 1.0f, jitterSmoothed_ * pitchAmountScale);
-	const float motionAmt = juce::jlimit (0.0f, 1.0f, jitterSmoothed_ * motionAmountScale);
+	const float jitterAmt = remapStretchGrainJitterControl (jitterSmoothed_);
+	const float pitchAmt = juce::jlimit (0.0f, 1.0f, jitterAmt * pitchAmountScale);
+	const float motionAmt = juce::jlimit (0.0f, 1.0f, jitterAmt * motionAmountScale);
 	if (pitchAmt <= 1.0e-5f && motionAmt <= 1.0e-5f)
 		return values;
 
@@ -806,9 +815,9 @@ STRETRAudioProcessor::JitterRuntimeValues STRETRAudioProcessor::makeJitterRuntim
 		const float pitchDepth = pitchAmt * pitchAmt;
 		const float pitchFinalRange = juce::jlimit (0.0f, 1.0f, (pitchAmt - 0.80f) / 0.20f);
 		const float pitchFinalShape = pitchFinalRange * pitchFinalRange * (3.0f - 2.0f * pitchFinalRange);
-		const float pitchDepthCents = 1.5f * pitchAmt + 7.5f * pitchDepth;
-		const float pitchCents = juce::jlimit (-12.0f, 12.0f,
-			jitterPitchOut_[ch] * pitchDepthCents + rapid * pitchFinalShape * 2.5f);
+		const float pitchDepthCents = (1.5f * pitchAmt + 7.5f * pitchDepth) * kStretchGrainJitterIntensityScale;
+		const float pitchCents = juce::jlimit (-18.0f, 18.0f,
+			(jitterPitchOut_[ch] * pitchDepthCents + rapid * pitchFinalShape * 2.5f * kStretchGrainJitterIntensityScale));
 		values.pitchScale = std::exp2 (pitchCents / 1200.0f);
 	}
 
@@ -817,13 +826,15 @@ STRETRAudioProcessor::JitterRuntimeValues STRETRAudioProcessor::makeJitterRuntim
 		const float motionDepth = motionAmt * motionAmt;
 		const float motionFinalRange = juce::jlimit (0.0f, 1.0f, (motionAmt - 0.80f) / 0.20f);
 		const float motionFinalShape = motionFinalRange * motionFinalRange * (3.0f - 2.0f * motionFinalRange);
-		const float lengthDepth = (0.004f * motionAmt + 0.018f * motionDepth) * (1.0f + 0.55f * motionFinalShape);
+		const float lengthDepth = (0.004f * motionAmt + 0.018f * motionDepth)
+			* (1.0f + 0.55f * motionFinalShape) * kStretchGrainJitterIntensityScale;
 		const float lengthModulator = juce::jlimit (-1.0f, 1.0f,
 			jitterWindowOut_[ch] + rapid * motionFinalShape * 0.45f);
 		values.lengthScale = juce::jlimit (0.88f, 1.12f, 1.0f + lengthModulator * lengthDepth);
 
 		const float ref = juce::jmax (1.0f, referenceSamples);
-		const float anchorDepth = (0.003f * motionAmt + 0.012f * motionDepth) * (1.0f + 0.60f * motionFinalShape);
+		const float anchorDepth = (0.003f * motionAmt + 0.012f * motionDepth)
+			* (1.0f + 0.60f * motionFinalShape) * kStretchGrainJitterIntensityScale;
 		const float anchorLimit = juce::jmin (ref * anchorDepth,
 		                                      (float) currentSampleRate * (0.010f + 0.010f * motionFinalShape));
 		const float anchorModulator = juce::jlimit (-1.0f, 1.0f,
@@ -834,14 +845,15 @@ STRETRAudioProcessor::JitterRuntimeValues STRETRAudioProcessor::makeJitterRuntim
 	return values;
 }
 
-STRETRAudioProcessor::JitterRuntimeValues STRETRAudioProcessor::makeStretchJitterRuntimeValues (int lane) const noexcept
+STRETRAudioProcessor::JitterRuntimeValues STRETRAudioProcessor::makeStretchJitterRuntimeValues (int lane, float speed) const noexcept
 {
 	JitterRuntimeValues values;
-	const float amt = juce::jlimit (0.0f, 1.0f, jitterSmoothed_);
-	if (amt <= 1.0e-5f)
+	const float rawAmt = juce::jlimit (0.0f, 1.0f, jitterSmoothed_);
+	if (rawAmt <= 1.0e-5f)
 		return values;
 
 	const int ch = juce::jlimit (0, 1, lane);
+	const float amt = std::pow (remapStretchGrainJitterControl (rawAmt), 0.43f);
 	const float curveAmt = std::sqrt (amt);
 	const float depth = curveAmt * curveAmt;
 	const float finalRange = juce::jlimit (0.0f, 1.0f, (amt - 0.80f) / 0.20f);
@@ -852,8 +864,11 @@ STRETRAudioProcessor::JitterRuntimeValues STRETRAudioProcessor::makeStretchJitte
 	const float modulator = juce::jlimit (-1.0f, 1.0f,
 		jitterPitchOut_[ch] * (1.0f - rapidWeight) + jitterRapidOut_[ch] * rapidWeight);
 
-	const float pitchDepthCents = (8.0f * curveAmt + 105.0f * depth) * (1.0f + 0.35f * finalShape);
-	const float pitchCents = juce::jlimit (-180.0f, 180.0f, modulator * pitchDepthCents);
+	const float speedNorm = juce::jlimit (0.0f, 1.0f, speed);
+	const float stretchSensitivity = 1.0f + 0.50f * std::pow (speedNorm, 1.5f);
+	const float pitchDepthCents = (8.0f * curveAmt + 105.0f * depth)
+		* (1.0f + 0.35f * finalShape) * stretchSensitivity * kStretchGrainJitterIntensityScale;
+	const float pitchCents = juce::jlimit (-360.0f, 360.0f, modulator * pitchDepthCents);
 	values.pitchScale = std::exp2 (pitchCents / 1200.0f);
 	return values;
 }
@@ -3808,9 +3823,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const auto grainJitterL = makeJitterRuntimeValues (0, jitterReferenceSamples, 1.0f, jitterMotionAmountScale, jitterAllowAnchor);
 		const auto grainJitterR = makeJitterRuntimeValues ((styleVal == 0) ? 0 : 1,
 		                                                   jitterReferenceSamples, 1.0f, jitterMotionAmountScale, jitterAllowAnchor);
-		auto stretchJitterL = stretchJitterActive ? makeStretchJitterRuntimeValues (0) : JitterRuntimeValues {};
+		auto stretchJitterL = stretchJitterActive ? makeStretchJitterRuntimeValues (0, controlSpeed) : JitterRuntimeValues {};
 		auto stretchJitterR = stretchJitterActive
-			? makeStretchJitterRuntimeValues ((styleVal == 0) ? 0 : 1)
+			? makeStretchJitterRuntimeValues ((styleVal == 0) ? 0 : 1, controlSpeed)
 			: JitterRuntimeValues {};
 		if (stretchJitterActive)
 		{
@@ -5872,9 +5887,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const auto dumpJitterL = makeJitterRuntimeValues (0, dumpJitterReferenceSamples, 1.0f, dumpMotionAmountScale, false);
 		const auto dumpJitterR = makeJitterRuntimeValues ((styleVal == 0) ? 0 : 1,
 		                                                  dumpJitterReferenceSamples, 1.0f, dumpMotionAmountScale, false);
-		auto dumpStretchJitterL = dumpStretchJitterActive ? makeStretchJitterRuntimeValues (0) : JitterRuntimeValues {};
+		auto dumpStretchJitterL = dumpStretchJitterActive ? makeStretchJitterRuntimeValues (0, smoothedSpeed_) : JitterRuntimeValues {};
 		auto dumpStretchJitterR = dumpStretchJitterActive
-			? makeStretchJitterRuntimeValues ((styleVal == 0) ? 0 : 1)
+			? makeStretchJitterRuntimeValues ((styleVal == 0) ? 0 : 1, smoothedSpeed_)
 			: JitterRuntimeValues {};
 		if (dumpStretchJitterActive)
 		{
