@@ -304,9 +304,7 @@ Independent inversion modes for polarity and stereo:
 - Wet filter: HP/LP biquads with periodic coefficient updates
 - Tilt: first-order wet tilt
 - Chaos: Hermite-interpolated random targets with drift
-- Limiter: dual-stage, stereo-linked
-  - Stage 1: `2 ms` attack / `10 ms` release
-  - Stage 2: instant attack / `100 ms` release
+- Limiter: dual-stage, stereo-linked leveler + brickwall design
 - Safety stage: hard clip at about `+48 dBFS`
 - Developer diagnostics and CSV trace dumps are opt-in and intended for debug builds, not normal release behavior
 
