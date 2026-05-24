@@ -1819,7 +1819,7 @@ STRETRAudioProcessorEditor::buildVerticalLayout (int editorH, int biasY, bool io
     m.box = juce::jlimit (40, kToggleBoxPx, (int) std::round (editorH * 0.085));
     m.btnRowGap = juce::jlimit (4, 14, (int) std::round (editorH * 0.008));
 
-    // Only 2 button rows for STRE-TR (ALIGN+PDC, RVS+TRG)
+    // Only 2 button rows for STRE-TR (ALIGN+PDC, RVS+ARM)
     m.btnRow2Y = editorH - m.bottomMargin - m.box;
     m.btnRow1Y = m.btnRow2Y - m.btnRowGap - m.box;
 
@@ -2002,7 +2002,7 @@ juce::Rectangle<int> STRETRAudioProcessorEditor::getReverseLabelArea() const
 
 juce::Rectangle<int> STRETRAudioProcessorEditor::getTriggerLabelArea() const
 {
-    return makeToggleLabelArea (triggerButton, getWidth() - kToggleLegendCollisionPadPx, "TRIGGER", "TRG");
+    return makeToggleLabelArea (triggerButton, getWidth() - kToggleLegendCollisionPadPx, "ARM", "ARM");
 }
 
 juce::Rectangle<int> STRETRAudioProcessorEditor::getAlignLabelArea() const
@@ -2379,15 +2379,15 @@ void STRETRAudioProcessorEditor::paint (juce::Graphics& g)
 
         if (reverseButton.isVisible())
         {
-        // Row 1: RVS + TRG
-        const int rvsCR = triggerButton.getX() - kToggleLegendCollisionPadPx;
-        const int trgCR = getWidth() - kToggleLegendCollisionPadPx;
-        // Row 2: ALIGN + PDC
+        // Row 1: ALIGN + PDC
         const int alnCR = pdcButton.getX() - kToggleLegendCollisionPadPx;
         const int pdcCR = getWidth() - kToggleLegendCollisionPadPx;
+        // Row 2: RVS + ARM
+        const int rvsCR = triggerButton.getX() - kToggleLegendCollisionPadPx;
+        const int armCR = getWidth() - kToggleLegendCollisionPadPx;
 
         const juce::String rvsLabel = chooseToggleLabel (reverseButton, rvsCR, "REVERSE", "RVS");
-        const juce::String trgLabel = chooseToggleLabel (triggerButton, trgCR, "TRIGGER", "TRG");
+        const juce::String armLabel = chooseToggleLabel (triggerButton, armCR, "ARM", "ARM");
         const juce::String alnLabel = chooseToggleLabel (alignButton, alnCR, "ALIGN", "ALN");
         const juce::String pdcLabel = chooseToggleLabel (pdcButton, pdcCR, "PDC", "PDC");
 
@@ -2407,10 +2407,10 @@ void STRETRAudioProcessorEditor::paint (juce::Graphics& g)
                 g.setColour (scheme.text);
         };
 
-        drawToggleLegend (getReverseLabelArea(), rvsLabel, rvsCR, reverseButton.isEnabled());
-        drawToggleLegend (getTriggerLabelArea(), trgLabel, trgCR);
         drawToggleLegend (getAlignLabelArea(), alnLabel, alnCR);
         drawToggleLegend (getPdcLabelArea(), pdcLabel, pdcCR);
+        drawToggleLegend (getReverseLabelArea(), rvsLabel, rvsCR, reverseButton.isEnabled());
+        drawToggleLegend (getTriggerLabelArea(), armLabel, armCR);
         }
     }
 
@@ -2602,10 +2602,10 @@ void STRETRAudioProcessorEditor::resized()
     const int btnRow1Y = verticalLayout.btnRow1Y;
     const int btnRow2Y = verticalLayout.btnRow2Y;
 
-    reverseButton.setBounds  (leftBlockX,  btnRow1Y, toggleHitW, verticalLayout.box);
-    triggerButton.setBounds  (rightBlockX, btnRow1Y, toggleHitW, verticalLayout.box);
-    alignButton.setBounds    (leftBlockX,  btnRow2Y, toggleHitW, verticalLayout.box);
-    pdcButton.setBounds      (rightBlockX, btnRow2Y, toggleHitW, verticalLayout.box);
+    alignButton.setBounds    (leftBlockX,  btnRow1Y, toggleHitW, verticalLayout.box);
+    pdcButton.setBounds      (rightBlockX, btnRow1Y, toggleHitW, verticalLayout.box);
+    reverseButton.setBounds  (leftBlockX,  btnRow2Y, toggleHitW, verticalLayout.box);
+    triggerButton.setBounds  (rightBlockX, btnRow2Y, toggleHitW, verticalLayout.box);
     pdcDisplay.setBounds (pdcButton.getBounds().getUnion (getPdcLabelArea()));
 
     if (resizerCorner)
