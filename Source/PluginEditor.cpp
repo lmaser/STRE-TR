@@ -656,7 +656,7 @@ namespace
     constexpr const char* kOutputLegendInt   = "-INFdB";
 
     constexpr const char* kMixLegendFull   = "100% MIX";
-    constexpr const char* kMixLegendShort  = "100% MX";
+    constexpr const char* kMixLegendShort  = "100% MIX";
     constexpr const char* kMixLegendInt    = "100%";
 
     constexpr const char* kLimLegendFull   = "-36.0 dB LIM";
@@ -1640,7 +1640,7 @@ juce::String STRETRAudioProcessorEditor::getMixTextShort() const
         return juce::String (dB, 1) + "dB" + suffix;
     }
     const int pct = (int) std::lround (mixSlider.getValue() * 100.0);
-    return juce::String (pct) + "% MX";
+    return juce::String (pct) + "% MIX";
 }
 
 juce::String STRETRAudioProcessorEditor::getTiltText() const
