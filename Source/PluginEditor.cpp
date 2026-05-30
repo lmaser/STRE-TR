@@ -2633,7 +2633,7 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
     juce::String suffixShort;
     if (&s == &amountSlider)       { suffix = " % AMT";      suffixShort = " % AMT"; }
     else if (&s == &pitchSlider)   { suffix = " st PITCH";   suffixShort = " st PCH"; }
-    else if (&s == &jitterSlider)  { suffix = " % JIT";      suffixShort = " % JIT"; }
+    else if (&s == &jitterSlider)  { suffix = " % JITTER";      suffixShort = " % JIT"; }
     else if (&s == &grainSlider)   { suffix = " ms";         suffixShort = " ms"; }
     else if (&s == &windowSlider)  { suffix = " WINDOW";     suffixShort = " WIN"; }
     else if (&s == &inputSlider)   { suffix = " dB INPUT";   suffixShort = " dB IN"; }
@@ -2714,7 +2714,9 @@ void STRETRAudioProcessorEditor::openNumericEntryPopupForSlider (juce::Slider& s
             const int spaceWFull = stickPercentFull ? 0 : juce::jmax (2, stringWidth (suffixLabel->getFont(), " "));
             const int worstCaseFullW = maxInputTextW + spaceWFull + fullLabelW;
 
-            const bool useShort = (worstCaseFullW > availableW) && suffixTextShort != suffixText;
+            constexpr int kPromptShortLabelComfortPx = 8;
+            const bool useShort = (worstCaseFullW > (availableW - kPromptShortLabelComfortPx))
+                               && suffixTextShort != suffixText;
             const juce::String& activeSuffix = useShort ? suffixTextShort : suffixText;
             suffixLabel->setText (activeSuffix, juce::dontSendNotification);
 
