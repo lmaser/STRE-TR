@@ -627,7 +627,7 @@ namespace
     constexpr const char* kPitchLegendShort  = "+24.00st";
     constexpr const char* kPitchLegendInt    = "+24.00st";
 
-    constexpr const char* kJitterLegendFull  = "100% JIT";
+    constexpr const char* kJitterLegendFull  = "100% JITTER";
     constexpr const char* kJitterLegendShort = "100% JIT";
     constexpr const char* kJitterLegendInt   = "100%";
 
@@ -1415,7 +1415,7 @@ juce::String STRETRAudioProcessorEditor::getPitchTextShort() const
 juce::String STRETRAudioProcessorEditor::getJitterText() const
 {
     const float v = (float) jitterSlider.getValue();
-    return juce::String (juce::roundToInt (v)) + "% JIT";
+    return juce::String (juce::roundToInt (v)) + "% JITTER";
 }
 juce::String STRETRAudioProcessorEditor::getJitterTextShort() const
 {
