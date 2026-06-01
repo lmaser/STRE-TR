@@ -14,7 +14,7 @@ STRE-TR is designed as a playable stretch instrument rather than a clinical offl
 
 - `AMOUNT` controls engine advance or hold intensity. It is not a fixed "1x to 4x" ratio.
 - `PITCH` controls pitch-rate in semitones independently of `AMOUNT`.
-- `TRG` arms the engine. With `TRG` off, the wet path is dry passthrough.
+- `ARM` arms the engine. With `ARM` off, the wet path is dry passthrough.
 - `ALIGN` delays the dry path only for FFT1/FFT2 latency alignment.
 - `PDC` only reports FFT1/FFT2 latency to the host; it does not change the DSP path.
 
@@ -64,7 +64,7 @@ STRE-TR uses the same text-first horizontal bar language as the rest of the seri
 - Left view: `AMOUNT`, `PITCH`, `JIT`, `GRAIN`, `ENGINE`, `WINDOW`, `STYLE`
 - Expanded IO view: `INPUT`, `OUTPUT`, `TILT`, `PAN`, `MIX`, `LIM`
 - Bottom controls: routing, limiter mode, invert modes, mix mode, filter/tilt position
-- Toggle rows: `ALIGN`, `PDC`, `RVS`, `TRG`
+- Toggle rows: `ALIGN`, `PDC`, `RVS`, `ARM`
 - Chaos row in the expanded view: `CHSF`, `CHSD`
 - Right-click numeric prompt on bars and supported controls
 - `WINDOW` is edited from its bar only; it does not open a numeric prompt
@@ -214,13 +214,15 @@ Stereo pan applied after dry/wet summing.
 - Center remains unity
 - Pan motion is smoothed sample by sample
 
-### TRG
+### ARM
 
 Engine arm/trigger behavior.
 
 - `OFF`: wet path is passthrough
 - `ON`: selected engine is active
 - Rising edge resets the engine read state
+
+**ARM Delay**: Right-click `ARM` to open a `0-100 ms` delay prompt. The engine arms after that delay; disarming remains immediate.
 
 ### RVS
 
@@ -330,7 +332,7 @@ Filter, tilt, and chaos subsystems also have their own internal smoothing/update
 ## Notes
 
 - `ALIGN` and `PDC` are FFT-only and are intentionally independent from the sound of the engine
-- `TRG` is central to the creative workflow of this plugin; with `TRG` off the wet path stays clean
+- `ARM` is central to the creative workflow of this plugin; with `ARM` off the wet path stays clean
 - `WINDOW` uses one UI slot but stores independent values for `STRETCH`, `GRAIN`, `FFT1`, and `FFT2`
 - `FFT1` and `FFT2` quantize `WINDOW` to power-of-two FFT sizes internally, while `STRETCH` uses the smoothed value directly and `GRAIN` caps its effective window at `2048`
 
