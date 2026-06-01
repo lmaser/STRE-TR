@@ -254,6 +254,8 @@ public:
 
 	void setUiIoExpanded (bool expanded);
 	bool getUiIoExpanded() const noexcept;
+	void setTriggerDelayMs (int delayMs);
+	int  getTriggerDelayMs() const noexcept;
 
 	int getStoredWindowForEngine (int engineVal) const noexcept;
 	void setStoredWindowForEngine (int engineVal, int windowValue) noexcept;
@@ -285,6 +287,7 @@ private:
 		static constexpr const char* fft1Window       = "fft1Window";
 		static constexpr const char* fft2Window       = "fft2Window";
 		static constexpr const char* fftWindow        = "fftWindow";
+		static constexpr const char* triggerDelayMs   = "triggerDelayMs";
 		static constexpr std::array<const char*, 2> customPalette {
 			"uiCustomPalette0", "uiCustomPalette1"
 		};
@@ -309,9 +312,12 @@ private:
 	double inputBufWriteAbsPos_ = 0.0;
 
 	bool  triggerWasOn_ = false;  // tracks previous trigger state for edge detection
+	bool  lastTriggerParamOn_ = false;
+	bool  delayedTriggerActive_ = false;
 	bool  transportWasPlaying_ = false;
 	bool  transportHasSamplePos_ = false;
 	juce::int64 transportLastSamplePos_ = 0;
+	int   triggerDelayElapsedSamples_ = 0;
 
 	static constexpr int kWsolaOutBufLen = 32768; // 2^15, enough for max segment + overlap scheduling
 
@@ -1860,6 +1866,7 @@ private:
 	std::atomic<int> uiEditorHeight { 752 };
 	std::atomic<int> uiUseCustomPalette { 0 };
 	std::atomic<int> uiCrtEnabled  { 0 };
+	std::atomic<int> triggerDelayMs { 0 };
 	std::atomic<juce::uint32> uiCustomPalette[2] {};
 
 	std::atomic<float>* amountParam      = nullptr;

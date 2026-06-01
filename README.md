@@ -69,6 +69,7 @@ STRE-TR uses the same text-first horizontal bar language as the rest of the seri
 - Right-click numeric prompt on bars and supported controls
 - `WINDOW` is edited from its bar only; it does not open a numeric prompt
 - `PDC` tooltip shows `MAX WIN`, and right-click opens the FFT max-window prompt
+- Right-click `ARM` to open its trigger-delay prompt (`DELAY`)
 - Gear icon for the info/graphics popup
 - Resizable editor width with new instances opening at `360 x 752`; width and graphics state persist, height stays fixed
 

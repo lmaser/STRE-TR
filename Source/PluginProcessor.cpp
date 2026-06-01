@@ -564,6 +564,9 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	stretchTransitionTotal_ = 0;
 	stretchTransitionToUnity_ = false;
 	triggerWasOn_ = false;
+	lastTriggerParamOn_ = false;
+	delayedTriggerActive_ = false;
+	triggerDelayElapsedSamples_ = 0;
 	transportWasPlaying_ = false;
 	transportHasSamplePos_ = false;
 	transportLastSamplePos_ = 0;
@@ -701,6 +704,10 @@ void STRETRAudioProcessor::releaseResources()
 	for (int ch = 0; ch < 2; ++ch)
 		inputBuf_[ch].clear();
 	inputBufLen_ = 0;
+	triggerWasOn_ = false;
+	lastTriggerParamOn_ = false;
+	delayedTriggerActive_ = false;
+	triggerDelayElapsedSamples_ = 0;
 	transportWasPlaying_ = false;
 	transportHasSamplePos_ = false;
 	transportLastSamplePos_ = 0;
@@ -3040,9 +3047,28 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	smoothedGrainLogMs_ += (grainTargetLogMs - smoothedGrainLogMs_) * grainSizeBlockStep;
 	const float grainMs = std::exp (smoothedGrainLogMs_);
 	const bool  reverseOn  = loadBoolParamOrDefault (reverseParam, false);
-	const bool  triggerOn  = loadBoolParamOrDefault (triggerParam, false);
+	const bool  rawTriggerParamOn  = loadBoolParamOrDefault (triggerParam, false);
 	const bool  alignOn    = loadBoolParamOrDefault (alignParam, false);
 	const bool  pdcOn      = loadBoolParamOrDefault (pdcParam, false);
+	const int   triggerDelaySamples = juce::jmax (0, samplesForMs ((float) juce::jlimit (0, 100, getTriggerDelayMs())));
+	if (! rawTriggerParamOn)
+	{
+		delayedTriggerActive_ = false;
+		triggerDelayElapsedSamples_ = 0;
+	}
+	else if (! lastTriggerParamOn_)
+	{
+		delayedTriggerActive_ = (triggerDelaySamples == 0);
+		triggerDelayElapsedSamples_ = 0;
+	}
+	else if (! delayedTriggerActive_)
+	{
+		if (triggerDelayElapsedSamples_ >= triggerDelaySamples)
+			delayedTriggerActive_ = true;
+		else
+			triggerDelayElapsedSamples_ += numSamples;
+	}
+	const bool  triggerOn = delayedTriggerActive_;
 	const int previousEngineVal = prevEngineVal_;
 	const bool engineChangedThisBlock = previousEngineVal >= 0 && engineVal != previousEngineVal;
 	if (! windowFamiliesInitialised_.load (std::memory_order_relaxed))
@@ -3517,6 +3543,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	if (fftTriggerReleasedThisBlock && requestedFftSize > 0)
 		armFftInstantDuck (samplesForMs (2.0));
 	triggerWasOn_ = triggerOn;
+	lastTriggerParamOn_ = rawTriggerParamOn;
 
 	// Engine crossfade: trigger fade-in on engine change
 	if (engineChangedThisBlock)
@@ -6083,6 +6110,13 @@ void STRETRAudioProcessor::setStateInformation (const void* data, int sizeInByte
 		{
 			apvts.replaceState (juce::ValueTree::fromXml (*xmlState));
 			restoreWindowFamilyStateFromTree();
+			const auto restoredTriggerDelay = apvts.state.getProperty (UiStateKeys::triggerDelayMs);
+			if (! restoredTriggerDelay.isVoid())
+				triggerDelayMs.store (juce::jlimit (0, 100, (int) restoredTriggerDelay), std::memory_order_relaxed);
+			triggerWasOn_ = false;
+			lastTriggerParamOn_ = false;
+			delayedTriggerActive_ = false;
+			triggerDelayElapsedSamples_ = 0;
 		}
 	}
 }
@@ -6166,7 +6200,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 		kFilterPosDefault));
 
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamReverse, "Reverse", false));
-	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamTrigger, "Trigger", false));
+	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamTrigger, "Arm", false));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamAlign, "Align", false));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamPdc, "PDC", false));
 
@@ -6320,6 +6354,20 @@ bool STRETRAudioProcessor::getUiIoExpanded() const noexcept
 	const auto fromState = apvts.state.getProperty (UiStateKeys::ioExpanded);
 	if (! fromState.isVoid()) return (bool) fromState;
 	return false;
+}
+
+void STRETRAudioProcessor::setTriggerDelayMs (int delayMsValue)
+{
+	const int clamped = juce::jlimit (0, 100, delayMsValue);
+	triggerDelayMs.store (clamped, std::memory_order_relaxed);
+	apvts.state.setProperty (UiStateKeys::triggerDelayMs, clamped, nullptr);
+}
+
+int STRETRAudioProcessor::getTriggerDelayMs() const noexcept
+{
+	const auto fromState = apvts.state.getProperty (UiStateKeys::triggerDelayMs);
+	if (! fromState.isVoid()) return juce::jlimit (0, 100, (int) fromState);
+	return triggerDelayMs.load (std::memory_order_relaxed);
 }
 
 void STRETRAudioProcessor::setUiCustomPaletteColour (int index, juce::Colour colour)

@@ -78,6 +78,11 @@ static juce::String formatPdcTooltip (bool enabled, int maxWindow)
          + " | MAX WIN " + juce::String (STRETRAudioProcessor::getCanonicalFftWindow (maxWindow));
 }
 
+static juce::String formatTriggerDelayTooltip (int delayMs)
+{
+    return "DLY " + juce::String (juce::jlimit (0, 100, delayMs)) + " ms";
+}
+
 static double pitchSliderToSemitones (double v)
 {
     v = juce::jlimit (0.0, 1.0, v);
@@ -878,6 +883,15 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
     addAndMakeVisible (alignButton);
     addAndMakeVisible (pdcButton);
 
+    triggerDisplay.setText ("", juce::dontSendNotification);
+    triggerDisplay.setInterceptsMouseClicks (true, false);
+    triggerDisplay.addMouseListener (this, false);
+    triggerDisplay.setTooltip (formatTriggerDelayTooltip (audioProcessor.getTriggerDelayMs()));
+    triggerDisplay.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+    triggerDisplay.setColour (juce::Label::outlineColourId, juce::Colours::transparentBlack);
+    triggerDisplay.setOpaque (false);
+    addAndMakeVisible (triggerDisplay);
+
     pdcDisplay.setText ("", juce::dontSendNotification);
     pdcDisplay.setInterceptsMouseClicks (true, false);
     pdcDisplay.addMouseListener (this, false);
@@ -1543,7 +1557,6 @@ void STRETRAudioProcessorEditor::syncFftWindowToMax (bool notifyHost)
 void STRETRAudioProcessorEditor::updatePdcTooltip()
 {
     const auto tooltip = formatPdcTooltip (pdcButton.getToggleState(), getCurrentMaxFftWindow());
-    pdcButton.setTooltip (tooltip);
     pdcDisplay.setTooltip (tooltip);
 }
 
@@ -2017,10 +2030,18 @@ juce::Rectangle<int> STRETRAudioProcessorEditor::getPdcLabelArea() const
 
 juce::Rectangle<int> STRETRAudioProcessorEditor::getChaosLabelArea() const
 {
-    if (! chaosFilterButton.isVisible()) return {};
+    if (chaosFilterButton.getWidth() <= 0 || chaosFilterButton.getHeight() <= 0) return {};
     return makeToggleLabelArea (chaosFilterButton,
                                 chaosDelayButton.getX() - kToggleLegendCollisionPadPx,
                                 "CHSF", "CHSF");
+}
+
+juce::Rectangle<int> STRETRAudioProcessorEditor::getChaosDelayLabelArea() const
+{
+    if (chaosDelayButton.getWidth() <= 0 || chaosDelayButton.getHeight() <= 0) return {};
+    return makeToggleLabelArea (chaosDelayButton,
+                                getWidth() - kToggleLegendCollisionPadPx,
+                                "CHSD", "CHSD");
 }
 
 juce::Rectangle<int> STRETRAudioProcessorEditor::getInfoIconArea() const
@@ -2090,8 +2111,12 @@ void STRETRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
     if (reverseButton.isVisible() && getReverseLabelArea().contains (p) && reverseButton.isEnabled())
     { reverseButton.setToggleState (! reverseButton.getToggleState(), juce::sendNotificationSync); return; }
 
-    if (triggerButton.isVisible() && getTriggerLabelArea().contains (p))
-    { triggerButton.setToggleState (! triggerButton.getToggleState(), juce::sendNotificationSync); return; }
+    if (triggerButton.isVisible() && (getTriggerLabelArea().contains (p) || triggerDisplay.getBounds().contains (p)))
+    {
+        if (e.mods.isPopupMenu()) openTriggerDelayPrompt();
+        else triggerButton.setToggleState (! triggerButton.getToggleState(), juce::sendNotificationSync);
+        return;
+    }
 
     if (alignButton.isVisible() && getAlignLabelArea().contains (p))
     { alignButton.setToggleState (! alignButton.getToggleState(), juce::sendNotificationSync); return; }
@@ -2113,20 +2138,12 @@ void STRETRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
-    if (chaosDelayButton.isVisible())
+    if (chaosDelayButton.isVisible()
+        && (getChaosDelayLabelArea().contains (p) || chaosDelayDisplay.getBounds().contains (p)))
     {
-        const auto bb = chaosDelayButton.getBounds();
-        const int toggleVisualSide = juce::jlimit (14, juce::jmax (14, bb.getHeight() - 2),
-                                                   (int) std::lround (bb.getHeight() * 0.65));
-        const int toggleHitW = toggleVisualSide + 6;
-        const int lx = bb.getX() + toggleHitW + 4;
-        const juce::Rectangle<int> dLabelArea { lx, bb.getY(), bb.getRight() - lx, bb.getHeight() };
-        if (dLabelArea.contains (p) || chaosDelayDisplay.getBounds().contains (p))
-        {
-            if (e.mods.isPopupMenu()) openChaosDelayPrompt();
-            else chaosDelayButton.setToggleState (! chaosDelayButton.getToggleState(), juce::sendNotificationSync);
-            return;
-        }
+        if (e.mods.isPopupMenu()) openChaosDelayPrompt();
+        else chaosDelayButton.setToggleState (! chaosDelayButton.getToggleState(), juce::sendNotificationSync);
+        return;
     }
 }
 
@@ -2515,9 +2532,9 @@ void STRETRAudioProcessorEditor::resized()
         const int chaosLeftW  = chaosRightX - horizontalLayout.leftX;
         const int chaosRightW = horizontalLayout.leftX + horizontalLayout.contentW - chaosRightX;
         chaosFilterButton.setBounds  (horizontalLayout.leftX, chaosY, chaosLeftW,  chaosH);
-        chaosFilterDisplay.setBounds (horizontalLayout.leftX, chaosY, chaosLeftW,  chaosH);
         chaosDelayButton.setBounds   (chaosRightX,            chaosY, chaosRightW, chaosH);
-        chaosDelayDisplay.setBounds  (chaosRightX,            chaosY, chaosRightW, chaosH);
+        chaosFilterDisplay.setBounds (getChaosLabelArea());
+        chaosDelayDisplay.setBounds  (getChaosDelayLabelArea());
 
         inputSlider.setVisible (true);   outputSlider.setVisible (true);
         tiltSlider.setVisible (true);    filterBar_.setVisible (true);
@@ -2538,6 +2555,7 @@ void STRETRAudioProcessorEditor::resized()
 
         reverseButton.setVisible (false);
         triggerButton.setVisible (false);
+        triggerDisplay.setVisible (false);
         alignButton.setVisible (false);
         pdcButton.setVisible (false);
         pdcDisplay.setVisible (false);
@@ -2586,6 +2604,7 @@ void STRETRAudioProcessorEditor::resized()
 
         reverseButton.setVisible (true);
         triggerButton.setVisible (true);
+        triggerDisplay.setVisible (true);
         alignButton.setVisible (true);
         pdcButton.setVisible (true);
         pdcDisplay.setVisible (true);
@@ -2606,7 +2625,8 @@ void STRETRAudioProcessorEditor::resized()
     pdcButton.setBounds      (rightBlockX, btnRow1Y, toggleHitW, verticalLayout.box);
     reverseButton.setBounds  (leftBlockX,  btnRow2Y, toggleHitW, verticalLayout.box);
     triggerButton.setBounds  (rightBlockX, btnRow2Y, toggleHitW, verticalLayout.box);
-    pdcDisplay.setBounds (pdcButton.getBounds().getUnion (getPdcLabelArea()));
+    triggerDisplay.setBounds (getTriggerLabelArea());
+    pdcDisplay.setBounds (getPdcLabelArea());
 
     if (resizerCorner)
         resizerCorner->setBounds (W - kResizerCornerPx, H - kResizerCornerPx, kResizerCornerPx, kResizerCornerPx);
@@ -3079,6 +3099,270 @@ void STRETRAudioProcessorEditor::openPdcMaxWindowPrompt()
             }
             safeThis->syncFftWindowToMax (true);
             safeThis->updatePdcTooltip();
+        }),
+        false);
+}
+
+void STRETRAudioProcessorEditor::openTriggerDelayPrompt()
+{
+    lnf.setScheme (activeScheme);
+    const auto scheme = activeScheme;
+
+    const int delayMs = audioProcessor.getTriggerDelayMs();
+
+    struct PromptBar : public juce::Component
+    {
+        STREScheme colours;
+        float value01 = 0.0f;
+        float default01 = 0.0f;
+        std::function<void (float)> onValueChanged;
+
+        PromptBar (const STREScheme& s, float initial01, float def01)
+            : colours (s), value01 (initial01), default01 (def01) {}
+
+        void paint (juce::Graphics& g) override
+        {
+            const auto r = getLocalBounds().toFloat();
+            g.setColour (colours.outline);
+            g.drawRect (r, 4.0f);
+            const float pad = 7.0f;
+            auto inner = r.reduced (pad);
+            g.setColour (colours.bg);
+            g.fillRect (inner);
+            const float fillW = juce::jlimit (0.0f, inner.getWidth(), inner.getWidth() * value01);
+            g.setColour (colours.fg);
+            g.fillRect (inner.withWidth (fillW));
+        }
+
+        void mouseDown (const juce::MouseEvent& e) override { updateFromMouse (e); }
+        void mouseDrag (const juce::MouseEvent& e) override { updateFromMouse (e); }
+        void mouseDoubleClick (const juce::MouseEvent&) override { setValue (default01); }
+
+        void setValue (float v01)
+        {
+            value01 = juce::jlimit (0.0f, 1.0f, v01);
+            repaint();
+            if (onValueChanged)
+                onValueChanged (value01);
+        }
+
+        void setValueSilently (float v01)
+        {
+            value01 = juce::jlimit (0.0f, 1.0f, v01);
+            repaint();
+        }
+
+        void updateFromMouse (const juce::MouseEvent& e)
+        {
+            const float w = (float) juce::jmax (1, getWidth());
+            setValue (juce::jlimit (0.0f, 1.0f, e.position.x / w));
+        }
+    };
+
+    struct TriggerDelayInputFilter : juce::TextEditor::InputFilter
+    {
+        juce::String filterNewText (juce::TextEditor& editor, const juce::String& newText) override
+        {
+            juce::String result;
+            for (auto c : newText)
+            {
+                if (juce::CharacterFunctions::isDigit (c)) result += c;
+                if (result.length() >= 3) break;
+            }
+
+            juce::String proposed = editor.getText();
+            const int insertPos = editor.getCaretPosition();
+            proposed = proposed.substring (0, insertPos) + result
+                     + proposed.substring (insertPos + editor.getHighlightedText().length());
+            if (proposed.length() > 3 || proposed.getIntValue() > 100) return juce::String();
+            return result;
+        }
+    };
+
+    auto* aw = new juce::AlertWindow ("", "", juce::AlertWindow::NoIcon);
+    aw->setLookAndFeel (&lnf);
+    aw->addTextEditor ("delay", juce::String (delayMs), juce::String());
+    auto* delayBar = new PromptBar (scheme, (float) delayMs / 100.0f, 0.0f);
+    aw->addAndMakeVisible (delayBar);
+
+    juce::Label* delayLabel = nullptr;
+    juce::Label* delayUnitLabel = nullptr;
+    std::function<void()> layoutRows;
+    auto applyLiveTriggerDelay = [proc = &audioProcessor, button = &triggerButton] (int newDelayMs)
+    {
+        const int clamped = juce::jlimit (0, 100, newDelayMs);
+        proc->setTriggerDelayMs (clamped);
+        button->setTooltip (formatTriggerDelayTooltip (clamped));
+    };
+
+    if (auto* delayTe = aw->getTextEditor ("delay"))
+    {
+        const auto& valueFont = kBoldFont40();
+        const auto unitFont = valueFont.withHeight (34.0f);
+
+        delayTe->setFont (valueFont);
+        delayTe->applyFontToAllText (valueFont);
+
+        delayLabel = new juce::Label ("delayLabel", "DELAY");
+        delayLabel->setJustificationType (juce::Justification::centredLeft);
+        applyLabelTextColour (*delayLabel, scheme.text);
+        delayLabel->setBorderSize (juce::BorderSize<int> (0));
+        delayLabel->setFont (valueFont);
+        aw->addAndMakeVisible (delayLabel);
+
+        delayUnitLabel = new juce::Label ("delayUnitLabel", "ms");
+        delayUnitLabel->setJustificationType (juce::Justification::centredLeft);
+        applyLabelTextColour (*delayUnitLabel, scheme.text);
+        delayUnitLabel->setBorderSize (juce::BorderSize<int> (0));
+        delayUnitLabel->setFont (unitFont);
+        aw->addAndMakeVisible (delayUnitLabel);
+
+        auto layoutDelayRow = [aw] (juce::TextEditor& editor,
+                                    juce::Label& label,
+                                    juce::Label& unitLabel,
+                                    int reservedValueTextW,
+                                    int y,
+                                    int rowH)
+        {
+            const auto txt = editor.getText();
+            const int textW = juce::jmax (1, stringWidth (editor.getFont(), txt));
+            const int spaceW = juce::jmax (2, stringWidth (editor.getFont(), " "));
+            const int labelW = stringWidth (label.getFont(), label.getText()) + 2;
+            const int unitW = stringWidth (unitLabel.getFont(), unitLabel.getText()) + 2;
+            const int contentLeft = kPromptInnerMargin;
+            const int contentRight = aw->getWidth() - kPromptInnerMargin;
+            const int innerW = contentRight - contentLeft;
+            const int triggerDelay = juce::jlimit (0, 100, txt.getIntValue());
+
+            constexpr int kMinEditorWidthPx = 24;
+            constexpr int kUnitGapPx = 4;
+            const int baseLabelGap = juce::jmax (spaceW, 12);
+
+            const int sideTextPad = spaceW;
+            const int singleEditorW = juce::jmax (kMinEditorWidthPx, stringWidth (editor.getFont(), "0") + sideTextPad * 2);
+            const int doubleEditorW = juce::jmax (singleEditorW, stringWidth (editor.getFont(), "10") + sideTextPad * 2);
+            const int tripleEditorW = juce::jmax (doubleEditorW, reservedValueTextW + sideTextPad * 2);
+
+            int editorW = tripleEditorW;
+            int labelGap = baseLabelGap;
+            if (triggerDelay >= 100)
+            {
+                editorW = tripleEditorW;
+                labelGap = baseLabelGap;
+            }
+            else if (triggerDelay >= 10)
+            {
+                editorW = doubleEditorW;
+                labelGap = baseLabelGap + 4;
+            }
+            else
+            {
+                editorW = singleEditorW;
+                labelGap = baseLabelGap + 8;
+            }
+
+            const int maxFittedEditorW = juce::jmax (kMinEditorWidthPx,
+                                                     innerW - labelW - labelGap - (kUnitGapPx + unitW));
+            editorW = juce::jmin (editorW, maxFittedEditorW);
+
+            const int groupW = labelW + labelGap + editorW + kUnitGapPx + unitW;
+            const int blockLeft = contentLeft + juce::jmax (0, (innerW - groupW) / 2);
+
+            label.setBounds (blockLeft, y, labelW, rowH);
+            const int teX = blockLeft + labelW + labelGap;
+            editor.setBounds (teX, y, editorW, rowH);
+            unitLabel.setBounds (teX + editorW + kUnitGapPx, y, unitW, rowH);
+        };
+
+        layoutRows = [aw, delayTe, delayLabel, delayUnitLabel, delayBar, layoutDelayRow]()
+        {
+            if (delayTe == nullptr || delayLabel == nullptr || delayUnitLabel == nullptr || delayBar == nullptr)
+                return;
+
+            const int buttonsTop = getAlertButtonsTop (*aw);
+            const int rowH = juce::jmax (1, delayTe->getHeight());
+            const int barH = juce::jmax (10, rowH / 2);
+            const int barGap = juce::jmax (8, rowH / 4);
+            const int totalH = rowH + barGap + barH;
+            const int startY = juce::jmax (kPromptEditorMinTopPx, (buttonsTop - totalH) / 2);
+            const int delayReservedTextW = juce::jmax (1, stringWidth (delayTe->getFont(), "100"));
+
+            layoutDelayRow (*delayTe, *delayLabel, *delayUnitLabel, delayReservedTextW, startY, rowH);
+
+            const int barX = kPromptInnerMargin;
+            const int barW = juce::jmax (120, aw->getWidth() - (kPromptInnerMargin * 2));
+            const int barY = startY + rowH + barGap;
+            delayBar->setBounds (barX, barY, barW, barH);
+        };
+
+        if (layoutRows) layoutRows();
+        delayTe->setInputFilter (new TriggerDelayInputFilter(), true);
+        delayTe->onTextChange = [layoutRows, delayTe, delayBar, applyLiveTriggerDelay]() mutable
+        {
+            if (delayBar != nullptr && delayTe != nullptr)
+            {
+                const int parsed = juce::jlimit (0, 100, delayTe->getText().getIntValue());
+                delayBar->setValueSilently ((float) parsed / 100.0f);
+                applyLiveTriggerDelay (parsed);
+            }
+            if (layoutRows) layoutRows();
+        };
+        delayBar->onValueChanged = [delayTe, layoutRows, applyLiveTriggerDelay] (float value01) mutable
+        {
+            if (delayTe == nullptr)
+                return;
+            const int delayValue = juce::jlimit (0, 100, (int) std::lround (value01 * 100.0f));
+            const juce::String text (delayValue);
+            if (delayTe->getText() != text)
+                delayTe->setText (text, juce::dontSendNotification);
+            applyLiveTriggerDelay (delayValue);
+            if (layoutRows) layoutRows();
+        };
+    }
+
+    aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("CANCEL", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    applyPromptShellSize (*aw);
+    aw->setSize (aw->getWidth(), aw->getHeight() + 36);
+    layoutAlertWindowButtons (*aw);
+
+    const juce::Font& kTriggerPromptFont = kBoldFont40();
+    preparePromptTextEditor (*aw, "delay", scheme.bg, scheme.text, scheme.fg, kTriggerPromptFont, false);
+    if (layoutRows) layoutRows();
+
+    styleAlertButtons (*aw, lnf);
+
+    setPromptOverlayActive (true);
+    juce::Component::SafePointer<STRETRAudioProcessorEditor> safeThis (this);
+    fitAlertWindowToEditor (*aw, safeThis.getComponent(), [layoutRows] (juce::AlertWindow& a)
+    {
+        juce::ignoreUnused (a);
+        layoutAlertWindowButtons (a);
+        if (layoutRows) layoutRows();
+    });
+    embedAlertWindowInOverlay (safeThis.getComponent(), aw);
+
+    aw->enterModalState (true,
+        juce::ModalCallbackFunction::create (
+            [safeThis, aw, delayMs] (int result) mutable
+        {
+            std::unique_ptr<juce::AlertWindow> killer (aw);
+            if (safeThis != nullptr)
+                safeThis->setPromptOverlayActive (false);
+            if (safeThis == nullptr)
+                return;
+
+            if (result != 1)
+            {
+                safeThis->audioProcessor.setTriggerDelayMs (delayMs);
+                safeThis->triggerDisplay.setTooltip (formatTriggerDelayTooltip (delayMs));
+                return;
+            }
+
+            const auto delayTxt = aw->getTextEditorContents ("delay").trim();
+            const int triggerDelay = juce::jlimit (0, 100, delayTxt.isEmpty() ? 0 : delayTxt.getIntValue());
+            safeThis->audioProcessor.setTriggerDelayMs (triggerDelay);
+            safeThis->triggerDisplay.setTooltip (formatTriggerDelayTooltip (triggerDelay));
         }),
         false);
 }
