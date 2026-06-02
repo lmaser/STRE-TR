@@ -3188,11 +3188,11 @@ void STRETRAudioProcessorEditor::openTriggerDelayPrompt()
     juce::Label* delayLabel = nullptr;
     juce::Label* delayUnitLabel = nullptr;
     std::function<void()> layoutRows;
-    auto applyLiveTriggerDelay = [proc = &audioProcessor, button = &triggerButton] (int newDelayMs)
+    auto applyLiveTriggerDelay = [proc = &audioProcessor, display = &triggerDisplay] (int newDelayMs)
     {
         const int clamped = juce::jlimit (0, 100, newDelayMs);
         proc->setTriggerDelayMs (clamped);
-        button->setTooltip (formatTriggerDelayTooltip (clamped));
+        display->setTooltip (formatTriggerDelayTooltip (clamped));
     };
 
     if (auto* delayTe = aw->getTextEditor ("delay"))
