@@ -354,3 +354,4 @@ Filter, tilt, and chaos subsystems also have their own internal smoothing/update
 - Capped the effective `GRAIN` window at `2048` and set the default FFT `MAX WIN` budget to `2048`
 - Cleaned documentation and removed stale or incorrect legacy descriptions
 - Release hardening: developer traces are now opt-in and kept out of normal release behavior
+- Added `0-100 ms` ARM delay prompt; disarming remains immediate
