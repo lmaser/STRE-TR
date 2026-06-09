@@ -58,11 +58,6 @@ static juce::String formatGainFaderDbCompact (float dB)
     return juce::String (dB, 1) + "dB";
 }
 
-static juce::String formatFilterPromptFrequency (float hz)
-{
-    return juce::String (juce::roundToInt (juce::jlimit (20.0f, 20000.0f, hz)));
-}
-
 static juce::String formatChaosTooltip (float amountPercent, float speedHz)
 {
     return "AMT " + juce::String (juce::roundToInt (juce::jlimit (0.0f, 100.0f, amountPercent))) + "%"
@@ -2109,7 +2104,11 @@ void STRETRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
     }
 
     if (reverseButton.isVisible() && getReverseLabelArea().contains (p) && reverseButton.isEnabled())
-    { reverseButton.setToggleState (! reverseButton.getToggleState(), juce::sendNotificationSync); return; }
+    {
+        if (! e.mods.isPopupMenu())
+            reverseButton.setToggleState (! reverseButton.getToggleState(), juce::sendNotificationSync);
+        return;
+    }
 
     if (triggerButton.isVisible() && (getTriggerLabelArea().contains (p) || triggerDisplay.getBounds().contains (p)))
     {
@@ -2119,7 +2118,11 @@ void STRETRAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
     }
 
     if (alignButton.isVisible() && getAlignLabelArea().contains (p))
-    { alignButton.setToggleState (! alignButton.getToggleState(), juce::sendNotificationSync); return; }
+    {
+        if (! e.mods.isPopupMenu())
+            alignButton.setToggleState (! alignButton.getToggleState(), juce::sendNotificationSync);
+        return;
+    }
 
     if (pdcButton.isVisible() && (getPdcLabelArea().contains (p) || pdcDisplay.getBounds().contains (p)))
     {
@@ -3787,12 +3790,12 @@ void STRETRAudioProcessorEditor::openFilterPrompt()
     auto* lpBar = new PromptBar (scheme, freqToNorm (lpFreq), freqToNorm (STRETRAudioProcessor::kFilterLpFreqDefault));
     aw->addAndMakeVisible (lpBar);
 
-    auto* hpToggle = new juce::ToggleButton ("");
+    auto* hpToggle = new MainGuiToggleButton ("");
     hpToggle->setToggleState (hpOn, juce::dontSendNotification);
     hpToggle->setLookAndFeel (&lnf);
     aw->addAndMakeVisible (hpToggle);
 
-    auto* lpToggle = new juce::ToggleButton ("");
+    auto* lpToggle = new MainGuiToggleButton ("");
     lpToggle->setToggleState (lpOn, juce::dontSendNotification);
     lpToggle->setLookAndFeel (&lnf);
     aw->addAndMakeVisible (lpToggle);
@@ -3941,8 +3944,10 @@ void STRETRAudioProcessorEditor::openFilterPrompt()
         std::function<void()> push;
         std::shared_ptr<std::function<void()>> layout;
 
-        void mouseDown (const juce::MouseEvent&) override
+        void mouseDown (const juce::MouseEvent& e) override
         {
+            if (e.mods.isPopupMenu())
+                return;
             *val = (*val + 1) % 3;
             label->setText (toText (*val), juce::dontSendNotification);
             push();
@@ -4062,9 +4067,9 @@ void STRETRAudioProcessorEditor::openFilterPrompt()
     struct ToggleForwarder : public juce::MouseListener
     {
         juce::ToggleButton* toggle = nullptr;
-        void mouseDown (const juce::MouseEvent&) override
+        void mouseDown (const juce::MouseEvent& e) override
         {
-            if (toggle != nullptr)
+            if (! e.mods.isPopupMenu() && toggle != nullptr)
                 toggle->setToggleState (! toggle->getToggleState(), juce::sendNotification);
         }
     };
@@ -4861,12 +4866,12 @@ void STRETRAudioProcessorEditor::openGraphicsPopup()
         return label;
     };
 
-    auto* defaultToggle = new juce::ToggleButton ("");
+    auto* defaultToggle = new MainGuiToggleButton ("");
     defaultToggle->setComponentID ("paletteDefaultToggle");
     aw->addAndMakeVisible (defaultToggle);
     auto* defaultLabel = addPopupLabel ("paletteDefaultLabel", "DFLT", labelFont);
 
-    auto* customToggle = new juce::ToggleButton ("");
+    auto* customToggle = new MainGuiToggleButton ("");
     customToggle->setComponentID ("paletteCustomToggle");
     aw->addAndMakeVisible (customToggle);
     auto* customLabel = addPopupLabel ("paletteCustomLabel", "CSTM", labelFont);
@@ -4888,7 +4893,7 @@ void STRETRAudioProcessorEditor::openGraphicsPopup()
         aw->addAndMakeVisible (custom);
     }
 
-    auto* fxToggle = new juce::ToggleButton ("");
+    auto* fxToggle = new MainGuiToggleButton ("");
     fxToggle->setComponentID ("fxToggle");
     fxToggle->setToggleState (crtEnabled, juce::dontSendNotification);
     fxToggle->onClick = [safeThis, fxToggle]()
