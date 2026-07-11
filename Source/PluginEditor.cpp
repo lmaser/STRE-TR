@@ -15,9 +15,11 @@ namespace UiStateKeys
     constexpr const char* editorHeight      = "uiEditorHeight";
     constexpr const char* useCustomPalette  = "uiUseCustomPalette";
     constexpr const char* crtEnabled        = "uiFxTailEnabled";
-    constexpr std::array<const char*, 2> customPalette {
+    constexpr std::array<const char*, 4> customPalette {
         "uiCustomPalette0",
-        "uiCustomPalette1"
+        "uiCustomPalette1",
+        "uiCustomPalette2",
+        "uiCustomPalette3"
     };
 }
 
@@ -206,32 +208,13 @@ STRETRAudioProcessorEditor::STRETRAudioProcessorEditor (STRETRAudioProcessor& p)
     for (int i = 0; i < kPaletteColourCount; ++i)
         customPalette[(size_t) i] = audioProcessor.getUiCustomPaletteColour (i);
 
-    setOpaque (true);
-    setBufferedToImage (true);
-
+    TR::SimpleEditorLifecycle::initCommon (*this, audioProcessor, lnf, tooltipWindow,
+        promptOverlay, resizeConstrainer, resizerCorner, kMinW, kMinH, kMaxW, kMaxH);
     applyActivePalette();
-    setLookAndFeel (&lnf);
-    tooltipWindow = std::make_unique<juce::TooltipWindow> (this, 250);
-    tooltipWindow->setLookAndFeel (&lnf);
-    tooltipWindow->setAlwaysOnTop (true);
-    tooltipWindow->setInterceptsMouseClicks (false, false);
 
-    setResizable (true, true);
-    setResizeLimits (kMinW, kMinH, kMaxW, kMaxH);
-    resizeConstrainer.setMinimumSize (kMinW, kMinH);
-    resizeConstrainer.setMaximumSize (kMaxW, kMaxH);
-    resizerCorner = std::make_unique<juce::ResizableCornerComponent> (this, &resizeConstrainer);
-    addAndMakeVisible (*resizerCorner);
-    resizerCorner->addMouseListener (this, true);
-
-    addAndMakeVisible (promptOverlay);
-    promptOverlay.setInterceptsMouseClicks (true, true);
-    TR::setSimpleComponentVisible (promptOverlay, false);
-
-    const int restoredW = juce::jlimit (kMinW, kMaxW, audioProcessor.getUiEditorWidth());
-    const int restoredH = juce::jlimit (kMinH, kMaxH, audioProcessor.getUiEditorHeight());
+    const int restoredW = getWidth();
+    const int restoredH = getHeight();
     suppressSizePersistence = true;
-    setSize (restoredW, restoredH);
     suppressSizePersistence = false;
     lastPersistedEditorW = restoredW;
     lastPersistedEditorH = restoredH;
