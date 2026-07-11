@@ -13,7 +13,6 @@
       <FILE id="TYD0oJ" name="PluginEditor.h" compile="0" resource="0" file="Source/PluginEditor.h"/>
       <FILE id="INF001" name="InfoContent.h" compile="0" resource="0" file="Source/InfoContent.h"/>
       <FILE id="CRT001" name="CrtEffect.h" compile="0" resource="0" file="Source/CrtEffect.h"/>
-      <FILE id="TRS001" name="TRSharedUI.h" compile="0" resource="0" file="Source/TRSharedUI.h"/>
       <FILE id="PRF001" name="PerfTrace.h" compile="0" resource="0" file="Source/PerfTrace.h"/>
     </GROUP>
   </MAINGROUP>

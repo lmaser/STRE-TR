@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "../../TR-Shared/SimpleDSP/TRSimpleDSP.h"
 
 namespace
 {
@@ -114,7 +115,7 @@ namespace
 
 	inline float gainFaderDecibelsToGain (float dB) noexcept
 	{
-		return (dB <= STRETRAudioProcessor::kGainFloorDb) ? 0.0f : std::exp2 (dB * 0.16609640474f);
+		return TR::DSP::decibelsToGain (dB, STRETRAudioProcessor::kGainFloorDb);
 	}
 
 	inline float amountToSpeedForEngine (int engineVal, float amountPercent) noexcept
@@ -288,10 +289,10 @@ void STRETRAudioProcessor::initialiseWindowFamilies (int fallbackWindow) noexcep
 void STRETRAudioProcessor::restoreWindowFamilyStateFromTree() noexcept
 {
 	const int fallbackWindow = loadIntParamOrDefault (windowParam, (int) kWindowDefault);
-	const auto legacyFftWindow = apvts.state.getProperty (UiStateKeys::fftWindow);
-	const int legacyFftFallback = juce::jlimit (kWindowMin,
+	const auto storedFftWindow = apvts.state.getProperty (UiStateKeys::fftWindow);
+	const int fftWindowFallback = juce::jlimit (kWindowMin,
 	                                           kWindowMax,
-	                                           legacyFftWindow.isVoid() ? fallbackWindow : (int) legacyFftWindow);
+	                                           storedFftWindow.isVoid() ? fallbackWindow : (int) storedFftWindow);
 
 	auto readWindowProperty = [this] (const char* key, int propertyFallback)
 	{
@@ -303,8 +304,8 @@ void STRETRAudioProcessor::restoreWindowFamilyStateFromTree() noexcept
 
 	setStoredWindowForFamily (WindowFamily::stretch, readWindowProperty (UiStateKeys::stretchWindow, fallbackWindow));
 	setStoredWindowForFamily (WindowFamily::grain,   readWindowProperty (UiStateKeys::grainWindow, fallbackWindow));
-	setStoredWindowForFamily (WindowFamily::fft1,    readWindowProperty (UiStateKeys::fft1Window, legacyFftFallback));
-	setStoredWindowForFamily (WindowFamily::fft2,    readWindowProperty (UiStateKeys::fft2Window, legacyFftFallback));
+	setStoredWindowForFamily (WindowFamily::fft1,    readWindowProperty (UiStateKeys::fft1Window, fftWindowFallback));
+	setStoredWindowForFamily (WindowFamily::fft2,    readWindowProperty (UiStateKeys::fft2Window, fftWindowFallback));
 
 	for (int i = 0; i < 4; ++i)
 		smoothedWindowByFamily_[(size_t) i] = (float) getStoredWindowForFamily ((WindowFamily) i);
@@ -364,6 +365,7 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 	                 #if ! JucePlugin_IsMidiEffect
 	                  #if ! JucePlugin_IsSynth
 	                   .withInput  ("Input", juce::AudioChannelSet::stereo(), true)
+                       .withInput  ("Sidechain", juce::AudioChannelSet::stereo(), false)
 	                  #endif
 	                   .withOutput ("Output", juce::AudioChannelSet::stereo(), true)
 	                 #endif
@@ -398,6 +400,16 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 	alignParam   = apvts.getRawParameterValue (kParamAlign);
 	pdcParam     = apvts.getRawParameterValue (kParamPdc);
 
+    sidechainParam = apvts.getRawParameterValue (kParamSidechain);
+    sidechainGainParam = apvts.getRawParameterValue (kParamSidechainGain);
+    sidechainSmoothParam = apvts.getRawParameterValue (kParamSidechainSmooth);
+    sidechainPolParam = apvts.getRawParameterValue (kParamSidechainPol);
+    sidechainHpParam = apvts.getRawParameterValue (kParamSidechainHp);
+    sidechainLpParam = apvts.getRawParameterValue (kParamSidechainLp);
+    sidechainHpOnParam = apvts.getRawParameterValue (kParamSidechainHpOn);
+    sidechainLpOnParam = apvts.getRawParameterValue (kParamSidechainLpOn);
+    sidechainHpSlopeParam = apvts.getRawParameterValue (kParamSidechainHpSlope);
+    sidechainLpSlopeParam = apvts.getRawParameterValue (kParamSidechainLpSlope);
 	filterHpFreqParam  = apvts.getRawParameterValue (kParamFilterHpFreq);
 	filterLpFreqParam  = apvts.getRawParameterValue (kParamFilterLpFreq);
 	filterHpSlopeParam = apvts.getRawParameterValue (kParamFilterHpSlope);
@@ -417,8 +429,11 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 	uiHeightParam  = apvts.getRawParameterValue (kParamUiHeight);
 	uiPaletteParam = apvts.getRawParameterValue (kParamUiPalette);
 	uiCrtParam     = apvts.getRawParameterValue (kParamUiCrt);
+	uiIoFxParam    = apvts.getRawParameterValue (kParamUiIoFx);
 	uiColorParams[0] = apvts.getRawParameterValue (kParamUiColor0);
 	uiColorParams[1] = apvts.getRawParameterValue (kParamUiColor1);
+	uiColorParams[2] = apvts.getRawParameterValue (kParamUiColor2);
+	uiColorParams[3] = apvts.getRawParameterValue (kParamUiColor3);
 
 	initialiseWindowFamilies (loadIntParamOrDefault (windowParam, (int) kWindowDefault));
 
@@ -526,6 +541,7 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	windowSmoothStep_  = 1.0f - std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.030f));
 	jitterSmoothStep_  = 1.0f - std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.050f));
 	resetJitterEngines();
+    resetSidechainRuntime();
 	resetFftWindowDuckPrepareState (initialWindowVal, initialAmountVal, initialEngineVal, initialTriggerOn);
 
     // Initialize Hann LUT
@@ -919,14 +935,34 @@ bool STRETRAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) c
 	 && layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
 		return false;
 #if ! JucePlugin_IsSynth
-	if (layouts.getMainOutputChannelSet() != layouts.getMainInputChannelSet())
-		return false;
+    if (layouts.getMainOutputChannelSet() != layouts.getMainInputChannelSet())
+        return false;
+    if (layouts.getChannelSet (true, 1) != juce::AudioChannelSet::disabled()
+     && layouts.getChannelSet (true, 1) != juce::AudioChannelSet::mono()
+     && layouts.getChannelSet (true, 1) != juce::AudioChannelSet::stereo())
+        return false;
 #endif
-	return true;
+    return true;
 #endif
 }
 #endif
 
+void STRETRAudioProcessor::resetSidechainRuntime() noexcept
+{
+    sidechainDcPrevInL_ = 0.0f;
+    sidechainDcPrevInR_ = 0.0f;
+    sidechainDcPrevOutL_ = 0.0f;
+    sidechainDcPrevOutR_ = 0.0f;
+    for (auto& st : sidechainHpFilterL_) st = {};
+    for (auto& st : sidechainHpFilterR_) st = {};
+    for (auto& st : sidechainLpFilterL_) st = {};
+    for (auto& st : sidechainLpFilterR_) st = {};
+    sidechainCarrierSmoothL_ = 0.0f;
+    sidechainCarrierSmoothR_ = 0.0f;
+    sidechainRmsEnv_ = 0.0f;
+    sidechainGateSmoothed_ = 0.0f;
+    sidechainDepthSmoothed_ = 0.0f;
+}
 //==============================================================================
 // Wet-signal filter coefficient update
 
@@ -2045,7 +2081,7 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 			                                            std::abs (pr - 1.0f) / 3.0f);
 
 			// Phase locking (only when not in passthrough).
-			// Keep the legacy identity locking for <=1024, but for larger FFTs
+			// Keep the original identity locking for <=1024, but for larger FFTs
 			// use prominent peaks and regions of influence so bins stay coherent
 			// without being chained to every weak local maximum.
 			{
@@ -2972,6 +3008,30 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const int numSamples  = buffer.getNumSamples();
 	if (numChannels < 1 || numSamples < 1) return;
 
+	const bool sidechainEnabled = loadBoolParamOrDefault (sidechainParam, false);
+	const float* sidechainReadL = nullptr;
+	const float* sidechainReadR = nullptr;
+	int sidechainChannels = 0;
+	float sidechainPeak = 0.0f;
+
+	if (sidechainEnabled && getBusCount (true) > 1)
+	{
+		auto sidechainBuffer = getBusBuffer (buffer, true, 1);
+		sidechainChannels = sidechainBuffer.getNumChannels();
+		if (sidechainChannels > 0)
+		{
+			sidechainReadL = sidechainBuffer.getReadPointer (0);
+			sidechainReadR = (sidechainChannels > 1) ? sidechainBuffer.getReadPointer (1) : sidechainReadL;
+
+			for (int ch = 0; ch < juce::jmin (sidechainChannels, 2); ++ch)
+				sidechainPeak = juce::jmax (sidechainPeak, sidechainBuffer.getMagnitude (ch, 0, numSamples));
+		}
+	}
+	const bool sidechainBusAvailable = sidechainEnabled && sidechainReadL != nullptr;
+	const bool sidechainCarrierDetected = sidechainBusAvailable && sidechainPeak > 1.0e-6f;
+
+	float inputMeterPeak = 0.0f;
+
 	float* channelL = buffer.getWritePointer (0);
 	float* channelR = numChannels >= 2 ? buffer.getWritePointer (1) : nullptr;
 #if JUCE_DEBUG
@@ -3031,7 +3091,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     // Engine params
 	const int   engineVal  = loadIntParamOrDefault (engineParam, 0);
-	const float amountVal  = loadAtomicOrDefault (amountParam, kAmountDefault);   // 0..100
+	const float rawAmountVal = loadAtomicOrDefault (amountParam, kAmountDefault); // 0..100
+	float amountVal = rawAmountVal;
 	const float pitchVal     = loadAtomicOrDefault (pitchParam, kPitchDefault);         // 0..1
 	const float jitterTarget = juce::jlimit (0.0f, 1.0f,
 	                                         loadAtomicOrDefault (jitterParam, kJitterDefault) * 0.01f);
@@ -3050,6 +3111,136 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const bool  rawTriggerParamOn  = loadBoolParamOrDefault (triggerParam, false);
 	const bool  alignOn    = loadBoolParamOrDefault (alignParam, false);
 	const bool  pdcOn      = loadBoolParamOrDefault (pdcParam, false);
+
+	if (sidechainEnabled)
+	{
+		const float sidechainSmoothTarget = juce::jlimit (kSidechainSmoothMin, kSidechainSmoothMax,
+			loadAtomicOrDefault (sidechainSmoothParam, kSidechainSmoothDefault));
+		float sidechainSmoothEffective = sidechainSmoothTarget;
+		if (sidechainSmoothTarget <= 0.25f)
+		{
+			const float t = sidechainSmoothTarget / 0.25f;
+			sidechainSmoothEffective = 0.25f * (2.0f * t * t - t * t * t);
+		}
+		const bool sidechainDirectAtZeroSmooth = sidechainSmoothEffective <= 0.000001f;
+		const float sidechainSmoothCurve = juce::jmin (1.0f, sidechainSmoothEffective * 2.0f);
+		const float sidechainExtendedBlend = juce::jlimit (0.0f, 1.0f, (sidechainSmoothEffective - 0.5f) * 2.0f);
+		const float sidechainGateSmoothShape = (sidechainSmoothEffective <= 0.5f)
+			? sidechainSmoothCurve
+			: (1.0f + 0.5f * sidechainExtendedBlend);
+		const float sidechainGain = gainFaderDecibelsToGain (juce::jlimit (kSidechainGainMin, kSidechainGainMax,
+			loadAtomicOrDefault (sidechainGainParam, kSidechainGainDefault)));
+		const bool sidechainHpOn = loadBoolParamOrDefault (sidechainHpOnParam, kSidechainHpOnDefault);
+		const bool sidechainLpOn = loadBoolParamOrDefault (sidechainLpOnParam, kSidechainLpOnDefault);
+		const float sidechainHpTarget = juce::jlimit (kSidechainFilterFreqMin, kSidechainFilterFreqMax,
+			loadAtomicOrDefault (sidechainHpParam, kSidechainHpDefault));
+		const float sidechainLpTarget = juce::jlimit (kSidechainFilterFreqMin, kSidechainFilterFreqMax,
+			loadAtomicOrDefault (sidechainLpParam, kSidechainLpDefault));
+		const int sidechainHpSlope = juce::jlimit (kFilterSlopeMin, kFilterSlopeMax,
+			loadIntParamOrDefault (sidechainHpSlopeParam, kSidechainHpSlopeDefault));
+		const int sidechainLpSlope = juce::jlimit (kFilterSlopeMin, kFilterSlopeMax,
+			loadIntParamOrDefault (sidechainLpSlopeParam, kSidechainLpSlopeDefault));
+		const int sidechainHpSections = sidechainHpOn ? (sidechainHpSlope == 2 ? 2 : 1) : 0;
+		const int sidechainLpSections = sidechainLpOn ? (sidechainLpSlope == 2 ? 2 : 1) : 0;
+		WetFilterBiquadCoeffs sidechainHpCoeffs[2] {};
+		WetFilterBiquadCoeffs sidechainLpCoeffs[2] {};
+		const float sidechainSr = juce::jmax (1.0f, (float) currentSampleRate);
+		if (sidechainHpSections == 1)
+			sidechainHpCoeffs[0] = (sidechainHpSlope == 0) ? calcOnePoleHP (sidechainHpTarget, sidechainSr)
+			                                             : calcBiquadHP (sidechainHpTarget, sidechainSr, kBW2_Q);
+		else if (sidechainHpSections == 2)
+		{
+			sidechainHpCoeffs[0] = calcBiquadHP (sidechainHpTarget, sidechainSr, kBW4_Q1);
+			sidechainHpCoeffs[1] = calcBiquadHP (sidechainHpTarget, sidechainSr, kBW4_Q2);
+		}
+		if (sidechainLpSections == 1)
+			sidechainLpCoeffs[0] = (sidechainLpSlope == 0) ? calcOnePoleLP (sidechainLpTarget, sidechainSr)
+			                                             : calcBiquadLP (sidechainLpTarget, sidechainSr, kBW2_Q);
+		else if (sidechainLpSections == 2)
+		{
+			sidechainLpCoeffs[0] = calcBiquadLP (sidechainLpTarget, sidechainSr, kBW4_Q1);
+			sidechainLpCoeffs[1] = calcBiquadLP (sidechainLpTarget, sidechainSr, kBW4_Q2);
+		}
+
+		const float sidechainControlHz = sidechainLpOn ? sidechainLpTarget : kSidechainLpDefault;
+		constexpr float kSidechainMinGateTau = 0.00025f;
+		constexpr float kSidechainMaxGateTau = 0.040f;
+		const float sidechainGateTau = kSidechainMinGateTau * sidechainGateSmoothShape
+			+ sidechainGateSmoothShape * sidechainGateSmoothShape * kSidechainMaxGateTau;
+		const float sidechainGateCoeff = sidechainDirectAtZeroSmooth ? 0.0f : std::exp (-1.0f / (sidechainSr * sidechainGateTau));
+		const float sidechainDcCoeff = std::exp (-juce::MathConstants<float>::twoPi * 20.0f / sidechainSr);
+		const float sidechainSmoothCurveSq = sidechainSmoothCurve * sidechainSmoothCurve;
+		const float sidechainMaxSmoothHz = juce::jmax (20.0f, sidechainSr * 0.45f);
+		const float sidechainCarrierSmoothMul = (sidechainSmoothEffective <= 0.5f)
+			? (sidechainMaxSmoothHz / juce::jmax (20.0f, sidechainControlHz)
+				+ sidechainSmoothCurveSq * (0.25f - sidechainMaxSmoothHz / juce::jmax (20.0f, sidechainControlHz)))
+			: juce::jmap (sidechainExtendedBlend, 0.25f, 0.10f);
+		const float sidechainCarrierSmoothHz = juce::jlimit (20.0f, sidechainSr * 0.45f,
+			sidechainControlHz * sidechainCarrierSmoothMul);
+		const float sidechainCarrierSmoothCoeff = sidechainDirectAtZeroSmooth
+			? 0.0f
+			: std::exp (-juce::MathConstants<float>::twoPi * sidechainCarrierSmoothHz / sidechainSr);
+		constexpr float kSidechainMinDepthTau = 0.0005f;
+		constexpr float kSidechainMaxDepthTau = 0.040f;
+		const float sidechainDepthTau = kSidechainMinDepthTau * sidechainGateSmoothShape
+			+ sidechainGateSmoothShape * sidechainGateSmoothShape * kSidechainMaxDepthTau;
+		const float sidechainDepthCoeff = sidechainDirectAtZeroSmooth ? 0.0f : std::exp (-1.0f / (sidechainSr * sidechainDepthTau));
+
+		auto processSidechainFilters = [&] (float x,
+		                                      WetFilterBiquadState* hpState,
+		                                      WetFilterBiquadState* lpState) noexcept
+		{
+			float y = x * sidechainGain;
+			for (int i = 0; i < sidechainHpSections; ++i)
+				y = processBiquad (y, sidechainHpCoeffs[i], hpState[i]);
+			for (int i = 0; i < sidechainLpSections; ++i)
+				y = processBiquad (y, sidechainLpCoeffs[i], lpState[i]);
+			return y;
+		};
+
+		for (int n = 0; n < numSamples; ++n)
+		{
+			const float sidechainGateTarget = sidechainCarrierDetected ? 1.0f : 0.0f;
+			sidechainGateSmoothed_ = sidechainGateCoeff * sidechainGateSmoothed_
+				+ (1.0f - sidechainGateCoeff) * sidechainGateTarget;
+
+			const float sidechainRawL = sidechainBusAvailable ? sidechainReadL[n] : 0.0f;
+			const float sidechainRawR = sidechainBusAvailable ? sidechainReadR[n] : sidechainRawL;
+			const float sidechainDcL = sidechainRawL - sidechainDcPrevInL_ + sidechainDcCoeff * sidechainDcPrevOutL_;
+			const float sidechainDcR = sidechainRawR - sidechainDcPrevInR_ + sidechainDcCoeff * sidechainDcPrevOutR_;
+			sidechainDcPrevInL_ = sidechainRawL;
+			sidechainDcPrevInR_ = sidechainRawR;
+			sidechainDcPrevOutL_ = sidechainDcL;
+			sidechainDcPrevOutR_ = sidechainDcR;
+
+			const float sidechainToneL = processSidechainFilters (sidechainDcL, sidechainHpFilterL_, sidechainLpFilterL_);
+			const float sidechainToneR = processSidechainFilters (sidechainDcR, sidechainHpFilterR_, sidechainLpFilterR_);
+			sidechainCarrierSmoothL_ = sidechainCarrierSmoothCoeff * sidechainCarrierSmoothL_
+				+ (1.0f - sidechainCarrierSmoothCoeff) * sidechainToneL;
+			sidechainCarrierSmoothR_ = sidechainCarrierSmoothCoeff * sidechainCarrierSmoothR_
+				+ (1.0f - sidechainCarrierSmoothCoeff) * sidechainToneR;
+
+			const float sidechainCarrierEnergy = 0.5f
+				* (sidechainCarrierSmoothL_ * sidechainCarrierSmoothL_
+				   + sidechainCarrierSmoothR_ * sidechainCarrierSmoothR_);
+			sidechainRmsEnv_ = sidechainDepthCoeff * sidechainRmsEnv_
+				+ (1.0f - sidechainDepthCoeff) * sidechainCarrierEnergy;
+			const float sidechainDepthTarget = juce::jlimit (0.0f, 1.0f,
+				std::sqrt (juce::jmax (0.0f, sidechainRmsEnv_)) * 2.0f);
+			sidechainDepthSmoothed_ = sidechainDepthCoeff * sidechainDepthSmoothed_
+				+ (1.0f - sidechainDepthCoeff) * sidechainDepthTarget;
+		}
+
+		const float sidechainPol = juce::jlimit (kSidechainPolMin, kSidechainPolMax,
+			loadAtomicOrDefault (sidechainPolParam, kSidechainPolDefault));
+		const float sidechainOffset = sidechainGateSmoothed_ * sidechainDepthSmoothed_ * sidechainPol * 100.0f;
+		amountVal = juce::jlimit (kAmountMin, kAmountMax, rawAmountVal + sidechainOffset);
+	}
+	else
+	{
+		resetSidechainRuntime();
+	}
+
 	const int   triggerDelaySamples = juce::jmax (0, samplesForMs ((float) juce::jlimit (0, 100, getTriggerDelayMs())));
 	if (! rawTriggerParamOn)
 	{
@@ -3944,13 +4135,16 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 		dryDelayWritePos_ = (dryDelayWritePos_ + 1) & (kDryDelayBufLen - 1);
 
-		// Mode In: M/S encode input
-		if (numChannels >= 2 && modeInVal != 0)
+		// Mode In: 0=L+R, 1=M/S, 2=MID, 3=SIDE
+		if (numChannels >= 2)
 		{
-			const float l = inL, r = inR;
-			if (modeInVal == 1)      { const float mid  = (l + r) * kSqrt2Over2; inL = inR = mid; }
-			else /* modeInVal==2 */   { const float side = (l - r) * kSqrt2Over2; inL = inR = side; }
+			const auto routedIn = TR::DSP::applyModeIn ({ inL, inR },
+			                                             TR::DSP::channelModeFromInt (modeInVal));
+			inL = routedIn.l;
+			inR = routedIn.r;
 		}
+
+		TR::DSP::observePeak (inputMeterPeak, { inL, inR });
 
 		// PRE filter/tilt: apply before circular buffer
 		if (filterPre_) filterWetSample (inL, inR);
@@ -5392,20 +5586,13 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		fftDumpPrevPostChaosWetR_ = wetR;
 #endif
 
-		// Mode Out: MID stays dual-mono, SIDE becomes true stereo (+S / -S)
-		if (numChannels >= 2 && modeOutVal != 0)
+		// Mode Out: 0=L+R, 1=M/S decode, 2=MID, 3=SIDE
+		if (numChannels >= 2)
 		{
-			const float mono = (wetL + wetR) * 0.5f;
-			if (modeOutVal == 1)
-			{
-				wetL = mono;
-				wetR = mono;
-			}
-			else /* modeOutVal == 2 */
-			{
-				wetL = mono;
-				wetR = -mono;
-			}
+			const auto routedWet = TR::DSP::applyModeOut ({ wetL, wetR },
+			                                               TR::DSP::channelModeFromInt (modeOutVal));
+			wetL = routedWet.l;
+			wetR = routedWet.r;
 		}
 #if STRETR_ENABLE_FFT1_CLICK_DUMP
 		if (fft1AmountFreezeDumpActiveBlock)
@@ -5635,6 +5822,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		}
 	}
 
+	float outputMeterPeak = 0.0f;
 	{
 		float* left = buffer.getWritePointer (0);
 		float* right = (numChannels >= 2) ? buffer.getWritePointer (1) : nullptr;
@@ -5864,6 +6052,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			left[i] = outL;
 			if (right != nullptr)
 				right[i] = outR;
+			TR::DSP::observePeak (outputMeterPeak, { outL, outR });
 
 			fftLastPostDuckOutL_ = outL;
 			fftLastPostDuckOutR_ = outR;
@@ -5872,6 +6061,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			wetOutputHistoryWritePos_ = (wetOutputHistoryWritePos_ + 1) & (kWetOutputHistoryLen - 1);
 		}
 	}
+
+	TR::DSP::publishPeak (inputMeterPeak_, inputMeterPeak);
+	TR::DSP::publishPeak (outputMeterPeak_, outputMeterPeak);
 
 #if STRETR_ENABLE_FFT1_CLICK_DUMP
 	if (fft1AmountFreezeDumpActiveBlock)
@@ -6166,9 +6358,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 		juce::NormalisableRange<float> (kMixMin, kMixMax, 0.0f, 1.0f), kMixDefault));
 
 	params.push_back (std::make_unique<juce::AudioParameterChoice> (
-		kParamModeIn, "Mode In", juce::StringArray { "L+R", "MID", "SIDE" }, kModeInOutDefault));
+		kParamModeIn, "Mode In", juce::StringArray { "L+R", "M/S", "MID", "SIDE" }, kModeInOutDefault));
 	params.push_back (std::make_unique<juce::AudioParameterChoice> (
-		kParamModeOut, "Mode Out", juce::StringArray { "L+R", "MID", "SIDE" }, kModeInOutDefault));
+		kParamModeOut, "Mode Out", juce::StringArray { "L+R", "M/S", "MID", "SIDE" }, kModeInOutDefault));
 	params.push_back (std::make_unique<juce::AudioParameterChoice> (
 		kParamSumBus, "Sum Bus", juce::StringArray { "ST", u8"\u2192M", u8"\u2192S" }, kSumBusDefault));
 
@@ -6201,6 +6393,35 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamReverse, "Reverse", false));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamTrigger, "Arm", false));
+    params.push_back (std::make_unique<juce::AudioParameterBool> (kParamSidechain, "Sidechain", false));
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        kParamSidechainGain, "Sidechain Gain", makeGainFaderRange(), kSidechainGainDefault));
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        kParamSidechainSmooth, "Sidechain Smooth",
+        juce::NormalisableRange<float> (kSidechainSmoothMin, kSidechainSmoothMax, 0.001f, 1.0f),
+        kSidechainSmoothDefault));
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        kParamSidechainPol, "Sidechain Pol",
+        juce::NormalisableRange<float> (kSidechainPolMin, kSidechainPolMax, 0.001f, 1.0f),
+        kSidechainPolDefault));
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        kParamSidechainHp, "Sidechain HP",
+        juce::NormalisableRange<float> (kSidechainFilterFreqMin, kSidechainFilterFreqMax, 0.0f, 0.35f),
+        kSidechainHpDefault));
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        kParamSidechainLp, "Sidechain LP",
+        juce::NormalisableRange<float> (kSidechainFilterFreqMin, kSidechainFilterFreqMax, 0.0f, 0.35f),
+        kSidechainLpDefault));
+    params.push_back (std::make_unique<juce::AudioParameterBool> (kParamSidechainHpOn, "Sidechain HP On", kSidechainHpOnDefault));
+    params.push_back (std::make_unique<juce::AudioParameterBool> (kParamSidechainLpOn, "Sidechain LP On", kSidechainLpOnDefault));
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        kParamSidechainHpSlope, "Sidechain HP Slope",
+        juce::NormalisableRange<float> ((float) kFilterSlopeMin, (float) kFilterSlopeMax, 1.0f),
+        (float) kSidechainHpSlopeDefault));
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        kParamSidechainLpSlope, "Sidechain LP Slope",
+        juce::NormalisableRange<float> ((float) kFilterSlopeMin, (float) kFilterSlopeMax, 1.0f),
+        (float) kSidechainLpSlopeDefault));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamAlign, "Align", false));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamPdc, "PDC", false));
 
@@ -6256,8 +6477,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiHeight, "UI Height", 240, 1200, 752));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamUiPalette, "UI Palette", false));
 	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamUiCrt, "UI CRT", false));
+	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamUiIoFx, "UI I/O FX", true));
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor0, "UI Color 0", 0, 0xFFFFFF, 0x00FF00));
 	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor1, "UI Color 1", 0, 0xFFFFFF, 0x000000));
+	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor2, "UI Color 2", 0, 0xFFFFFF, 0x0000FF));
+	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor3, "UI Color 3", 0, 0xFFFFFF, 0xFF0000));
 
 	return { params.begin(), params.end() };
 }
@@ -6344,6 +6568,22 @@ bool STRETRAudioProcessor::getUiCrtEnabled() const noexcept
 	return uiCrtEnabled.load (std::memory_order_relaxed) != 0;
 }
 
+void STRETRAudioProcessor::setUiIoFxEnabled (bool enabled)
+{
+	uiIoFxEnabled.store (enabled ? 1 : 0, std::memory_order_relaxed);
+	apvts.state.setProperty (UiStateKeys::ioFxEnabled, enabled, nullptr);
+	setParameterPlainValue (apvts, kParamUiIoFx, enabled ? 1.0f : 0.0f);
+	updateHostDisplay();
+}
+
+bool STRETRAudioProcessor::getUiIoFxEnabled() const noexcept
+{
+	const auto fromState = apvts.state.getProperty (UiStateKeys::ioFxEnabled);
+	if (! fromState.isVoid()) return (bool) fromState;
+	if (uiIoFxParam != nullptr) return uiIoFxParam->load (std::memory_order_relaxed) > 0.5f;
+	return uiIoFxEnabled.load (std::memory_order_relaxed) != 0;
+}
+
 void STRETRAudioProcessor::setUiIoExpanded (bool expanded)
 {
 	apvts.state.setProperty (UiStateKeys::ioExpanded, expanded, nullptr);
@@ -6372,21 +6612,23 @@ int STRETRAudioProcessor::getTriggerDelayMs() const noexcept
 
 void STRETRAudioProcessor::setUiCustomPaletteColour (int index, juce::Colour colour)
 {
-	if (index >= 0 && index < 2)
+	if (index >= 0 && index < 4)
 	{
 		uiCustomPalette[(size_t) index].store (colour.getARGB(), std::memory_order_relaxed);
 		const juce::String key = UiStateKeys::customPalette[(size_t) index];
 		apvts.state.setProperty (key, (int) colour.getARGB(), nullptr);
 		if (uiColorParams[(size_t) index] != nullptr)
-			setParameterPlainValue (apvts, (index == 0 ? kParamUiColor0 : kParamUiColor1),
-			                        (float) (int) colour.getARGB());
+		{
+			const char* colorParamIds[4] { kParamUiColor0, kParamUiColor1, kParamUiColor2, kParamUiColor3 };
+			setParameterPlainValue (apvts, colorParamIds[index], (float) (int) colour.getARGB());
+		}
 		updateHostDisplay();
 	}
 }
 
 juce::Colour STRETRAudioProcessor::getUiCustomPaletteColour (int index) const noexcept
 {
-	if (index < 0 || index >= 2) return juce::Colours::white;
+	if (index < 0 || index >= 4) return juce::Colours::white;
 	const juce::String key = UiStateKeys::customPalette[(size_t) index];
 	const auto fromState = apvts.state.getProperty (key);
 	if (! fromState.isVoid())

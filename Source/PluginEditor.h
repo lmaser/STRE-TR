@@ -5,9 +5,10 @@
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
 #include "CrtEffect.h"
-#include "TRSharedUI.h"
+#include "../../TR-Shared/SimpleUI/TRSharedUI.h"
 
 class STRETRAudioProcessorEditor  : public juce::AudioProcessorEditor,
+                                     public juce::SettableTooltipClient,
                                      private juce::Slider::Listener,
                                      private juce::AudioProcessorValueTreeState::Listener,
                                      private juce::Timer
@@ -26,6 +27,8 @@ private:
     void mouseDown (const juce::MouseEvent& e) override;
     void mouseDoubleClick (const juce::MouseEvent& e) override;
     void mouseDrag (const juce::MouseEvent& e) override;
+    void mouseMove (const juce::MouseEvent& e) override;
+    void mouseExit (const juce::MouseEvent& e) override;
 
     void openNumericEntryPopupForSlider (juce::Slider& s);
     void openFilterPrompt();
@@ -35,6 +38,7 @@ private:
     void openPdcMaxWindowPrompt();
     void openTriggerDelayPrompt();
     void openMixSendPrompt();
+    void openSidechainPrompt();
     void openInfoPopup();
     void openGraphicsPopup();
     void setPromptOverlayActive (bool shouldBeActive);
@@ -42,10 +46,10 @@ private:
 
     STRETRAudioProcessor& audioProcessor;
 
-    class BarSlider : public juce::Slider
+    class BarSlider : public TR::SimpleBarSliderBase
     {
     public:
-        using juce::Slider::Slider;
+        using TR::SimpleBarSliderBase::SimpleBarSliderBase;
 
         void setOwner (STRETRAudioProcessorEditor* o) { owner = o; }
 
@@ -66,7 +70,7 @@ private:
                 return;
             }
 
-            juce::Slider::mouseDown (e);
+            TR::SimpleBarSliderBase::mouseDown (e);
         }
 
         void mouseDrag (const juce::MouseEvent& e) override
@@ -77,7 +81,7 @@ private:
                 return;
             }
 
-            juce::Slider::mouseDrag (e);
+            TR::SimpleBarSliderBase::mouseDrag (e);
         }
 
         juce::String getTextFromValue (double v) override
@@ -124,7 +128,7 @@ private:
                 return (st >= 0.0 ? "+" : "") + juce::String (st, 2);
             }
 
-            // Pan (0-1 → L/C/R)
+            // Pan (0-1 ? L/C/R)
             if (owner != nullptr && this == &owner->panSlider)
             {
                 double percent = v * 100.0;
@@ -228,23 +232,7 @@ private:
         bool allowNumericPopup = true;
     };
 
-    class MainGuiToggleButton : public juce::ToggleButton
-    {
-    public:
-        using juce::ToggleButton::ToggleButton;
-
-        void mouseDown (const juce::MouseEvent& e) override
-        {
-            if (! e.mods.isPopupMenu())
-                juce::ToggleButton::mouseDown (e);
-        }
-
-        void mouseUp (const juce::MouseEvent& e) override
-        {
-            if (! e.mods.isPopupMenu())
-                juce::ToggleButton::mouseUp (e);
-        }
-    };
+    using MainGuiToggleButton = TR::MainGuiPromptToggleButton;
 
     BarSlider amountSlider;
     BarSlider pitchSlider;
@@ -277,9 +265,11 @@ private:
     juce::Label pdcDisplay;
     MainGuiToggleButton chaosFilterButton;
     MainGuiToggleButton chaosDelayButton;
+    MainGuiToggleButton sidechainButton;
 
     juce::Label chaosFilterDisplay;
     juce::Label chaosDelayDisplay;
+    juce::Label sidechainDisplay;
 
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
@@ -314,6 +304,7 @@ private:
     std::unique_ptr<ButtonAttachment> pdcAttachment;
     std::unique_ptr<ButtonAttachment> chaosFilterAttachment;
     std::unique_ptr<ButtonAttachment> chaosDelayAttachment;
+    std::unique_ptr<ButtonAttachment> sidechainAttachment;
 
     juce::ComponentBoundsConstrainer resizeConstrainer;
     std::unique_ptr<juce::ResizableCornerComponent> resizerCorner;
@@ -322,215 +313,18 @@ private:
 
     STREScheme activeScheme;
 
-    struct HorizontalLayoutMetrics
-    {
-        int barW = 0;
-        int valuePad = 0;
-        int valueW = 0;
-        int contentW = 0;
-        int leftX = 0;
-    };
-
-    struct VerticalLayoutMetrics
-    {
-        int rhythm = 0;
-        int titleH = 0;
-        int titleAreaH = 0;
-        int titleTopPad = 0;
-        int topMargin = 0;
-        int betweenSlidersAndButtons = 0;
-        int bottomMargin = 0;
-        int box = 0;
-        int chaosRowY = 0;
-        int btnRow1Y = 0;
-        int btnRow2Y = 0;
-        int btnRowGap = 0;
-        int availableForSliders = 0;
-        int barH = 0;
-        int gapY = 0;
-        int firstGapY = 0;
-        int topY = 0;
-        int toggleBarH = 0;
-        int toggleBarY = 0;
-    };
+    using HorizontalLayoutMetrics = TR::SimpleHorizontalLayoutMetrics;
+    using VerticalLayoutMetrics = TR::SimpleVerticalLayoutMetrics;
 
     static HorizontalLayoutMetrics buildHorizontalLayout (int editorW, int valueColW);
     static VerticalLayoutMetrics buildVerticalLayout (int editorH, int biasY, bool ioExpanded);
     void updateCachedLayout();
 
-    class MinimalLNF : public juce::LookAndFeel_V4
-    {
-    public:
-        void setScheme (const STREScheme& s)
-        {
-            scheme = s;
-            TR::applySchemeToLookAndFeel (*this, scheme);
-        }
-
-        void drawLinearSlider (juce::Graphics& g, int x, int y, int width, int height,
-                               float sliderPos, float minSliderPos, float maxSliderPos,
-                               const juce::Slider::SliderStyle style, juce::Slider& slider) override;
-
-        void drawTickBox (juce::Graphics& g, juce::Component&,
-                          float x, float y, float w, float h,
-                          bool ticked, bool isEnabled,
-                          bool shouldDrawButtonAsHighlighted,
-                          bool shouldDrawButtonAsDown) override;
-
-        void drawToggleButton (juce::Graphics&, juce::ToggleButton&,
-                              bool shouldDrawButtonAsHighlighted,
-                              bool shouldDrawButtonAsDown) override;
-
-        void drawButtonBackground (juce::Graphics& g,
-                       juce::Button& button,
-                       const juce::Colour& backgroundColour,
-                       bool shouldDrawButtonAsHighlighted,
-                       bool shouldDrawButtonAsDown) override;
-
-        void drawAlertBox (juce::Graphics& g,
-                   juce::AlertWindow& alert,
-                   const juce::Rectangle<int>& textArea,
-                   juce::TextLayout& textLayout) override;
-
-        void drawBubble (juce::Graphics&,
-                 juce::BubbleComponent&,
-                 const juce::Point<float>& tip,
-                 const juce::Rectangle<float>& body) override;
-
-        void drawScrollbar (juce::Graphics& g, juce::ScrollBar& bar,
-                    int x, int y, int width, int height,
-                    bool isScrollbarVertical, int thumbStartPosition, int thumbSize,
-                    bool isMouseOver, bool isMouseDown) override;
-
-        void drawComboBox (juce::Graphics& g, int width, int height,
-                           bool isButtonDown, int buttonX, int buttonY,
-                           int buttonW, int buttonH, juce::ComboBox& box) override;
-
-        void drawPopupMenuBackground (juce::Graphics& g, int width, int height) override;
-
-        juce::Font getComboBoxFont (juce::ComboBox& box) override;
-
-        void positionComboBoxText (juce::ComboBox& box, juce::Label& label) override
-        {
-            label.setFont (getComboBoxFont (box));
-            label.setBounds (1, 1, box.getWidth() - 2, box.getHeight() - 2);
-            label.setJustificationType (juce::Justification::centred);
-        }
-
-        int getMinimumScrollbarThumbSize (juce::ScrollBar&) override { return 16; }
-        int getScrollbarButtonSize (juce::ScrollBar&) override      { return 0; }
-
-        juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override;
-        juce::Font getAlertWindowMessageFont() override;
-        juce::Font getLabelFont (juce::Label& label) override;
-        juce::Font getSliderPopupFont (juce::Slider&) override;
-        juce::Rectangle<int> getTooltipBounds (const juce::String& tipText,
-                               juce::Point<int> screenPos,
-                               juce::Rectangle<int> parentArea) override;
-        void drawTooltip (juce::Graphics&, const juce::String& text, int width, int height) override;
-
-    private:
-        STREScheme scheme {
-            juce::Colours::black,
-            juce::Colours::white,
-            juce::Colours::white,
-            juce::Colours::white
-        };
-    };
-
-    // ── Wet-signal filter frequency bar component ──
-    class FilterBarComponent : public juce::Component,
-                               public juce::SettableTooltipClient
-    {
-    public:
-        FilterBarComponent() = default;
-        void setOwner (STRETRAudioProcessorEditor* o) { owner = o; }
-        void setScheme (const STREScheme& s) { scheme = s; repaint(); }
-
-        void paint (juce::Graphics& g) override;
-        void mouseDown (const juce::MouseEvent& e) override;
-        void mouseDrag (const juce::MouseEvent& e) override;
-        void mouseUp (const juce::MouseEvent& e) override;
-        void mouseMove (const juce::MouseEvent& e) override;
-        void mouseDoubleClick (const juce::MouseEvent& e) override;
-
-        void updateFromProcessor();
-
-        float getHpFreq() const { return hpFreq_; }
-        float getLpFreq() const { return lpFreq_; }
-        bool  isHpOn()    const { return hpOn_; }
-        bool  isLpOn()    const { return lpOn_; }
-
-    private:
-        STRETRAudioProcessorEditor* owner = nullptr;
-        STREScheme scheme {};
-
-        float hpFreq_ = 250.0f;
-        float lpFreq_ = 2000.0f;
-        bool  hpOn_   = false;
-        bool  lpOn_   = false;
-
-        enum DragTarget { None, HP, LP };
-        DragTarget currentDrag_ = None;
-
-        static constexpr float kMinFreq = 20.0f;
-        static constexpr float kMaxFreq = 20000.0f;
-        static constexpr float kPad     = 7.0f;
-        static constexpr int   kMarkerHitPx = 10;
-
-        juce::Rectangle<float> getInnerArea() const;
-        float freqToNormX (float freq) const;
-        float normXToFreq (float normX) const;
-        float getMarkerScreenX (float freq) const;
-        DragTarget hitTestMarker (juce::Point<float> p) const;
-        void  setFreqFromMouseX (float mouseX, DragTarget target);
-        void  updateTooltipForTarget (DragTarget target);
-    };
-
+    using MinimalLNF = TR::SimpleLookAndFeel;
+    using FilterBarComponent = TR::SimpleFilterBarComponent<STRETRAudioProcessorEditor, STRETRAudioProcessor, STREScheme>;
     FilterBarComponent filterBar_;
 
-    // ── Dual dry/wet level bar (SEND mix mode) ──
-    class DualMixBarComponent : public juce::Component,
-                                public juce::SettableTooltipClient
-    {
-    public:
-        DualMixBarComponent() = default;
-        void setOwner (STRETRAudioProcessorEditor* o) { owner = o; }
-        void setScheme (const STREScheme& s) { scheme = s; repaint(); }
-
-        void paint (juce::Graphics& g) override;
-        void mouseDown (const juce::MouseEvent& e) override;
-        void mouseDrag (const juce::MouseEvent& e) override;
-        void mouseUp (const juce::MouseEvent& e) override;
-        void mouseMove (const juce::MouseEvent& e) override;
-
-        void updateFromProcessor();
-
-        float getDryLevel() const { return dryLevel_; }
-        float getWetLevel() const { return wetLevel_; }
-
-        enum DragTarget { None, DRY, WET };
-        DragTarget getLastTouched() const { return lastTouched_; }
-
-    private:
-        STRETRAudioProcessorEditor* owner = nullptr;
-        STREScheme scheme {};
-
-        float dryLevel_ = 0.0f;
-        float wetLevel_ = 1.0f;
-
-        DragTarget currentDrag_ = None;
-        DragTarget lastTouched_ = WET;
-
-        static constexpr float kPad = 7.0f;
-        static constexpr int   kMarkerHitPx = 14;
-
-        juce::Rectangle<float> getInnerArea() const;
-        DragTarget hitTestMarker (juce::Point<float> p) const;
-        void  setLevelFromMouseX (float mouseX, DragTarget target);
-        void  updateTooltipForTarget (DragTarget target);
-    };
-
+    using DualMixBarComponent = TR::SimpleDualMixBarComponent<STRETRAudioProcessorEditor, STRETRAudioProcessor, STREScheme>;
     DualMixBarComponent dualMixBar_;
 
     using PromptOverlay = TR::PromptOverlay;
@@ -593,7 +387,16 @@ private:
     void timerCallback() override;
 
     void applyPersistedUiStateFromProcessor (bool applySize, bool applyPaletteAndFx);
+
+public:
+    void triggerUiRestore() { applyPersistedUiStateFromProcessor (true, true); }
+
+private:
     void applyLabelTextColour (juce::Label& label, juce::Colour colour);
+
+    friend class TR::SimpleFilterBarComponent<STRETRAudioProcessorEditor, STRETRAudioProcessor, STREScheme>;
+    friend class TR::SimpleDualMixBarComponent<STRETRAudioProcessorEditor, STRETRAudioProcessor, STREScheme>;
+    friend struct TR::PromptHostBridge;
 
     template <typename T>
     friend void TR::embedAlertWindowInOverlay (T*, juce::AlertWindow*, bool);
@@ -606,12 +409,16 @@ private:
     juce::Rectangle<int> getPdcLabelArea() const;
     juce::Rectangle<int> getChaosLabelArea() const;
     juce::Rectangle<int> getChaosDelayLabelArea() const;
+    juce::Rectangle<int> getSidechainLabelArea() const;
     juce::Rectangle<int> getInfoIconArea() const;
     void updateInfoIconCache();
     bool refreshLegendTextCache();
+    TR::SimpleMainPanelSpec buildMainPanelSpec();
     juce::Rectangle<int> getRowRepaintBounds (const juce::Slider& s) const;
     void applyActivePalette();
     void applyCrtState (bool enabled);
+    void applyIoFxState (bool enabled);
+    void updateIoFxMeterSliders();
 
     juce::Path cachedInfoGearPath;
     juce::Rectangle<float> cachedInfoGearHole;
@@ -696,19 +503,20 @@ private:
     std::atomic<uint32_t> lastUserInteractionMs { 0 };
     static constexpr uint32_t kUserInteractionPersistWindowMs = 5000;
     bool crtEnabled = false;
+    bool ioFxEnabled = true;
     bool useCustomPalette = false;
+    double lastInputSignalMs = -10000.0;
+    double lastOutputSignalMs = -10000.0;
 
     CrtEffect crtEffect;
     float     crtTime = 0.0f;
 
-    std::array<juce::Colour, 2> defaultPalette {
-        juce::Colours::white,
-        juce::Colours::black
-    };
-    std::array<juce::Colour, 2> customPalette {
-        juce::Colours::white,
-        juce::Colours::black
-    };
+    static constexpr int kPaletteColourCount = 4;
+    std::array<juce::Colour, kPaletteColourCount> defaultPalette = TR::defaultSimplePalette();
+    std::array<juce::Colour, kPaletteColourCount> customPalette = TR::defaultSimpleCustomPalette();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (STRETRAudioProcessorEditor)
 };
+
+
+

@@ -55,6 +55,17 @@ public:
 	static constexpr const char* kParamReverse   = "reverse";
 	static constexpr const char* kParamTrigger   = "trigger";
 
+	// Sidechain parameter IDs
+	static constexpr const char* kParamSidechain = "sidechain";
+	static constexpr const char* kParamSidechainGain   = "sidechain_gain";
+	static constexpr const char* kParamSidechainSmooth = "sidechain_smooth";
+	static constexpr const char* kParamSidechainPol    = "sidechain_pol";
+	static constexpr const char* kParamSidechainHp     = "sidechain_hp";
+	static constexpr const char* kParamSidechainLp     = "sidechain_lp";
+	static constexpr const char* kParamSidechainHpOn   = "sidechain_hp_on";
+	static constexpr const char* kParamSidechainLpOn   = "sidechain_lp_on";
+	static constexpr const char* kParamSidechainHpSlope = "sidechain_hp_slope";
+	static constexpr const char* kParamSidechainLpSlope = "sidechain_lp_slope";
 	// Filter parameter IDs
 	static constexpr const char* kParamFilterHpFreq  = "filter_hp_freq";
 	static constexpr const char* kParamFilterLpFreq  = "filter_lp_freq";
@@ -98,8 +109,11 @@ public:
 	static constexpr const char* kParamUiHeight   = "ui_height";
 	static constexpr const char* kParamUiPalette  = "ui_palette";
 	static constexpr const char* kParamUiCrt      = "ui_fx_tail";
+	static constexpr const char* kParamUiIoFx     = "ui_io_fx";
 	static constexpr const char* kParamUiColor0   = "ui_color0";
 	static constexpr const char* kParamUiColor1   = "ui_color1";
+	static constexpr const char* kParamUiColor2   = "ui_color2";
+	static constexpr const char* kParamUiColor3   = "ui_color3";
 
     // Parameter ranges and defaults
 	static constexpr float kAmountMin     = 0.0f;
@@ -152,12 +166,28 @@ public:
 	static constexpr float kMixMax     = 1.0f;
 	static constexpr float kMixDefault = 1.0f;
 
-	static constexpr int   kModeInOutDefault = 0;
+	static constexpr int   kModeInOutDefault = 0;   // 0=L+R  1=M/S  2=MID  3=SIDE
 	static constexpr int   kSumBusDefault    = 0;
 	static constexpr int   kInvPolDefault    = 0;   // 0=NONE  1=WET  2=GLOBAL
 	static constexpr int   kInvStrDefault    = 0;   // 0=NONE  1=WET  2=GLOBAL
-	static constexpr float kSqrt2Over2       = 0.707106781f;
 
+	static constexpr float kSidechainSmoothMin     = 0.0f;
+	static constexpr float kSidechainSmoothMax     = 1.0f;
+	static constexpr float kSidechainSmoothDefault = 0.25f;
+	static constexpr float kSidechainGainMin       = -144.0f;
+	static constexpr float kSidechainGainMax       =   24.0f;
+	static constexpr float kSidechainGainDefault   =    0.0f;
+	static constexpr float kSidechainPolMin        =   -1.0f;
+	static constexpr float kSidechainPolMax        =    1.0f;
+	static constexpr float kSidechainPolDefault    =    1.0f;
+	static constexpr float kSidechainFilterFreqMin =   20.0f;
+	static constexpr float kSidechainFilterFreqMax = 20000.0f;
+	static constexpr float kSidechainHpDefault     =   20.0f;
+	static constexpr float kSidechainLpDefault     = 20000.0f;
+	static constexpr bool  kSidechainHpOnDefault   = true;
+	static constexpr bool  kSidechainLpOnDefault   = true;
+	static constexpr int   kSidechainHpSlopeDefault = 1;
+	static constexpr int   kSidechainLpSlopeDefault = 1;
 	static constexpr float kFilterFreqMin       = 20.0f;
 	static constexpr float kFilterFreqMax       = 20000.0f;
 	static constexpr float kFilterHpFreqDefault = 250.0f;
@@ -251,6 +281,8 @@ public:
 
 	void setUiCrtEnabled (bool enabled);
 	bool getUiCrtEnabled() const noexcept;
+	void setUiIoFxEnabled (bool enabled);
+	bool getUiIoFxEnabled() const noexcept;
 
 	void setUiIoExpanded (bool expanded);
 	bool getUiIoExpanded() const noexcept;
@@ -265,6 +297,8 @@ public:
 
 	void setUiCustomPaletteColour (int index, juce::Colour colour);
 	juce::Colour getUiCustomPaletteColour (int index) const noexcept;
+	float getInputMeterPeak() const noexcept { return inputMeterPeak_.load (std::memory_order_relaxed); }
+	float getOutputMeterPeak() const noexcept { return outputMeterPeak_.load (std::memory_order_relaxed); }
 
 	juce::AudioProcessorValueTreeState apvts;
 	static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
@@ -281,6 +315,7 @@ private:
 		static constexpr const char* editorHeight     = "uiEditorHeight";
 		static constexpr const char* useCustomPalette = "uiUseCustomPalette";
 		static constexpr const char* crtEnabled       = "uiFxTailEnabled";
+		static constexpr const char* ioFxEnabled      = "uiIoFxEnabled";
 		static constexpr const char* ioExpanded       = "uiIoExpanded";
 		static constexpr const char* stretchWindow    = "stretchWindow";
 		static constexpr const char* grainWindow      = "grainWindow";
@@ -288,8 +323,8 @@ private:
 		static constexpr const char* fft2Window       = "fft2Window";
 		static constexpr const char* fftWindow        = "fftWindow";
 		static constexpr const char* triggerDelayMs   = "triggerDelayMs";
-		static constexpr std::array<const char*, 2> customPalette {
-			"uiCustomPalette0", "uiCustomPalette1"
+		static constexpr std::array<const char*, 4> customPalette {
+			"uiCustomPalette0", "uiCustomPalette1", "uiCustomPalette2", "uiCustomPalette3"
 		};
 	};
 
@@ -1744,6 +1779,20 @@ private:
 		void reset() { hp[0] = hp[1] = lp[0] = lp[1] = {}; }
 	};
 	WetFilterChannelState wetFilterState_[2];
+	float sidechainDcPrevInL_ = 0.0f;
+	float sidechainDcPrevInR_ = 0.0f;
+	float sidechainDcPrevOutL_ = 0.0f;
+	float sidechainDcPrevOutR_ = 0.0f;
+	WetFilterBiquadState sidechainHpFilterL_[2];
+	WetFilterBiquadState sidechainHpFilterR_[2];
+	WetFilterBiquadState sidechainLpFilterL_[2];
+	WetFilterBiquadState sidechainLpFilterR_[2];
+	float sidechainCarrierSmoothL_ = 0.0f;
+	float sidechainCarrierSmoothR_ = 0.0f;
+	float sidechainRmsEnv_ = 0.0f;
+	float sidechainGateSmoothed_ = 0.0f;
+	float sidechainDepthSmoothed_ = 0.0f;
+	void resetSidechainRuntime() noexcept;
 	WetFilterBiquadCoeffs hpCoeffs_[2];
 	WetFilterBiquadCoeffs lpCoeffs_[2];
 	WetFilterBiquadCoeffs hpCoeffsR_[2];      // per-section HP coeffs (R, stereo chaos)
@@ -1867,7 +1916,10 @@ private:
 	std::atomic<int> uiUseCustomPalette { 0 };
 	std::atomic<int> uiCrtEnabled  { 0 };
 	std::atomic<int> triggerDelayMs { 0 };
-	std::atomic<juce::uint32> uiCustomPalette[2] {};
+	std::atomic<int> uiIoFxEnabled { 1 };
+	std::atomic<juce::uint32> uiCustomPalette[4] {};
+	std::atomic<float> inputMeterPeak_ { 0.0f };
+	std::atomic<float> outputMeterPeak_ { 0.0f };
 
 	std::atomic<float>* amountParam      = nullptr;
 	std::atomic<float>* pitchParam       = nullptr;
@@ -1896,6 +1948,16 @@ private:
 	std::atomic<float>* alignParam       = nullptr;
 	std::atomic<float>* pdcParam         = nullptr;
 
+	std::atomic<float>* sidechainParam = nullptr;
+	std::atomic<float>* sidechainGainParam = nullptr;
+	std::atomic<float>* sidechainSmoothParam = nullptr;
+	std::atomic<float>* sidechainPolParam = nullptr;
+	std::atomic<float>* sidechainHpParam = nullptr;
+	std::atomic<float>* sidechainLpParam = nullptr;
+	std::atomic<float>* sidechainHpOnParam = nullptr;
+	std::atomic<float>* sidechainLpOnParam = nullptr;
+	std::atomic<float>* sidechainHpSlopeParam = nullptr;
+	std::atomic<float>* sidechainLpSlopeParam = nullptr;
 	std::atomic<float>* filterHpFreqParam  = nullptr;
 	std::atomic<float>* filterLpFreqParam  = nullptr;
 	std::atomic<float>* filterHpSlopeParam = nullptr;
@@ -1915,7 +1977,8 @@ private:
 	std::atomic<float>* uiHeightParam  = nullptr;
 	std::atomic<float>* uiPaletteParam = nullptr;
 	std::atomic<float>* uiCrtParam     = nullptr;
-	std::atomic<float>* uiColorParams[2] = { nullptr, nullptr };
+	std::atomic<float>* uiIoFxParam    = nullptr;
+	std::atomic<float>* uiColorParams[4] = { nullptr, nullptr, nullptr, nullptr };
 
 	// Generic smooth S&H + Drift chaos engine (per-sample advance)
 	inline void advanceChaosEngine (
