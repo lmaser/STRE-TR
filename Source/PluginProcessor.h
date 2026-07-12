@@ -5,6 +5,7 @@
 #include <atomic>
 #include <vector>
 #include "PerfTrace.h"
+#include "../../TR-Shared/SimpleUI/SimpleUIStateKeys.h"
 
 // Compile-time gate for the temporary FFT amount/click CSV dump.
 // Keep disabled for release builds unless explicitly diagnosing this path.
@@ -311,11 +312,11 @@ public:
 private:
 	struct UiStateKeys
 	{
-		static constexpr const char* editorWidth      = "uiEditorWidth";
-		static constexpr const char* editorHeight     = "uiEditorHeight";
-		static constexpr const char* useCustomPalette = "uiUseCustomPalette";
-		static constexpr const char* crtEnabled       = "uiFxTailEnabled";
-		static constexpr const char* ioFxEnabled      = "uiIoFxEnabled";
+		static constexpr const char* editorWidth      = TR::SimpleUiStateKeys::editorWidth;
+		static constexpr const char* editorHeight     = TR::SimpleUiStateKeys::editorHeight;
+		static constexpr const char* useCustomPalette = TR::SimpleUiStateKeys::useCustomPalette;
+		static constexpr const char* crtEnabled       = TR::SimpleUiStateKeys::crtEnabled;
+		static constexpr const char* ioFxEnabled      = TR::SimpleUiStateKeys::ioFxEnabled;
 		static constexpr const char* ioExpanded       = "uiIoExpanded";
 		static constexpr const char* stretchWindow    = "stretchWindow";
 		static constexpr const char* grainWindow      = "grainWindow";
@@ -323,9 +324,7 @@ private:
 		static constexpr const char* fft2Window       = "fft2Window";
 		static constexpr const char* fftWindow        = "fftWindow";
 		static constexpr const char* triggerDelayMs   = "triggerDelayMs";
-		static constexpr std::array<const char*, 4> customPalette {
-			"uiCustomPalette0", "uiCustomPalette1", "uiCustomPalette2", "uiCustomPalette3"
-		};
+		static constexpr auto customPalette = TR::SimpleUiStateKeys::customPalette;
 	};
 
 	enum class WindowFamily : int

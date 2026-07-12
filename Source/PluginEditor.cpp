@@ -9,19 +9,7 @@ using namespace TR;
  #include <windows.h>
 #endif
 
-namespace UiStateKeys
-{
-    constexpr const char* editorWidth       = "uiEditorWidth";
-    constexpr const char* editorHeight      = "uiEditorHeight";
-    constexpr const char* useCustomPalette  = "uiUseCustomPalette";
-    constexpr const char* crtEnabled        = "uiFxTailEnabled";
-    constexpr std::array<const char*, 4> customPalette {
-        "uiCustomPalette0",
-        "uiCustomPalette1",
-        "uiCustomPalette2",
-        "uiCustomPalette3"
-    };
-}
+namespace UiStateKeys = TR::SimpleUiStateKeys;
 
 // -- Timer & display constants --
 static constexpr int   kCrtTimerHz   = 10;
@@ -549,11 +537,14 @@ void STRETRAudioProcessorEditor::updateIoFxMeterSliders()
 
 void STRETRAudioProcessorEditor::applyCrtState (bool enabled)
 {
-    crtEnabled = enabled;
-    crtEffect.setEnabled (crtEnabled);
-    setComponentEffect (crtEnabled ? &crtEffect : nullptr);
+    // Legacy Graphic FX/CRT is intentionally disabled. I/O FX is handled by
+    // applyIoFxState/updateIoFxMeterSliders and must not resurrect CRT from old settings.
+    juce::ignoreUnused (enabled);
+    crtEnabled = false;
+    crtEffect.setEnabled (false);
+    setComponentEffect (nullptr);
     stopTimer();
-    startTimerHz (crtEnabled ? kCrtTimerHz : kIdleTimerHz);
+    startTimerHz (kIdleTimerHz);
 }
 
 void STRETRAudioProcessorEditor::applyLabelTextColour (juce::Label& label, juce::Colour colour)
@@ -596,24 +587,15 @@ void STRETRAudioProcessorEditor::sliderValueChanged (juce::Slider* slider)
 
 void STRETRAudioProcessorEditor::setPromptOverlayActive (bool shouldBeActive)
 {
-    if (promptOverlayActive == shouldBeActive) return;
-    promptOverlayActive = shouldBeActive;
-    promptOverlay.setBounds (getLocalBounds());
-    TR::setSimpleComponentVisible (promptOverlay, shouldBeActive);
-    if (shouldBeActive) promptOverlay.toFront (false);
-
-    // promptOverlay intercepts mouse input while the modal prompt is open. Do not disable
-    // the underlying controls here, otherwise overlay dimming stacks with disabled alpha.
+    TR::SimpleUIController::setOverlayActive (*this, promptOverlay, promptOverlayActive, shouldBeActive, lnf);
     repaint();
     if (! shouldBeActive) updateEngineControls();  // re-apply engine dimming
-    if (promptOverlayActive) promptOverlay.toFront (false);
-    anchorEditorOwnedPromptWindows (*this, lnf);
+    TR::SimpleUIController::anchorPromptsOnMove (*this, promptOverlayActive, promptOverlay, lnf);
 }
 
 void STRETRAudioProcessorEditor::moved()
 {
-    if (promptOverlayActive) promptOverlay.toFront (false);
-    anchorEditorOwnedPromptWindows (*this, lnf);
+    TR::SimpleUIController::anchorPromptsOnMove (*this, promptOverlayActive, promptOverlay, lnf);
 }
 
 void STRETRAudioProcessorEditor::parentHierarchyChanged()
@@ -1553,15 +1535,8 @@ TR::SimpleMainPanelSpec STRETRAudioProcessorEditor::buildMainPanelSpec()
         };
 
         for (int i = 0; i < 12; ++i)
-        {
-            TR::SimpleMainPanelRow row;
-            row.cachedFull = full[i];
-            row.cachedShort = shrt[i];
-            row.cachedIntOnly = intOnly[i];
-            row.valueArea = cachedValueAreas_[(size_t) i];
-            row.visible = ! row.valueArea.isEmpty();
-            spec.rows.push_back (row);
-        }
+            TR::addSimpleMainPanelRow (spec, false, full[i], shrt[i], intOnly[i],
+                                       cachedValueAreas_[(size_t) i]);
     }
 
     {
@@ -1569,26 +1544,12 @@ TR::SimpleMainPanelSpec STRETRAudioProcessorEditor::buildMainPanelSpec()
                                  const juce::String* full, const juce::String* shrt,
                                  const juce::String* intOnly = nullptr)
         {
-            if (! s.isVisible() || area.getWidth() <= 0) return;
-            TR::SimpleMainPanelRow row;
-            row.cachedFull = full;
-            row.cachedShort = shrt;
-            row.cachedIntOnly = intOnly;
-            row.valueArea = area;
-            row.visible = true;
-            spec.expandedRows.push_back (row);
+            TR::addSimpleMainPanelRow (spec, true, full, shrt, intOnly, area, s.isVisible());
         };
 
         addIfVisible (tiltSlider, cachedTiltValueArea_, &cachedTiltTextFull, &cachedTiltTextShort, &cachedTiltIntOnly);
-        if (filterBar_.isVisible() && cachedFilterValueArea_.getWidth() > 0)
-        {
-            TR::SimpleMainPanelRow row;
-            row.cachedFull = &cachedFilterTextFull;
-            row.cachedShort = &cachedFilterTextShort;
-            row.valueArea = cachedFilterValueArea_;
-            row.visible = true;
-            spec.expandedRows.push_back (row);
-        }
+        TR::addSimpleMainPanelRow (spec, true, &cachedFilterTextFull, &cachedFilterTextShort, nullptr,
+                                   cachedFilterValueArea_, filterBar_.isVisible());
         addIfVisible (panSlider, cachedPanValueArea_, &cachedPanTextFull, &cachedPanTextShort, &cachedPanIntOnly);
         addIfVisible (limThresholdSlider, cachedLimThresholdValueArea_, &cachedLimThresholdTextFull, &cachedLimThresholdTextShort, &cachedLimThresholdIntOnly);
     }
@@ -1606,43 +1567,29 @@ TR::SimpleMainPanelSpec STRETRAudioProcessorEditor::buildMainPanelSpec()
     };
 
     const int W = getWidth();
-    auto addToggle = [&] (juce::Button& btn, juce::Rectangle<int> area,
-                          const char* full, const char* shrt, int collisionRight)
-    {
-        if (! btn.isVisible()) return;
-        TR::SimpleMainPanelToggle t;
-        t.button = &btn;
-        t.labelArea = area;
-        t.labelFull = full;
-        t.labelShort = shrt;
-        t.rightCollisionBound = collisionRight;
-        t.visible = true;
-        t.enabled = btn.isEnabled();
-        spec.toggles.push_back (t);
-    };
-
-    addToggle (chaosFilterButton, getChaosLabelArea(), "CHSF", "CHSF",
-               chaosDelayButton.isVisible() ? chaosDelayButton.getX() - TR::kSimpleToggleLegendCollisionPadPx : W - TR::kSimpleToggleLegendCollisionPadPx);
-    addToggle (chaosDelayButton, getChaosDelayLabelArea(), "CHSD", "CHSD", W - TR::kSimpleToggleLegendCollisionPadPx);
-    addToggle (sidechainButton, getSidechainLabelArea(), "SIDECHAIN", "SC", W - TR::kSimpleToggleLegendCollisionPadPx);
+    TR::addSimpleMainPanelToggle (spec, false, chaosFilterButton, getChaosLabelArea(), "CHSF", "CHSF",
+                                  TR::makeSimpleMainPanelRightBoundBefore (chaosDelayButton, W));
+    TR::addSimpleMainPanelToggle (spec, false, chaosDelayButton, getChaosDelayLabelArea(), "CHSD", "CHSD",
+                                  TR::makeSimpleMainPanelRightBound (W));
+    TR::addSimpleMainPanelToggle (spec, false, sidechainButton, getSidechainLabelArea(), "SIDECHAIN", "SC",
+                                  TR::makeSimpleMainPanelRightBound (W));
 
     if (! ioSectionExpanded_)
     {
-        spec.collapsedToggles = {
-            { "ALIGN", "ALN", &alignButton,   getAlignLabelArea(),   pdcButton.getX() - TR::kSimpleToggleLegendCollisionPadPx, true, true },
-            { "PDC",   "PDC", &pdcButton,     getPdcLabelArea(),     W - TR::kSimpleToggleLegendCollisionPadPx, true, true },
-            { "REVERSE", "RVS", &reverseButton, getReverseLabelArea(), triggerButton.getX() - TR::kSimpleToggleLegendCollisionPadPx, true, reverseButton.isEnabled() },
-            { "ARM",   "ARM", &triggerButton, getTriggerLabelArea(), W - TR::kSimpleToggleLegendCollisionPadPx, true, true }
-        };
+        TR::addSimpleMainPanelToggle (spec, true, alignButton, getAlignLabelArea(), "ALIGN", "ALN",
+                                      TR::makeSimpleMainPanelRightBoundBefore (pdcButton, W));
+        TR::addSimpleMainPanelToggle (spec, true, pdcButton, getPdcLabelArea(), "PDC", "PDC",
+                                      TR::makeSimpleMainPanelRightBound (W));
+        TR::addSimpleMainPanelToggle (spec, true, reverseButton, getReverseLabelArea(), "REVERSE", "RVS",
+                                      TR::makeSimpleMainPanelRightBoundBefore (triggerButton, W),
+                                      true, reverseButton.isEnabled());
+        TR::addSimpleMainPanelToggle (spec, true, triggerButton, getTriggerLabelArea(), "ARM", "ARM",
+                                      TR::makeSimpleMainPanelRightBound (W));
     }
 
     if (cachedInfoGearPath.isEmpty())
         updateInfoIconCache();
-    if (! cachedInfoGearPath.isEmpty())
-    {
-        spec.infoGearPath = &cachedInfoGearPath;
-        spec.infoGearHole = &cachedInfoGearHole;
-    }
+    TR::setSimpleMainPanelInfoGear (spec, cachedInfoGearPath, cachedInfoGearHole);
 
     return spec;
 }
@@ -2136,9 +2083,9 @@ void STRETRAudioProcessorEditor::openGraphicsPopup()
 {
     lnf.setScheme (activeScheme);
     useCustomPalette = audioProcessor.getUiUseCustomPalette();
-    crtEnabled = audioProcessor.getUiCrtEnabled();
+    crtEnabled = false;
     ioFxEnabled = audioProcessor.getUiIoFxEnabled();
-    crtEffect.setEnabled (crtEnabled);
+    crtEffect.setEnabled (false);
     applyActivePalette();
 
     TR::openGraphicsPopupShared<STRETRAudioProcessorEditor> (this,
