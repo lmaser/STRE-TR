@@ -1,5 +1,5 @@
 #include "PluginProcessor.h"
-#include "PluginEditor.h"
+#include "UIV2/StreV2EditorFactory.h"
 #include "../../TR-Shared/SimpleDSP/TRSimpleDSP.h"
 
 namespace
@@ -12,8 +12,6 @@ namespace
 		return result;
 	}
 
-	constexpr float kGainSmoothCoeff = 0.9955f;
-	constexpr float kGainSmoothStep  = 1.0f - kGainSmoothCoeff;
 	constexpr float kStretchJitterPitchSmoothStep = 0.95f;
 	constexpr float kStretchGrainJitterControlPower = 6.0f;
 	constexpr float kStretchGrainJitterIntensityScale = 3.0f;
@@ -332,9 +330,6 @@ void STRETRAudioProcessor::writeWindowFamilyStateToTree (juce::ValueTree& state)
 	state.setProperty (UiStateKeys::fft2Window,
 	                   getStoredWindowForFamily (WindowFamily::fft2),
 	                   nullptr);
-	state.setProperty (UiStateKeys::fftWindow,
-	                   getStoredWindowForFamily (WindowFamily::fft1),
-	                   nullptr);
 }
 
 int STRETRAudioProcessor::getCurrentMaxFftWindow() const noexcept
@@ -372,6 +367,7 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 	                   )
 #endif
 	, apvts (*this, nullptr, "Parameters", createParameterLayout())
+	, modulation (apvts, TR::StreModulation::destinations())
 {
 	amountParam  = apvts.getRawParameterValue (kParamAmount);
 	pitchParam     = apvts.getRawParameterValue (kParamPitch);
@@ -389,6 +385,7 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 	sumBusParam  = apvts.getRawParameterValue (kParamSumBus);
 	limThresholdParam = apvts.getRawParameterValue (kParamLimThreshold);
 	limModeParam      = apvts.getRawParameterValue (kParamLimMode);
+	limQualityParam   = apvts.getRawParameterValue (kParamLimQuality);
 	invPolParam       = apvts.getRawParameterValue (kParamInvPol);
 	invStrParam       = apvts.getRawParameterValue (kParamInvStr);
 	mixModeParam   = apvts.getRawParameterValue (kParamMixMode);
@@ -425,22 +422,7 @@ STRETRAudioProcessor::STRETRAudioProcessor()
 	chaosAmtFilterParam = apvts.getRawParameterValue (kParamChaosAmtFilter);
 	chaosSpdFilterParam = apvts.getRawParameterValue (kParamChaosSpdFilter);
 
-	uiWidthParam   = apvts.getRawParameterValue (kParamUiWidth);
-	uiHeightParam  = apvts.getRawParameterValue (kParamUiHeight);
-	uiPaletteParam = apvts.getRawParameterValue (kParamUiPalette);
-	uiCrtParam     = apvts.getRawParameterValue (kParamUiCrt);
-	uiIoFxParam    = apvts.getRawParameterValue (kParamUiIoFx);
-	uiColorParams[0] = apvts.getRawParameterValue (kParamUiColor0);
-	uiColorParams[1] = apvts.getRawParameterValue (kParamUiColor1);
-	uiColorParams[2] = apvts.getRawParameterValue (kParamUiColor2);
-	uiColorParams[3] = apvts.getRawParameterValue (kParamUiColor3);
-
 	initialiseWindowFamilies (loadIntParamOrDefault (windowParam, (int) kWindowDefault));
-
-	const int w = loadIntParamOrDefault (uiWidthParam, 360);
-	const int h = loadIntParamOrDefault (uiHeightParam, 752);
-	uiEditorWidth.store (w, std::memory_order_relaxed);
-	uiEditorHeight.store (h, std::memory_order_relaxed);
 
 	if constexpr (DeveloperDiagnosticsConfig::kEnableAutoDump)
 	{
@@ -504,23 +486,26 @@ void STRETRAudioProcessor::changeProgramName (int, const juce::String&) {}
 //==============================================================================
 void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
-	juce::ignoreUnused (samplesPerBlock);
 	currentSampleRate = sampleRate;
+	modulation.prepare (currentSampleRate, juce::jmax (1, samplesPerBlock));
+	fiveMsSmoothStep_ = TR::DSP::onePoleStepFromTau (currentSampleRate, 0.005f);
 
-	smoothedInputGain  = 1.0f;
-	smoothedOutputGain = 1.0f;
-	smoothedMix        = 0.5f;
+	smoothedInputGain  = fastDecibelsToGain (loadAtomicOrDefault (inputParam, kInputDefault));
+	smoothedOutputGain = fastDecibelsToGain (loadAtomicOrDefault (outputParam, kOutputDefault));
+	smoothedMix        = juce::jlimit (kMixMin, kMixMax,
+		loadAtomicOrDefault (mixParam, kMixDefault));
 	smoothedDryLevel   = loadAtomicOrDefault (dryLevelParam, kDryLevelDefault);
 	smoothedWetLevel   = loadAtomicOrDefault (wetLevelParam, kWetLevelDefault);
 	smoothedLimThreshold = fastDecibelsToGain (loadAtomicOrDefault (limThresholdParam, kLimThresholdDefault));
 	if (! windowFamiliesInitialised_.load (std::memory_order_relaxed))
 		initialiseWindowFamilies (loadIntParamOrDefault (windowParam, (int) kWindowDefault));
+	const auto prepareWindowFamily = getWindowFamilyForEngineInternal (loadIntParamOrDefault (engineParam, 0));
+	const int prepareWindowValue = loadIntParamOrDefault (windowParam, (int) kWindowDefault);
+	setStoredWindowForFamily (prepareWindowFamily, prepareWindowValue);
 	for (int i = 0; i < 4; ++i)
 		smoothedWindowByFamily_[(size_t) i] = (float) getStoredWindowForFamily ((WindowFamily) i);
-	const auto prepareWindowFamily = getWindowFamilyForEngineInternal (loadIntParamOrDefault (engineParam, 0));
 	activeWindowFamily_.store ((int) prepareWindowFamily, std::memory_order_relaxed);
-	lastObservedWindowParam_.store (loadIntParamOrDefault (windowParam, (int) kWindowDefault),
-	                                std::memory_order_relaxed);
+	lastObservedWindowParam_.store (prepareWindowValue, std::memory_order_relaxed);
 	smoothedWindow_ = smoothedWindowByFamily_[(size_t) prepareWindowFamily];
 	const int initialWindowVal = (int) std::lround (smoothedWindow_);
 	const float initialAmountVal = loadAtomicOrDefault (amountParam, kAmountDefault);
@@ -556,8 +541,10 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 
 	// Initialize input buffer (power-of-2 for bitmask wrapping)
 	{
-		const int desired = juce::jmin (kInputBufMaxLen, (int) (sampleRate * 30.0));
-		// Round up to next power of 2 (kInputBufMaxLen is already a power of 2)
+		const auto desired64 = (juce::int64) std::ceil (juce::jmax (1.0, sampleRate)
+		                                                     * kInputHistorySeconds);
+		const int desired = (int) juce::jmin ((juce::int64) kInputBufMaxLen, desired64);
+		// Keep bitmask wrapping while scaling history duration with the host rate.
 		int po2 = 1;
 		while (po2 < desired) po2 <<= 1;
 		if (po2 > kInputBufMaxLen) po2 = kInputBufMaxLen;
@@ -601,10 +588,28 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	grainTransitionToUnity_ = false;
 	grainFreezeHoldActive_ = false;
 
-    // Initialize STFT state
+	// Initialize STFT state
 	std::memset (&stft_, 0, sizeof (stft_));
+	std::memset (&stftResizeScratch_, 0, sizeof (stftResizeScratch_));
 	currentFftOrder_ = -1;
-	fft_.reset();
+	fft_ = nullptr;
+	fftWindow_ = nullptr;
+	for (int order = kMinFftOrder; order <= kMaxFftOrder; ++order)
+	{
+		const int bankIndex = order - kMinFftOrder;
+		const int fftSize = 1 << order;
+		if (fftBank_[(size_t) bankIndex] == nullptr)
+			fftBank_[(size_t) bankIndex] = std::make_unique<juce::dsp::FFT> (order);
+
+		auto& window = fftWindowBank_[(size_t) bankIndex];
+		if ((int) window.size() != fftSize)
+		{
+			window.resize ((size_t) fftSize);
+			for (int j = 0; j < fftSize; ++j)
+				window[(size_t) j] = 0.5f * (1.0f - std::cos (juce::MathConstants<float>::twoPi
+				                           * (float) j / (float) fftSize));
+		}
+	}
 	std::memset (fftWork_, 0, sizeof (fftWork_));
 	std::memset (fftOutputPadBuf_, 0, sizeof (fftOutputPadBuf_));
 	std::memset (fftWetHistory_, 0, sizeof (fftWetHistory_));
@@ -663,8 +668,10 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	chaosAmtD_ = 0.0f; chaosAmtNormD_ = 0.0f; chaosAmtF_ = 0.0f;
 	chaosParamSmoothCoeff_ = std::exp (-1.0f / (static_cast<float> (currentSampleRate) * 0.010f));
 	cachedChaosParamSmoothCoeff_ = chaosParamSmoothCoeff_;
-	chaosShPeriodD_ = 8820.0f; smoothedChaosShPeriodD_ = 8820.0f;
-	chaosShPeriodF_ = 8820.0f; smoothedChaosShPeriodF_ = 8820.0f;
+	chaosShPeriodD_ = (float) currentSampleRate / kChaosSpdDefault;
+	smoothedChaosShPeriodD_ = chaosShPeriodD_;
+	chaosShPeriodF_ = chaosShPeriodD_;
+	smoothedChaosShPeriodF_ = chaosShPeriodF_;
 	chaosDelayMaxSamples_ = 0.0f; smoothedChaosDelayMaxSamples_ = 0.0f;
 	chaosGainMaxDb_ = 0.0f; smoothedChaosGainMaxDb_ = 0.0f;
 	chaosFilterMaxOct_ = 0.0f; smoothedChaosFilterMaxOct_ = 0.0f;
@@ -694,15 +701,9 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 	lastPanLeft_  = 0.70710678f;
 	lastPanRight_ = 0.70710678f;
 
-	// Limiter state reset
-	limEnv1_[0] = limEnv1_[1] = kLimFloor;
-	limEnv2_[0] = limEnv2_[1] = kLimFloor;
-	{
-		const float sr = static_cast<float> (currentSampleRate);
-		limAtt1_ = std::exp (-1.0f / (sr * 0.002f));   // 2 ms attack
-		limRel1_ = std::exp (-1.0f / (sr * 0.010f));   // 10 ms release
-		limRel2_ = std::exp (-1.0f / (sr * 0.100f));   // 100 ms release
-	}
+	limiterBank_.prepare (currentSampleRate);
+	limiterBank_.setGlobalQuality (loadIntParamOrDefault (limModeParam, kLimModeDefault),
+	                               loadIntParamOrDefault (limQualityParam, kLimQualityDefault));
 
 	// Engine crossfade
 	prevEngineVal_ = -1;
@@ -717,6 +718,7 @@ void STRETRAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 
 void STRETRAudioProcessor::releaseResources()
 {
+	modulation.reset();
 	for (int ch = 0; ch < 2; ++ch)
 		inputBuf_[ch].clear();
 	inputBufLen_ = 0;
@@ -731,21 +733,9 @@ void STRETRAudioProcessor::releaseResources()
 
 void STRETRAudioProcessor::resetJitterEngines() noexcept
 {
-	auto randomBipolar = [] (juce::Random& rng) noexcept
-	{
-		return rng.nextFloat() * 2.0f - 1.0f;
-	};
-
 	auto initEngine = [&] (JitterEngine& engine, juce::int64 seed, float rateA, float rateB) noexcept
 	{
-		engine.rng = juce::Random (seed);
-		engine.driftPhaseA = engine.rng.nextFloat();
-		engine.driftPhaseB = engine.rng.nextFloat();
-		engine.driftRateHzA = rateA * (0.85f + engine.rng.nextFloat() * 0.30f);
-		engine.driftRateHzB = rateB * (0.85f + engine.rng.nextFloat() * 0.30f);
-		engine.shCurr = randomBipolar (engine.rng);
-		engine.shNext = randomBipolar (engine.rng);
-		engine.shPhase = engine.rng.nextFloat();
+		engine.reset (seed, rateA, rateB);
 	};
 
 	for (int ch = 0; ch < 2; ++ch)
@@ -767,34 +757,9 @@ void STRETRAudioProcessor::resetJitterEngines() noexcept
 float STRETRAudioProcessor::advanceJitterEngine (JitterEngine& engine, float fastRateHz, float fastBlend,
                                                  float maxFastRateHz, float maxBlend) noexcept
 {
-	const float sr = juce::jmax (1.0f, (float) currentSampleRate);
-	auto wrapPhase = [] (float phase) noexcept
-	{
-		return phase >= 1.0f ? phase - std::floor (phase) : phase;
-	};
-	auto smootherStep = [] (float t) noexcept
-	{
-		t = juce::jlimit (0.0f, 1.0f, t);
-		return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
-	};
-
-	engine.driftPhaseA = wrapPhase (engine.driftPhaseA + engine.driftRateHzA / sr);
-	engine.driftPhaseB = wrapPhase (engine.driftPhaseB + engine.driftRateHzB / sr);
-	const float slow = std::sin (engine.driftPhaseA * kTwoPi) * 0.68f
-	                 + std::sin (engine.driftPhaseB * kTwoPi) * 0.32f;
-
-	const float safeFastRateHz = juce::jlimit (0.1f, juce::jmax (0.1f, maxFastRateHz), fastRateHz);
-	engine.shPhase += safeFastRateHz / sr;
-	if (engine.shPhase >= 1.0f)
-	{
-		engine.shPhase -= std::floor (engine.shPhase);
-		engine.shCurr = engine.shNext;
-		engine.shNext = engine.rng.nextFloat() * 2.0f - 1.0f;
-	}
-
-	const float sh = engine.shCurr + (engine.shNext - engine.shCurr) * smootherStep (engine.shPhase);
-	const float blend = juce::jlimit (0.0f, juce::jmax (0.0f, maxBlend), fastBlend);
-	return juce::jlimit (-1.0f, 1.0f, slow * (1.0f - blend) + sh * blend);
+	return engine.advance ((float) currentSampleRate,
+	                       engine.driftRateHzA, engine.driftRateHzB,
+	                       fastRateHz, fastBlend, maxFastRateHz, maxBlend);
 }
 
 void STRETRAudioProcessor::advanceJitterEngines (float amount) noexcept
@@ -997,8 +962,8 @@ void STRETRAudioProcessor::filterWetSample (float& wetL, float& wetR)
 	float lpTarget = wetFilterTargetLpFreq_;
 
 	// EMA frequency smoothing (base, no chaos)
-	smoothedFilterHpFreq_ += (hpTarget - smoothedFilterHpFreq_) * kGainSmoothStep;
-	smoothedFilterLpFreq_ += (lpTarget - smoothedFilterLpFreq_) * kGainSmoothStep;
+	smoothedFilterHpFreq_ += (hpTarget - smoothedFilterHpFreq_) * fiveMsSmoothStep_;
+	smoothedFilterLpFreq_ += (lpTarget - smoothedFilterLpFreq_) * fiveMsSmoothStep_;
 
 	// Batched coefficient update (with per-channel chaos overlay)
 	if (--filterCoeffCountdown_ <= 0)
@@ -1119,47 +1084,9 @@ void STRETRAudioProcessor::tiltWetSample (float& wetL, float& wetR)
 
 namespace
 {
-static inline float wsolaFadeInWeight (int idx, int overlapLen) noexcept
-{
-	if (overlapLen <= 0)
-		return 1.0f;
-
-	const float phase = ((float) idx + 0.5f) / (float) overlapLen;
-	const float s = std::sin (phase * juce::MathConstants<float>::halfPi);
-	return s * s;
-}
-
-static inline float wsolaFadeOutWeight (int idx, int overlapLen) noexcept
-{
-	if (overlapLen <= 0)
-		return 1.0f;
-
-	const float phase = ((float) idx + 0.5f) / (float) overlapLen;
-	const float c = std::cos (phase * juce::MathConstants<float>::halfPi);
-	return c * c;
-}
-
-static inline float wsolaSegmentWeight (int sampleIndex, int segLen, int overlapLen,
-                                        bool hasPrevSegment) noexcept
-{
-	if (segLen <= 0 || overlapLen <= 0)
-		return 1.0f;
-
-	const int tailStart = juce::jmax (0, segLen - overlapLen);
-	float weight = 1.0f;
-
-	if (hasPrevSegment && sampleIndex < overlapLen)
-		weight *= wsolaFadeInWeight (sampleIndex, overlapLen);
-
-	if (sampleIndex >= tailStart)
-		weight *= wsolaFadeOutWeight (sampleIndex - tailStart, overlapLen);
-
-	return weight;
-}
-
 static inline int wsolaRecommendedOverlapLen (int segLen, double sampleRate) noexcept
 {
-	const int timeCap = juce::jlimit (32, 256, (int) std::round (sampleRate * 0.005)); // ~5 ms
+	const int timeCap = juce::jmax (32, (int) std::round (sampleRate * 0.005)); // ~5 ms
 	const int ratioTarget = juce::jmax (16, segLen / 4);
 	return juce::jlimit (16, juce::jmax (16, segLen - 1), juce::jmin (ratioTarget, timeCap));
 }
@@ -1242,13 +1169,13 @@ STRETRAudioProcessor::wsolaBestOverlapOffset (int channel, double nominalPos, in
 	const int len = inputBufLen_;
 	const int outMask = kWsolaOutBufLen - 1;
 	const int nomWrapped = ((int) std::floor (nominalPos) % len + len) % len;
-	const int seekCap = juce::jlimit (24, 128, (int) std::round (currentSampleRate * 0.0025)); // ~2.5 ms
-	const int baseSeek = juce::jmin (juce::jmax (8, overlapLen / 3), len / 4);
+	const int seekCap = juce::jmax (24, (int) std::round (currentSampleRate * 0.005)); // ~5 ms
+	const int baseSeek = juce::jmin (juce::jmax (8, overlapLen), len / 4);
 	const int seekRadius = nearUnity
 		? juce::jmin (baseSeek, juce::jmax (8, seekCap / 2))
 		: juce::jmin (baseSeek, seekCap);
-	const int step = (overlapLen >= 2048) ? 8
-		: (overlapLen >= 1024) ? 4
+	const int step = (overlapLen >= 768)  ? 8
+		: (overlapLen >= 384)  ? 4
 		: (overlapLen >= 256)  ? 2
 		: 1;
 	const int continuityAnchor = juce::jlimit (-seekRadius, seekRadius, prevBestOffset);
@@ -1274,7 +1201,7 @@ STRETRAudioProcessor::wsolaBestOverlapOffset (int channel, double nominalPos, in
 	float bestRmseL = 0.0f;
 	float bestRmseR = 0.0f;
 
-	for (int off = minOff; off <= maxOff; ++off)
+	const auto considerOffset = [&] (int off)
 	{
 		float dot = 0.0f;
 		float candEnergy = 1.0e-12f;
@@ -1318,6 +1245,25 @@ STRETRAudioProcessor::wsolaBestOverlapOffset (int channel, double nominalPos, in
 			bestRmseL = std::sqrt (diffEnergyL / (float) juce::jmax (1, (overlapLen + step - 1) / step));
 			bestRmseR = bestRmseL;
 		}
+	};
+
+	const int candidateStride = (seekRadius >= 768) ? 32
+		: (seekRadius >= 384) ? 16
+		: (seekRadius >= 192) ? 8
+		: (seekRadius >= 96)  ? 4
+		: 1;
+	for (int off = minOff; off <= maxOff; off += candidateStride)
+		considerOffset (off);
+	if ((maxOff - minOff) % candidateStride != 0)
+		considerOffset (maxOff);
+
+	if (candidateStride > 1)
+	{
+		const int coarseBestOffset = bestOffset;
+		const int refineMin = juce::jmax (minOff, coarseBestOffset - candidateStride + 1);
+		const int refineMax = juce::jmin (maxOff, coarseBestOffset + candidateStride - 1);
+		for (int off = refineMin; off <= refineMax; ++off)
+			considerOffset (off);
 	}
 
 	result.bestOffset = bestOffset;
@@ -1335,24 +1281,28 @@ STRETRAudioProcessor::wsolaBestOverlapOffset (int channel, double nominalPos, in
 //==============================================================================
 // FFT / Phase Vocoder helpers
 
-void STRETRAudioProcessor::ensureFft (int fftSize)
+void STRETRAudioProcessor::ensureFft (int fftSize) noexcept
 {
 	const int order = (int) std::round (std::log2 ((double) fftSize));
-	if (order != currentFftOrder_)
-	{
-		currentFftOrder_ = order;
-		fft_ = std::make_unique<juce::dsp::FFT> (order);
+	const bool valid = order >= kMinFftOrder && order <= kMaxFftOrder && (1 << order) == fftSize;
+	jassert (valid);
+	if (! valid)
+		return;
 
-		for (int j = 0; j < fftSize; ++j)
-			fftWindow_[j] = 0.5f * (1.0f - std::cos (juce::MathConstants<float>::twoPi
-			                * (float) j / (float) fftSize));
-	}
+	if (order == currentFftOrder_)
+		return;
+
+	const auto bankIndex = (size_t) (order - kMinFftOrder);
+	jassert (fftBank_[bankIndex] != nullptr && (int) fftWindowBank_[bankIndex].size() == fftSize);
+	fft_ = fftBank_[bankIndex].get();
+	fftWindow_ = fftWindowBank_[bankIndex].data();
+	currentFftOrder_ = order;
 }
 
 void STRETRAudioProcessor::resetStftAtPos (double capturePos, int fftSize) noexcept
 {
-	StftState fresh {};
-	fresh.activeFftSize = fftSize;
+	std::memset (&stft_, 0, sizeof (stft_));
+	stft_.activeFftSize = fftSize;
 
 	if (inputBufLen_ > 0 && fftSize > 0)
 	{
@@ -1361,10 +1311,8 @@ void STRETRAudioProcessor::resetStftAtPos (double capturePos, int fftSize) noexc
 			startPos -= (double) inputBufLen_;
 		while (startPos < 0.0)
 			startPos += (double) inputBufLen_;
-		fresh.analysisReadPos = startPos;
+		stft_.analysisReadPos = startPos;
 	}
-
-	stft_ = fresh;
 	fftLastStableWetL_ = 0.0f;
 	fftLastStableWetR_ = 0.0f;
 	fftLastStableWetValid_ = false;
@@ -1383,7 +1331,7 @@ void STRETRAudioProcessor::resizeStftAtPos (double capturePos, int fftSize) noex
 		return;
 	}
 
-	stft_ = {};
+	std::memset (&stft_, 0, sizeof (stft_));
 	StftState& fresh = stft_;
 	fresh.activeFftSize = fftSize;
 
@@ -1543,7 +1491,7 @@ void STRETRAudioProcessor::resizeFft2StateAtPos (double capturePos, int fftSize,
 
 int STRETRAudioProcessor::samplesForMs (double ms) const noexcept
 {
-	const double sr = currentSampleRate > 1.0 ? currentSampleRate : 44100.0;
+	const double sr = juce::jmax (1.0, currentSampleRate);
 	return juce::jmax (1, (int) std::lround (sr * 0.001 * ms));
 }
 
@@ -1679,7 +1627,7 @@ void STRETRAudioProcessor::resetFftOutputFadeState() noexcept
 
 void STRETRAudioProcessor::clearFft1FreezeSnapshot() noexcept
 {
-	fft1FreezeSnapshot_ = {};
+	std::memset (&fft1FreezeSnapshot_, 0, sizeof (fft1FreezeSnapshot_));
 }
 
 void STRETRAudioProcessor::captureFft1FreezeSnapshot (int styleVal, bool reverseOn) noexcept
@@ -2093,7 +2041,21 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 				if (numBins > 1)
 					isPeak[numBins - 1] = (synthMag[numBins - 1] >= synthMag[numBins - 2]);
 
-				if (fftSize <= 1024)
+				auto analysisPhaseForSynthBin = [&] (int synthBin) noexcept
+				{
+					if (std::abs (pr - 1.0f) <= 0.001f)
+						return stft_.prevPhase[ch][synthBin];
+
+					const float sourceBin = (float) synthBin / pr;
+					const int source0 = juce::jlimit (0, numBins - 1, (int) sourceBin);
+					const int source1 = juce::jmin (numBins - 1, source0 + 1);
+					const float fraction = juce::jlimit (0.0f, 1.0f, sourceBin - (float) source0);
+					const float phaseDelta = wrapPhaseToPiFast (stft_.prevPhase[ch][source1]
+					                                                 - stft_.prevPhase[ch][source0]);
+					return stft_.prevPhase[ch][source0] + fraction * phaseDelta;
+				};
+
+				if (fftSize <= 2048)
 				{
 					int peakCount = 0;
 					float lockStrengthSum = 0.0f;
@@ -2120,7 +2082,8 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 						{
 							const int pk = nearestPk[k];
 							const float lockedPhase = stft_.synthPhase[ch][pk]
-							    + (stft_.prevPhase[ch][k] - stft_.prevPhase[ch][pk]);
+							    + wrapPhaseToPiFast (analysisPhaseForSynthBin (k)
+							                         - analysisPhaseForSynthBin (pk));
 							if (lowFft64)
 							{
 								const float lowFftLockBlend = 0.18f + 0.14f * (1.0f - lowFftPitchNorm);
@@ -2153,52 +2116,6 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 					const float transientResetMix = transientAwareReset
 						? juce::jlimit (0.0f, 1.0f, (debugSpectralFlux[ch] - 0.07f) / 0.10f) * pitchResetScale
 						: 0.0f;
-					float stabilityResetMix = 0.0f;
-					float startupResetMix = 0.0f;
-					if (fftSize == 2048)
-					{
-						const float stretchNorm = juce::jlimit (0.0f, 1.0f,
-						                                        std::abs ((float) analysisHop - (float) synthesisHop)
-						                                            / (float) juce::jmax (1, synthesisHop));
-						const float pitchNorm = juce::jlimit (0.0f, 1.0f,
-						                                      std::abs (pr - 1.0f) / 3.0f);
-						const float activityNorm = juce::jmax (stretchNorm, pitchNorm);
-						if (activityNorm > 0.001f)
-						{
-							const float cycleNorm = juce::jlimit (0.0f, 1.0f,
-							                                      (float) stft_.cyclesSinceReset / 160.0f);
-							stabilityResetMix = (0.03f + 0.08f * cycleNorm)
-							                  * juce::jmax (0.35f, activityNorm);
-
-							const float startupNorm = juce::jlimit (0.0f, 1.0f,
-							                                        (96.0f - (float) stft_.cyclesSinceReset) / 96.0f);
-							startupResetMix = (0.06f + 0.18f * pitchNorm)
-							                * startupNorm
-							                * juce::jmax (0.35f, activityNorm);
-						}
-					}
-					float hopSlewResetMix = 0.0f;
-					float hopStepResetMix = 0.0f;
-					if (fftSize == 2048)
-					{
-						const float lowFluxNorm = juce::jlimit (0.0f, 1.0f,
-						                                        (0.10f - debugSpectralFlux[ch]) / 0.07f);
-						hopSlewResetMix = 0.16f
-						                * juce::jlimit (0.0f, 1.0f, stft_.analysisHopSlewNorm)
-						                * (0.65f + 0.35f * lowFluxNorm);
-						hopStepResetMix = 0.28f
-						                * juce::jlimit (0.0f, 1.0f, stft_.analysisHopStepNorm)
-						                * (0.60f + 0.40f * lowFluxNorm);
-					}
-					float pitchStabilityResetMix = 0.0f;
-					if (fftSize == 2048)
-					{
-						const float pitchNorm = juce::jlimit (0.0f, 1.0f,
-						                                      (std::abs (pr - 1.0f) - 0.15f) / 2.85f);
-						const float lowFluxNorm = juce::jlimit (0.0f, 1.0f,
-						                                        (0.12f - debugSpectralFlux[ch]) / 0.08f);
-						pitchStabilityResetMix = 0.06f * pitchNorm * lowFluxNorm;
-					}
 					float freezeTransitionResetMix = 0.0f;
 					if (fftSize != 2048 && synthesisHop > 0)
 					{
@@ -2278,15 +2195,11 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 						                          * (0.60f + 0.40f * lowFluxNorm);
 					}
 					const float resetMix = juce::jlimit (0.0f, 1.0f,
-					                                     juce::jmax (juce::jmax (juce::jmax (juce::jmax (juce::jmax (juce::jmax (transientResetMix, stabilityResetMix),
-					                                                                                               startupResetMix),
-					                                                                                  hopSlewResetMix),
-					                                                                     hopStepResetMix),
-					                                                 pitchStabilityResetMix),
+					                                     juce::jmax (transientResetMix,
 					                                                 juce::jmax (juce::jmax (juce::jmax (freezeTransitionResetMix,
-					                                                                         freezeWarmupResetMix),
-					                                                                         freezeStartupResetMix),
-					                                                             unityPitchStartupResetMix)));
+					                                                                                 freezeWarmupResetMix),
+					                                                                                 freezeStartupResetMix),
+					                                                                     unityPitchStartupResetMix)));
 					debugPhaseResetMix[ch] = resetMix;
 
 					float maxSynthMag = 0.0f;
@@ -2342,7 +2255,7 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 						const int rightEdge = (peakIndex == prominentPeakCount - 1)
 							? (numBins - 1)
 							: ((pk + prominentPeaks[peakIndex + 1]) / 2);
-						const float peakPrevPhase = stft_.prevPhase[ch][pk];
+						const float peakPrevPhase = analysisPhaseForSynthBin (pk);
 						float peakSynthPhase = stft_.synthPhase[ch][pk];
 
 						if (resetMix > 0.0f)
@@ -2379,7 +2292,7 @@ void STRETRAudioProcessor::performStftCycle (int fftSize, int analysisHop, int s
 							const float smoothT = t * t * (3.0f - 2.0f * t);
 							const float lockBlend = 1.0f + (edgeLock - 1.0f) * smoothT;
 							const float lockedPhase = peakSynthPhase
-							    + (stft_.prevPhase[ch][k] - peakPrevPhase);
+							    + wrapPhaseToPiFast (analysisPhaseForSynthBin (k) - peakPrevPhase);
 							const float phaseToLocked = wrapPhaseToPiFast (lockedPhase - stft_.synthPhase[ch][k]);
 							stft_.synthPhase[ch][k] += lockBlend * phaseToLocked;
 							++debugLockedBins[ch];
@@ -2832,7 +2745,7 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 				// permanent phase offset after high-holdCoeff periods
 				{
 					float phDelta = std::remainder (stft_.prevPhase[ch][k] - stft_.synthPhase[ch][k], twoPi);
-					const float phaseFollow = freezeAnalysisInput
+					const float phaseFollow = freezeAnalysisInput || std::abs (pr - 1.0f) > 0.001f
 						? 0.0f
 						: lowFft64
 						? juce::jlimit (lowFftPartialHold ? 0.24f : 0.18f,
@@ -3002,19 +2915,60 @@ void STRETRAudioProcessor::performStftCycleSpectralHold (int fftSize, int synthe
 void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
 	juce::ScopedNoDenormals noDenormals;
-	juce::ignoreUnused (midiMessages);
 
 	const int numChannels = buffer.getNumChannels();
 	const int numSamples  = buffer.getNumSamples();
 	if (numChannels < 1 || numSamples < 1) return;
 
+	modulationMidiEvents.capture (midiMessages, numSamples);
+	const auto modulationTransport =
+		TR::Modulation::Integration::captureTransportContext (*this);
+	auto modulationMainInput = getBusBuffer (buffer, true, 0);
 	const bool sidechainEnabled = loadBoolParamOrDefault (sidechainParam, false);
+	std::array<TR::Modulation::Runtime::CompiledAnalysisSource,
+	           TR::Modulation::analysisSourceCount> sidechainOverrides {};
+	const auto slopeDb = [] (int choice) noexcept { return 6 * (1 << juce::jlimit (0, 2, choice)); };
+	sidechainOverrides[1] = TR::Modulation::Integration::makeLegacyRmsSidechainProfile (
+		loadAtomicOrDefault (sidechainGainParam, kSidechainGainDefault),
+		loadAtomicOrDefault (sidechainSmoothParam, kSidechainSmoothDefault),
+		loadBoolParamOrDefault (sidechainHpOnParam, kSidechainHpOnDefault),
+		loadAtomicOrDefault (sidechainHpParam, kSidechainHpDefault),
+		slopeDb (loadIntParamOrDefault (sidechainHpSlopeParam, kSidechainHpSlopeDefault)),
+		loadBoolParamOrDefault (sidechainLpOnParam, kSidechainLpOnDefault),
+		loadAtomicOrDefault (sidechainLpParam, kSidechainLpDefault),
+		slopeDb (loadIntParamOrDefault (sidechainLpSlopeParam, kSidechainLpSlopeDefault)),
+		currentSampleRate);
+	const auto legacySharedMask = sidechainEnabled && ! useNativeSidechainForTests_ ? (1u << 1) : 0u;
+	juce::AudioBuffer<float> modulationSidechain;
+	const juce::AudioBuffer<float>* modulationSidechainInput = nullptr;
+	if (getBusCount (true) > 1)
+	{
+		modulationSidechain = getBusBuffer (buffer, true, 1);
+		if (modulationSidechain.getNumChannels() > 0)
+			modulationSidechainInput = &modulationSidechain;
+	}
+	modulation.process (modulationMainInput, modulationSidechainInput, &modulationTransport,
+	                    &modulationMidiEvents, true, &sidechainOverrides,
+	                    legacySharedMask, legacySharedMask);
+	// Block-rate targets use resolver sample zero. Events later in the block can
+	// only affect the next block, never audio that precedes them.
+	const auto modulationMix = modulation.effectiveNativeAtSample (
+		TR::StreModulation::mix, 0, loadAtomicOrDefault (mixParam, kMixDefault));
+	const auto modulationAmount = modulation.effectiveNativeAtSample (
+		TR::StreModulation::amount, 0, loadAtomicOrDefault (amountParam, kAmountDefault));
+	const auto modulationPitch = modulation.effectiveNativeAtSample (
+		TR::StreModulation::pitch, 0, loadAtomicOrDefault (pitchParam, kPitchDefault));
+	const auto modulationJitter = modulation.effectiveNativeAtSample (
+		TR::StreModulation::jitter, 0, loadAtomicOrDefault (jitterParam, kJitterDefault));
+	const auto modulationGrain = modulation.effectiveNativeAtSample (
+		TR::StreModulation::grain, 0, loadAtomicOrDefault (grainParam, kGrainDefault));
+
 	const float* sidechainReadL = nullptr;
 	const float* sidechainReadR = nullptr;
 	int sidechainChannels = 0;
 	float sidechainPeak = 0.0f;
 
-	if (sidechainEnabled && getBusCount (true) > 1)
+	if (useNativeSidechainForTests_ && sidechainEnabled && getBusCount (true) > 1)
 	{
 		auto sidechainBuffer = getBusBuffer (buffer, true, 1);
 		sidechainChannels = sidechainBuffer.getNumChannels();
@@ -3043,7 +2997,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // Read parameters
 	const float inputGainDb  = loadAtomicOrDefault (inputParam, kInputDefault);
 	const float outputGainDb = loadAtomicOrDefault (outputParam, kOutputDefault);
-	const float mixValue     = loadAtomicOrDefault (mixParam, kMixDefault);
+	const float mixValue     = modulationMix;
 	const int   mixMode  = loadIntParamOrDefault (mixModeParam, kMixModeDefault);
 	const float dryLevelTarget = (mixMode == 1) ? loadAtomicOrDefault (dryLevelParam, kDryLevelDefault) : smoothedDryLevel;
 	const float wetLevelTarget = (mixMode == 1) ? loadAtomicOrDefault (wetLevelParam, kWetLevelDefault) : smoothedWetLevel;
@@ -3067,6 +3021,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     // Limiter
 	const int limMode = loadIntParamOrDefault (limModeParam, kLimModeDefault);
+	const int limQuality = loadIntParamOrDefault (limQualityParam, kLimQualityDefault);
+	limiterBank_.setGlobalQuality (limMode, limQuality);
 	const float limThreshLinTarget = (limMode != 0)
 		? fastDecibelsToGain (loadAtomicOrDefault (limThresholdParam, kLimThresholdDefault))
 		: 1.0f;
@@ -3091,17 +3047,19 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     // Engine params
 	const int   engineVal  = loadIntParamOrDefault (engineParam, 0);
-	const float rawAmountVal = loadAtomicOrDefault (amountParam, kAmountDefault); // 0..100
+	const float rawAmountVal = modulationAmount; // 0..100
 	float amountVal = rawAmountVal;
-	const float pitchVal     = loadAtomicOrDefault (pitchParam, kPitchDefault);         // 0..1
+	TR::Modulation::Runtime::ControlSignalView sharedSidechainControl;
+	float sharedSidechainPol = 0.0f;
+	const float pitchVal     = modulationPitch; // 0..1
 	const float jitterTarget = juce::jlimit (0.0f, 1.0f,
-	                                         loadAtomicOrDefault (jitterParam, kJitterDefault) * 0.01f);
+	                                         modulationJitter * 0.01f);
 	const int   rawWindowParamVal = juce::jlimit (kWindowMin, kWindowMax,
 	                                              loadIntParamOrDefault (windowParam, (int) kWindowDefault));
 	const int   maxFftWindowVal = getCurrentMaxFftWindow();
 	const int   styleVal   = loadIntParamOrDefault (styleParam, 1);
 	const float grainMsTarget = juce::jlimit (kGrainMin, kGrainMax,
-		loadAtomicOrDefault (grainParam, kGrainDefault)); // 1..500 ms
+		modulationGrain); // 1..500 ms
 	const float grainTargetLogMs = std::log (grainMsTarget);
 	const float grainSizeBlockStep = 1.0f - std::exp (- (float) numSamples
 		/ (juce::jmax (1.0f, (float) currentSampleRate) * kGrainSizeSmoothSeconds));
@@ -3112,7 +3070,11 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	const bool  alignOn    = loadBoolParamOrDefault (alignParam, false);
 	const bool  pdcOn      = loadBoolParamOrDefault (pdcParam, false);
 
-	if (sidechainEnabled)
+	const bool matrixSidechainOffset = modulation.destinationHasActiveRoutes (
+		TR::StreModulation::sidechainAmountOffset);
+	const bool matrixJitterMotion = modulation.destinationHasActiveRoutes (
+		TR::StreModulation::jitterDepth);
+	if (useNativeSidechainForTests_ && sidechainEnabled)
 	{
 		const float sidechainSmoothTarget = juce::jlimit (kSidechainSmoothMin, kSidechainSmoothMax,
 			loadAtomicOrDefault (sidechainSmoothParam, kSidechainSmoothDefault));
@@ -3234,6 +3196,21 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const float sidechainPol = juce::jlimit (kSidechainPolMin, kSidechainPolMax,
 			loadAtomicOrDefault (sidechainPolParam, kSidechainPolDefault));
 		const float sidechainOffset = sidechainGateSmoothed_ * sidechainDepthSmoothed_ * sidechainPol * 100.0f;
+		amountVal = juce::jlimit (kAmountMin, kAmountMax, rawAmountVal + sidechainOffset);
+	}
+	else if (matrixSidechainOffset)
+	{
+		const auto sidechainOffset = modulation.effectiveNativeAtSample (
+			TR::StreModulation::sidechainAmountOffset, numSamples - 1, 0.0f) * 100.0f;
+		amountVal = juce::jlimit (kAmountMin, kAmountMax, rawAmountVal + sidechainOffset);
+	}
+	else if (! useNativeSidechainForTests_ && sidechainEnabled)
+	{
+		sharedSidechainControl = modulation.analysisControlSignal (1);
+		sharedSidechainPol = juce::jlimit (kSidechainPolMin, kSidechainPolMax,
+			loadAtomicOrDefault (sidechainPolParam, kSidechainPolDefault));
+		const auto sidechainOffset = sharedSidechainControl.valid()
+			? sharedSidechainControl.samples[0] * sharedSidechainPol * 100.0f : 0.0f;
 		amountVal = juce::jlimit (kAmountMin, kAmountMax, rawAmountVal + sidechainOffset);
 	}
 	else
@@ -3857,6 +3834,7 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		const int fftWetLatency = (fftLatencySize > 0) ? (fftLatencySize + fftSynthHopForAlign) : 0;
 		const int activeFftLatency = fftWetLatency;
 		reportedLatency = (pdcOn && activeFftLatency > 0) ? activeFftLatency : 0;
+		reportedLatency += limiterBank_.getAdditionalLatencySamples();
 		if (reportedLatency != lastReportedLatency_)
 		{
 			setLatencySamples (reportedLatency);
@@ -4010,22 +3988,52 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 	for (int i = 0; i < numSamples; ++i)
 	{
 		// Smooth gains
-		smoothedInputGain  += (targetInputGain  - smoothedInputGain)  * kGainSmoothStep;
-		smoothedOutputGain += (targetOutputGain - smoothedOutputGain) * kGainSmoothStep;
-		smoothedMix        += (mixValue         - smoothedMix)        * kGainSmoothStep;
-		dryLevelState      += (dryLevelTarget   - dryLevelState)      * kGainSmoothStep;
-		wetLevelState      += (wetLevelTarget   - wetLevelState)      * kGainSmoothStep;
-		limThreshLinState  += (limThreshLinTarget - limThreshLinState) * kGainSmoothStep;
+		smoothedInputGain  += (targetInputGain  - smoothedInputGain)  * fiveMsSmoothStep_;
+		smoothedOutputGain += (targetOutputGain - smoothedOutputGain) * fiveMsSmoothStep_;
+		smoothedMix        += (mixValue         - smoothedMix)        * fiveMsSmoothStep_;
+		dryLevelState      += (dryLevelTarget   - dryLevelState)      * fiveMsSmoothStep_;
+		wetLevelState      += (wetLevelTarget   - wetLevelState)      * fiveMsSmoothStep_;
+		limThreshLinState  += (limThreshLinTarget - limThreshLinState) * fiveMsSmoothStep_;
 		float& smoothedWindowActive = smoothedWindowByFamily_[(size_t) windowFamily];
 		smoothedWindowActive += (targetWindow - smoothedWindowActive) * windowSmoothStep_;
 		smoothedWindow_ = smoothedWindowActive;
-		smoothedSpeed_     += (targetSpeed      - smoothedSpeed_)     * kGainSmoothStep;
-		smoothedPitchRate_ += (targetPitchRate  - smoothedPitchRate_) * kGainSmoothStep;
-		jitterSmoothed_    += (jitterTarget     - jitterSmoothed_)    * jitterSmoothStep_;
-		if (jitterTarget <= 1.0e-5f && jitterSmoothed_ < 1.0e-5f)
+		const auto sampleTargetSpeed = sharedSidechainControl.valid()
+			? amountToSpeedForEngine (engineVal, juce::jlimit (kAmountMin, kAmountMax,
+				rawAmountVal + sharedSidechainControl.samples[i] * sharedSidechainPol * 100.0f))
+			: targetSpeed;
+		smoothedSpeed_     += (sampleTargetSpeed - smoothedSpeed_) * fiveMsSmoothStep_;
+		smoothedPitchRate_ += (targetPitchRate  - smoothedPitchRate_) * fiveMsSmoothStep_;
+		const auto currentJitterTarget = matrixJitterMotion
+			? juce::jlimit (0.0f, 1.0f, modulation.effectiveNativeAtSample (
+				TR::StreModulation::jitterDepth, i, 0.0f))
+			: jitterTarget;
+		jitterSmoothed_    += (currentJitterTarget - jitterSmoothed_) * jitterSmoothStep_;
+		if (currentJitterTarget <= 1.0e-5f && jitterSmoothed_ < 1.0e-5f)
 			jitterSmoothed_ = 0.0f;
-		if (jitterTarget > 1.0e-5f || jitterSmoothed_ > 1.0e-5f)
-			advanceJitterEngines (jitterSmoothed_);
+		if (currentJitterTarget > 1.0e-5f || jitterSmoothed_ > 1.0e-5f)
+		{
+			if (matrixJitterMotion)
+			{
+				jitterWindowOut_[0] = modulation.effectiveNativeAtSample (
+					TR::StreModulation::jitterWindowL, i, 0.0f);
+				jitterWindowOut_[1] = modulation.effectiveNativeAtSample (
+					TR::StreModulation::jitterWindowR, i, 0.0f);
+				jitterAnchorOut_[0] = modulation.effectiveNativeAtSample (
+					TR::StreModulation::jitterAnchorL, i, 0.0f);
+				jitterAnchorOut_[1] = modulation.effectiveNativeAtSample (
+					TR::StreModulation::jitterAnchorR, i, 0.0f);
+				jitterPitchOut_[0] = modulation.effectiveNativeAtSample (
+					TR::StreModulation::jitterPitchL, i, 0.0f);
+				jitterPitchOut_[1] = modulation.effectiveNativeAtSample (
+					TR::StreModulation::jitterPitchR, i, 0.0f);
+				jitterRapidOut_[0] = modulation.effectiveNativeAtSample (
+					TR::StreModulation::jitterRapidL, i, 0.0f);
+				jitterRapidOut_[1] = modulation.effectiveNativeAtSample (
+					TR::StreModulation::jitterRapidR, i, 0.0f);
+			}
+			else
+				advanceJitterEngines (jitterSmoothed_);
+		}
 
 		const float controlSpeed = smoothedSpeed_;
 		const float basePitchRate = smoothedPitchRate_;
@@ -5007,18 +5015,23 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				stretchTransitionToUnity_ = false;
 				const int stretchWindowSamples = juce::jlimit (kWindowMin, kWindowMax,
 					(int) std::round (smoothedWindow_));
-				const int segLen = juce::jmax (64, stretchWindowSamples);
+				const float stretchPitchRateR = isDual ? pitchRateR
+					: (isWide ? basePitchRate * jitterR.pitchScale : pitchRate);
+				const float slowestReadRate = (isDual || isWide)
+					? juce::jmin (std::abs (pitchRate), std::abs (stretchPitchRateR))
+					: std::abs (pitchRate);
+				const float pitchWindowScale = 1.0f / juce::jlimit (0.25f, 1.0f, slowestReadRate);
+				const int segLen = juce::jlimit (64, kWindowMax,
+					(int) std::round ((float) stretchWindowSamples * pitchWindowScale));
 				const int overlapLen = wsolaRecommendedOverlapLen (segLen, currentSampleRate);
 				const int synthesisHop = juce::jmax (1, segLen - overlapLen);
 				const int outMask = kWsolaOutBufLen - 1;
 				const double direction = reverseOn ? -1.0 : 1.0;
-				const float stretchPitchRateR = isDual ? pitchRateR
-					: (isWide ? basePitchRate * jitterR.pitchScale : pitchRate);
 				const double targetAnalysisHop = (double) synthesisHop * (double) speed * (double) pitchRate;
 				const bool nearUnity = std::abs (speed - 1.0f) <= 0.05f
 					&& std::abs (basePitchRate - 1.0f) <= 0.05f;
-				const int seekCap = juce::jlimit (24, 128, (int) std::round (currentSampleRate * 0.0025));
-				const int baseSeek = juce::jmin (juce::jmax (8, overlapLen / 3), inputBufLen_ / 4);
+				const int seekCap = juce::jmax (24, (int) std::round (currentSampleRate * 0.005));
+				const int baseSeek = juce::jmin (juce::jmax (8, overlapLen), inputBufLen_ / 4);
 				const int seekRadius = nearUnity
 					? juce::jmin (baseSeek, juce::jmax (8, seekCap / 2))
 					: juce::jmin (baseSeek, seekCap);
@@ -5118,12 +5131,23 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 					const bool hasPrevSegment = wsola_.hasPrevTail;
 					const float readRateL = pitchRate * (float) direction;
 					const float readRateR = stretchPitchRateR * (float) direction;
+					const int tailStart = segLen - overlapLen;
 					for (int n = 0; n < segLen; ++n)
 					{
 						const float sL = readInputBuf (0, readPosL);
 						const float sR = (isDual || isWide) ? readInputBuf (1, readPosR)
 						                                    : readInputBuf (1, readPosL);
-						const float window = wsolaSegmentWeight (n, segLen, overlapLen, hasPrevSegment);
+						float window = 1.0f;
+						if (hasPrevSegment && n < overlapLen)
+						{
+							const float phase = ((float) n + 0.5f) / (float) overlapLen;
+							window *= hannWindow (phase * 0.5f);
+						}
+						if (n >= tailStart)
+						{
+							const float phase = ((float) (n - tailStart) + 0.5f) / (float) overlapLen;
+							window *= 1.0f - hannWindow (phase * 0.5f);
+						}
 						const int outIdx = (synthPos + n) & outMask;
 						wsola_.outputAccumL[outIdx] += sL * window;
 						wsola_.outputAccumR[outIdx] += sR * window;
@@ -5239,7 +5263,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 				const int grainWindowSamples = juce::jlimit (kWindowMin, kWindowMax,
 					(int) std::round (smoothedWindow_));
-				const int density = juce::jlimit (2, kMaxGrains / 2, grainWindowSamples / 64);
+				juce::ignoreUnused (grainWindowSamples);
+				const int density = 2;
 				const int spawnInterval = juce::jmax (1, grainSamples / density);
 				grainSpawnCountdown_ = spawnInterval;
 				const double spawnPos = grainReadPos_;
@@ -5270,6 +5295,83 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 				{
 					return juce::jmax (4, (int) std::lround ((float) grainSamples * jitterValues.lengthScale));
 				};
+				const auto phaseAlignedSpawnPos = [&] (double nominalPos, int channel,
+				                                              int grainLen, float readRate,
+				                                              bool wideMode) noexcept
+				{
+					if (grainFreezeHold)
+						return nominalPos;
+
+					const Grain* reference = nullptr;
+					float referenceWeight = 0.0f;
+					for (const auto& activeGrain : grains_)
+					{
+						const bool servesChannel = channel == 0 ? activeGrain.dualCh <= 0
+						                                      : (activeGrain.dualCh == -1 || activeGrain.dualCh == 1);
+						if (! activeGrain.active || ! servesChannel || activeGrain.reverse != reverseOn)
+							continue;
+						const float phase = (float) activeGrain.elapsed / (float) juce::jmax (1, activeGrain.length);
+						const float weight = hannWindow (phase);
+						if (weight > referenceWeight)
+						{
+							reference = &activeGrain;
+							referenceWeight = weight;
+						}
+					}
+					if (reference == nullptr || referenceWeight <= 1.0e-4f)
+						return nominalPos;
+
+					const int seekRadius = juce::jmax (24, (int) std::lround (currentSampleRate * 0.005));
+					const int matchSamples = juce::jlimit (24, 256,
+						(int) std::lround (currentSampleRate * 0.0015));
+					const int sampleStep = currentSampleRate >= 176400.0 ? 4
+						: currentSampleRate >= 88200.0 ? 2 : 1;
+					const int candidateStride = currentSampleRate >= 176400.0 ? 16
+						: currentSampleRate >= 88200.0 ? 8 : 4;
+					const double directionRate = (reverseOn ? -1.0 : 1.0) * (double) readRate;
+					const double referenceRate = (reference->reverse ? -1.0 : 1.0) * reference->rate;
+					const double referencePos = reference->readPos + reference->playPos;
+					const double effectiveLookBehind = computeGrainLookBehind (grainLen, readRate,
+						reverseOn, wideMode);
+
+					float bestScore = -1.0e30f;
+					int bestOffset = 0;
+					const auto considerOffset = [&] (int offset) noexcept
+					{
+						const double candidateStart = clampGrainSpawnPos (nominalPos + (double) offset,
+							grainCapturePos, effectiveLookBehind);
+						float dot = 0.0f;
+						float candidateEnergy = 1.0e-12f;
+						float referenceEnergy = 1.0e-12f;
+						for (int sample = 0; sample < matchSamples; sample += sampleStep)
+						{
+							const float candidate = readInputBuf (channel,
+								candidateStart + directionRate * (double) sample);
+							const float target = readInputBuf (channel,
+								referencePos + referenceRate * (double) sample);
+							dot += candidate * target;
+							candidateEnergy += candidate * candidate;
+							referenceEnergy += target * target;
+						}
+						const float correlation = dot / std::sqrt (candidateEnergy * referenceEnergy);
+						const float score = correlation - 0.004f * (float) std::abs (offset) / (float) seekRadius;
+						if (score > bestScore)
+						{
+							bestScore = score;
+							bestOffset = offset;
+						}
+					};
+
+					for (int offset = -seekRadius; offset <= seekRadius; offset += candidateStride)
+						considerOffset (offset);
+					considerOffset (seekRadius);
+					const int coarseBest = bestOffset;
+					for (int offset = juce::jmax (-seekRadius, coarseBest - candidateStride + 1);
+					     offset <= juce::jmin (seekRadius, coarseBest + candidateStride - 1); ++offset)
+						considerOffset (offset);
+					return clampGrainSpawnPos (nominalPos + (double) bestOffset,
+						grainCapturePos, effectiveLookBehind);
+				};
 
 				if (isDual)
 				{
@@ -5288,8 +5390,10 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 								g.elapsed = 0;
 								g.rate    = (dch == 0) ? (double) pitchRate : (double) pitchRateR;
 								g.reverse = reverseOn;
-								g.readPos = jitteredSpawnPos (grainJitter, grainLen,
-								                              (dch == 0) ? pitchRate : pitchRateR, false);
+								const float dualRate = (dch == 0) ? pitchRate : pitchRateR;
+								g.readPos = phaseAlignedSpawnPos (
+									jitteredSpawnPos (grainJitter, grainLen, dualRate, false),
+									dch, grainLen, dualRate, false);
 								g.playPos = g.reverse ? (double) (grainLen - 1) : 0.0;
 								g.dualCh  = dch;
 								grainNextSlot_ = (slot + 1) % kMaxGrains;
@@ -5316,7 +5420,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 								const float wideRate = (dch == 0) ? pitchRate : (basePitchRate * jitterR.pitchScale);
 								g.rate    = (double) wideRate;
 								g.reverse = reverseOn;
-								double rp = jitteredSpawnPos (grainJitter, grainLen, wideRate, dch == 1);
+								double rp = phaseAlignedSpawnPos (
+									jitteredSpawnPos (grainJitter, grainLen, wideRate, dch == 1),
+									dch, grainLen, wideRate, dch == 1);
 								if (dch == 1)
 									rp += (double) (grainLen / 2);
 								g.readPos = rp;
@@ -5342,7 +5448,9 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 							g.elapsed = 0;
 							g.rate    = (double) pitchRate;
 							g.reverse = reverseOn;
-							g.readPos = jitteredSpawnPos (jitterL, grainLen, pitchRate, false);
+							g.readPos = phaseAlignedSpawnPos (
+								jitteredSpawnPos (jitterL, grainLen, pitchRate, false),
+								0, grainLen, pitchRate, false);
 							g.playPos = g.reverse ? (double) (grainLen - 1) : 0.0;
 							g.dualCh  = -1;
 							grainNextSlot_ = (slot + 1) % kMaxGrains;
@@ -5519,6 +5627,10 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 			wetL = unityRefL;
 			wetR = unityRefR;
 		}
+
+		// Product signature tap: engine output only. Keep this before STYLE,
+		// filters, chaos, routing, gain and dry/wet mixing.
+		wetTelemetry_.push (wetL, wetR, engineVal, (float) currentSampleRate, triggerOn);
 
 #if STRETR_ENABLE_FFT1_CLICK_DUMP
 		if (fft1AmountFreezeDumpActiveBlock)
@@ -5752,8 +5864,8 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		{
 			for (int i = 0; i < numSamples; ++i)
 			{
-				lastPanLeft_  += (targetPanLeft  - lastPanLeft_)  * kGainSmoothStep;
-				lastPanRight_ += (targetPanRight - lastPanRight_) * kGainSmoothStep;
+				lastPanLeft_  += (targetPanLeft  - lastPanLeft_)  * fiveMsSmoothStep_;
+				lastPanRight_ += (targetPanRight - lastPanRight_) * fiveMsSmoothStep_;
 				channelL[i] *= lastPanLeft_  * 1.4142135f;
 				channelR[i] *= lastPanRight_ * 1.4142135f;
 			}
@@ -5767,19 +5879,15 @@ void STRETRAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 		float* left  = buffer.getWritePointer (0);
 		float* right = numChannels >= 2 ? buffer.getWritePointer (1) : nullptr;
 		if (right != nullptr)
-			applyLimiter (left, right, numSamples, limThreshLinStart, smoothedLimThreshold);
+			limiterBank_.processGlobalStereoBuffer (left, right, numSamples,
+			    limThreshLinStart, smoothedLimThreshold,
+			    TR::DSP::LimiterBank::ThresholdRamp::inclusiveEnd);
 		else
 		{
-			const float thresholdStep = (numSamples > 1)
-				? (smoothedLimThreshold - limThreshLinStart) / (float) (numSamples - 1)
-				: 0.0f;
-			float thresholdGain = limThreshLinStart;
-			for (int i = 0; i < numSamples; ++i)
-			{
-				float dummy = 0.0f;
-				applyLimiterSample (left[i], dummy, thresholdGain);
-				thresholdGain += thresholdStep;
-			}
+			limiterBank_.processGlobalMonoBuffer (left, numSamples,
+			    limThreshLinStart, smoothedLimThreshold,
+			    TR::DSP::LimiterBank::ThresholdRamp::inclusiveEnd,
+			    TR::DSP::LimiterBank::FastMonoMode::zeroLane);
 		}
 	}
 
@@ -6281,7 +6389,7 @@ bool STRETRAudioProcessor::hasEditor() const { return true; }
 
 juce::AudioProcessorEditor* STRETRAudioProcessor::createEditor()
 {
-	return new STRETRAudioProcessorEditor (*this);
+	return TR::StreUIV2::createEditor (*this);
 }
 
 //==============================================================================
@@ -6289,6 +6397,9 @@ void STRETRAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
 	auto state = apvts.copyState();
 	writeWindowFamilyStateToTree (state);
+	state.removeProperty (UiStateKeys::fftWindow, nullptr);
+	TR::StateCanonicalization::removeRetiredVisualState (state);
+	TR::Modulation::replaceStateInParent (state, modulation.state());
 	std::unique_ptr<juce::XmlElement> xml (state.createXml());
 	copyXmlToBinary (*xml, destData);
 }
@@ -6300,8 +6411,16 @@ void STRETRAudioProcessor::setStateInformation (const void* data, int sizeInByte
 	{
 		if (xmlState->hasTagName (apvts.state.getType()))
 		{
-			apvts.replaceState (juce::ValueTree::fromXml (*xmlState));
+			auto state = juce::ValueTree::fromXml (*xmlState);
+			TR::StateCanonicalization::removeRetiredVisualState (state);
+			const auto modulationResult = TR::Modulation::readStateFromParent (state);
+			if (! modulationResult.ok || ! modulation.setState (modulationResult.state))
+				return;
+			TR::Modulation::replaceStateInParent (state, modulationResult.state);
+			apvts.replaceState (state);
 			restoreWindowFamilyStateFromTree();
+			writeWindowFamilyStateToTree (apvts.state);
+			apvts.state.removeProperty (UiStateKeys::fftWindow, nullptr);
 			const auto restoredTriggerDelay = apvts.state.getProperty (UiStateKeys::triggerDelayMs);
 			if (! restoredTriggerDelay.isVoid())
 				triggerDelayMs.store (juce::jlimit (0, 100, (int) restoredTriggerDelay), std::memory_order_relaxed);
@@ -6311,6 +6430,56 @@ void STRETRAudioProcessor::setStateInformation (const void* data, int sizeInByte
 			triggerDelayElapsedSamples_ = 0;
 		}
 	}
+}
+
+TR::Modulation::State STRETRAudioProcessor::modulationState() const
+{
+	return modulation.state();
+}
+
+bool STRETRAudioProcessor::setModulationState (const TR::Modulation::State& state)
+{
+	if (! modulation.setState (state)) return false;
+	if (! TR::Modulation::replaceStateInParent (apvts.state, state)) return false;
+	updateHostDisplay();
+	return true;
+}
+
+std::uint64_t STRETRAudioProcessor::modulationStateGeneration() const noexcept
+{
+	return modulation.stateGeneration();
+}
+
+std::array<float, TR::Modulation::macroCount>
+STRETRAudioProcessor::modulationMacroValues() const noexcept
+{
+	std::array<float, TR::Modulation::macroCount> result {};
+	for (int macro = 0; macro < TR::Modulation::macroCount; ++macro)
+		if (const auto* value = apvts.getRawParameterValue (
+			TR::Modulation::Integration::macroParameterId (macro)))
+			result[(size_t) macro] = value->load (std::memory_order_relaxed);
+	return result;
+}
+
+void STRETRAudioProcessor::setModulationMacroValue (int macro, float value)
+{
+	if (! juce::isPositiveAndBelow (macro, TR::Modulation::macroCount)) return;
+	if (auto* parameter = apvts.getParameter (
+		TR::Modulation::Integration::macroParameterId (macro)))
+		parameter->setValueNotifyingHost (
+			parameter->convertTo0to1 (juce::jlimit (0.0f, 1.0f, value)));
+}
+
+bool STRETRAudioProcessor::modulationDestinationValues (
+	juce::StringRef id, float& base, float& effective) const noexcept
+{
+	return modulation.destinationValues (id, base, effective);
+}
+
+TR::Modulation::Runtime::TelemetrySnapshot
+STRETRAudioProcessor::modulationTelemetry() const noexcept
+{
+	return modulation.telemetry();
 }
 
 void STRETRAudioProcessor::getCurrentProgramStateInformation (juce::MemoryBlock& destData) { getStateInformation (destData); }
@@ -6339,7 +6508,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamMaxWindow, "Max Window",
 		juce::NormalisableRange<float> ((float) kFftWindowMin, (float) kWindowMax, 1.0f, 1.0f),
-		(float) kFftMaxWindowDefault));
+		(float) kFftMaxWindowDefault,
+		juce::AudioParameterFloatAttributes().withAutomatable (false)));
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
 		kParamJitter, "Jitter",
 		juce::NormalisableRange<float> (kJitterMin, kJitterMax, 0.01f, 1.0f), kJitterDefault));
@@ -6422,8 +6592,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
         kParamSidechainLpSlope, "Sidechain LP Slope",
         juce::NormalisableRange<float> ((float) kFilterSlopeMin, (float) kFilterSlopeMax, 1.0f),
         (float) kSidechainLpSlopeDefault));
-	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamAlign, "Align", false));
-	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamPdc, "PDC", false));
+	params.push_back (std::make_unique<juce::AudioParameterBool> (
+		kParamAlign, "Align", true,
+		juce::AudioParameterBoolAttributes().withAutomatable (false)));
+	params.push_back (std::make_unique<juce::AudioParameterBool> (
+		kParamPdc, "PDC", true,
+		juce::AudioParameterBoolAttributes().withAutomatable (false)));
 
 	// HP/LP wet-signal filter
 	params.push_back (std::make_unique<juce::AudioParameterFloat> (
@@ -6470,51 +6644,19 @@ juce::AudioProcessorValueTreeState::ParameterLayout STRETRAudioProcessor::create
 		kParamLimThreshold, "Lim Threshold",
 		juce::NormalisableRange<float> (kLimThresholdMin, kLimThresholdMax, 0.1f), kLimThresholdDefault));
 	params.push_back (std::make_unique<juce::AudioParameterChoice> (
-		kParamLimMode, "Lim Mode", juce::StringArray { "NONE", "WET", "GLOBAL" }, kLimModeDefault));
+		kParamLimMode, "Lim Mode", juce::StringArray { "NONE", "WET", "GLOBAL" }, kLimModeDefault,
+		juce::AudioParameterChoiceAttributes().withAutomatable (false)));
+	params.push_back (std::make_unique<juce::AudioParameterChoice> (
+		kParamLimQuality, "Lim Quality",
+		juce::StringArray { "FAST", "CLEAN (GLOBAL)", "TRUE PEAK (GLOBAL)" }, kLimQualityDefault,
+		juce::AudioParameterChoiceAttributes().withAutomatable (false)));
 
-	// UI state
-	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiWidth, "UI Width", 360, 720, 360));
-	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiHeight, "UI Height", 240, 1200, 752));
-	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamUiPalette, "UI Palette", false));
-	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamUiCrt, "UI CRT", false));
-	params.push_back (std::make_unique<juce::AudioParameterBool> (kParamUiIoFx, "UI I/O FX", true));
-	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor0, "UI Color 0", 0, 0xFFFFFF, 0x00FF00));
-	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor1, "UI Color 1", 0, 0xFFFFFF, 0x000000));
-	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor2, "UI Color 2", 0, 0xFFFFFF, 0x0000FF));
-	params.push_back (std::make_unique<juce::AudioParameterInt> (kParamUiColor3, "UI Color 3", 0, 0xFFFFFF, 0xFF0000));
+	TR::Modulation::Integration::appendMacroParameters (params);
 
 	return { params.begin(), params.end() };
 }
 
 //==============================================================================
-// UI state management
-
-void STRETRAudioProcessor::setUiEditorSize (int width, int height)
-{
-	const int w = juce::jlimit (360, 720, width);
-	const int h = juce::jlimit (752, 752, height);
-	uiEditorWidth.store (w, std::memory_order_relaxed);
-	uiEditorHeight.store (h, std::memory_order_relaxed);
-	apvts.state.setProperty (UiStateKeys::editorWidth, w, nullptr);
-	apvts.state.setProperty (UiStateKeys::editorHeight, h, nullptr);
-	setParameterPlainValue (apvts, kParamUiWidth, (float) w);
-	setParameterPlainValue (apvts, kParamUiHeight, (float) h);
-	updateHostDisplay();
-}
-
-int STRETRAudioProcessor::getUiEditorWidth() const noexcept
-{
-	const auto fromState = apvts.state.getProperty (UiStateKeys::editorWidth);
-	if (! fromState.isVoid()) return juce::jlimit (360, 720, (int) fromState);
-	if (uiWidthParam != nullptr) return juce::jlimit (360, 720, (int) std::lround (uiWidthParam->load (std::memory_order_relaxed)));
-	return juce::jlimit (360, 720, uiEditorWidth.load (std::memory_order_relaxed));
-}
-
-int STRETRAudioProcessor::getUiEditorHeight() const noexcept
-{
-	return 752;
-}
-
 int STRETRAudioProcessor::getStoredWindowForEngine (int engineVal) const noexcept
 {
 	return getStoredWindowForFamily (getWindowFamilyForEngineInternal (engineVal));
@@ -6536,66 +6678,6 @@ void STRETRAudioProcessor::syncWindowParameterToEngine (int engineVal)
 		setParameterPlainValue (apvts, kParamWindow, (float) windowValue);
 }
 
-void STRETRAudioProcessor::setUiUseCustomPalette (bool shouldUseCustomPalette)
-{
-	uiUseCustomPalette.store (shouldUseCustomPalette ? 1 : 0, std::memory_order_relaxed);
-	apvts.state.setProperty (UiStateKeys::useCustomPalette, shouldUseCustomPalette, nullptr);
-	setParameterPlainValue (apvts, kParamUiPalette, shouldUseCustomPalette ? 1.0f : 0.0f);
-	updateHostDisplay();
-}
-
-bool STRETRAudioProcessor::getUiUseCustomPalette() const noexcept
-{
-	const auto fromState = apvts.state.getProperty (UiStateKeys::useCustomPalette);
-	if (! fromState.isVoid()) return (bool) fromState;
-	if (uiPaletteParam != nullptr) return uiPaletteParam->load (std::memory_order_relaxed) > 0.5f;
-	return uiUseCustomPalette.load (std::memory_order_relaxed) != 0;
-}
-
-void STRETRAudioProcessor::setUiCrtEnabled (bool enabled)
-{
-	uiCrtEnabled.store (enabled ? 1 : 0, std::memory_order_relaxed);
-	apvts.state.setProperty (UiStateKeys::crtEnabled, enabled, nullptr);
-	setParameterPlainValue (apvts, kParamUiCrt, enabled ? 1.0f : 0.0f);
-	updateHostDisplay();
-}
-
-bool STRETRAudioProcessor::getUiCrtEnabled() const noexcept
-{
-	const auto fromState = apvts.state.getProperty (UiStateKeys::crtEnabled);
-	if (! fromState.isVoid()) return (bool) fromState;
-	if (uiCrtParam != nullptr) return uiCrtParam->load (std::memory_order_relaxed) > 0.5f;
-	return uiCrtEnabled.load (std::memory_order_relaxed) != 0;
-}
-
-void STRETRAudioProcessor::setUiIoFxEnabled (bool enabled)
-{
-	uiIoFxEnabled.store (enabled ? 1 : 0, std::memory_order_relaxed);
-	apvts.state.setProperty (UiStateKeys::ioFxEnabled, enabled, nullptr);
-	setParameterPlainValue (apvts, kParamUiIoFx, enabled ? 1.0f : 0.0f);
-	updateHostDisplay();
-}
-
-bool STRETRAudioProcessor::getUiIoFxEnabled() const noexcept
-{
-	const auto fromState = apvts.state.getProperty (UiStateKeys::ioFxEnabled);
-	if (! fromState.isVoid()) return (bool) fromState;
-	if (uiIoFxParam != nullptr) return uiIoFxParam->load (std::memory_order_relaxed) > 0.5f;
-	return uiIoFxEnabled.load (std::memory_order_relaxed) != 0;
-}
-
-void STRETRAudioProcessor::setUiIoExpanded (bool expanded)
-{
-	apvts.state.setProperty (UiStateKeys::ioExpanded, expanded, nullptr);
-}
-
-bool STRETRAudioProcessor::getUiIoExpanded() const noexcept
-{
-	const auto fromState = apvts.state.getProperty (UiStateKeys::ioExpanded);
-	if (! fromState.isVoid()) return (bool) fromState;
-	return false;
-}
-
 void STRETRAudioProcessor::setTriggerDelayMs (int delayMsValue)
 {
 	const int clamped = juce::jlimit (0, 100, delayMsValue);
@@ -6608,40 +6690,6 @@ int STRETRAudioProcessor::getTriggerDelayMs() const noexcept
 	const auto fromState = apvts.state.getProperty (UiStateKeys::triggerDelayMs);
 	if (! fromState.isVoid()) return juce::jlimit (0, 100, (int) fromState);
 	return triggerDelayMs.load (std::memory_order_relaxed);
-}
-
-void STRETRAudioProcessor::setUiCustomPaletteColour (int index, juce::Colour colour)
-{
-	if (index >= 0 && index < 4)
-	{
-		uiCustomPalette[(size_t) index].store (colour.getARGB(), std::memory_order_relaxed);
-		const juce::String key = UiStateKeys::customPalette[(size_t) index];
-		apvts.state.setProperty (key, (int) colour.getARGB(), nullptr);
-		if (uiColorParams[(size_t) index] != nullptr)
-		{
-			const char* colorParamIds[4] { kParamUiColor0, kParamUiColor1, kParamUiColor2, kParamUiColor3 };
-			setParameterPlainValue (apvts, colorParamIds[index], (float) (int) colour.getARGB());
-		}
-		updateHostDisplay();
-	}
-}
-
-juce::Colour STRETRAudioProcessor::getUiCustomPaletteColour (int index) const noexcept
-{
-	if (index < 0 || index >= 4) return juce::Colours::white;
-	const juce::String key = UiStateKeys::customPalette[(size_t) index];
-	const auto fromState = apvts.state.getProperty (key);
-	if (! fromState.isVoid())
-		return juce::Colour ((juce::uint32) (int) fromState);
-	if (uiColorParams[(size_t) index] != nullptr)
-	{
-		const int rgb = juce::jlimit (0, 0xFFFFFF,
-		                              (int) std::lround (uiColorParams[(size_t) index]->load (std::memory_order_relaxed)));
-		return juce::Colour::fromRGB ((juce::uint8) ((rgb >> 16) & 0xFF),
-		                              (juce::uint8) ((rgb >> 8) & 0xFF),
-		                              (juce::uint8) (rgb & 0xFF));
-	}
-	return juce::Colour (uiCustomPalette[(size_t) index].load (std::memory_order_relaxed));
 }
 
 //==============================================================================

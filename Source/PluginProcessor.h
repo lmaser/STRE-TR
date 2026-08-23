@@ -5,7 +5,12 @@
 #include <atomic>
 #include <vector>
 #include "PerfTrace.h"
-#include "../../TR-Shared/SimpleUI/SimpleUIStateKeys.h"
+#include "Modulation/StreModulationConfig.h"
+#include "../../TR-Shared/SimpleDSP/TRLimiterBank.h"
+#include "../../TR-Shared/SimpleDSP/TRStateCanonicalization.h"
+#include "../../TR-Shared/SimpleDSP/TRTemporalDSP.h"
+#include "../../TR-Shared/Modulation/Runtime/TRDualSineSmoothRandom.h"
+#include "UIV2/StreWetTelemetry.h"
 
 // Compile-time gate for the temporary FFT amount/click CSV dump.
 // Keep disabled for release builds unless explicitly diagnosing this path.
@@ -49,6 +54,7 @@ public:
 	static constexpr const char* kParamSumBus    = "sum_bus";
 	static constexpr const char* kParamLimThreshold = "lim_threshold";
 	static constexpr const char* kParamLimMode      = "lim_mode";
+	static constexpr const char* kParamLimQuality   = "lim_quality";
 	static constexpr const char* kParamInvPol       = "inv_pol";
 	static constexpr const char* kParamInvStr       = "inv_str";
 	static constexpr const char* kParamAlign     = "align";
@@ -101,20 +107,12 @@ public:
 	static constexpr float kLimThresholdMax     =   0.0f;
 	static constexpr float kLimThresholdDefault =   0.0f;
 	static constexpr int   kLimModeDefault      =   0;
+	static constexpr int   kLimQualityDefault   =   0;
 	static constexpr int   kMixModeDefault   = 0;   // 0=INSERT, 1=SEND
 	static constexpr float kDryLevelDefault  = 0.0f;
 	static constexpr float kWetLevelDefault  = 1.0f;
 	static constexpr int   kFilterPosDefault = 0;   // 0=POST, 1=PRE
 
-	static constexpr const char* kParamUiWidth    = "ui_width";
-	static constexpr const char* kParamUiHeight   = "ui_height";
-	static constexpr const char* kParamUiPalette  = "ui_palette";
-	static constexpr const char* kParamUiCrt      = "ui_fx_tail";
-	static constexpr const char* kParamUiIoFx     = "ui_io_fx";
-	static constexpr const char* kParamUiColor0   = "ui_color0";
-	static constexpr const char* kParamUiColor1   = "ui_color1";
-	static constexpr const char* kParamUiColor2   = "ui_color2";
-	static constexpr const char* kParamUiColor3   = "ui_color3";
 
     // Parameter ranges and defaults
 	static constexpr float kAmountMin     = 0.0f;
@@ -273,20 +271,6 @@ public:
 	void getCurrentProgramStateInformation (juce::MemoryBlock& destData) override;
 	void setCurrentProgramStateInformation (const void* data, int sizeInBytes) override;
 
-	void setUiEditorSize (int width, int height);
-	int  getUiEditorWidth() const noexcept;
-	int  getUiEditorHeight() const noexcept;
-
-	void setUiUseCustomPalette (bool shouldUseCustomPalette);
-	bool getUiUseCustomPalette() const noexcept;
-
-	void setUiCrtEnabled (bool enabled);
-	bool getUiCrtEnabled() const noexcept;
-	void setUiIoFxEnabled (bool enabled);
-	bool getUiIoFxEnabled() const noexcept;
-
-	void setUiIoExpanded (bool expanded);
-	bool getUiIoExpanded() const noexcept;
 	void setTriggerDelayMs (int delayMs);
 	int  getTriggerDelayMs() const noexcept;
 
@@ -296,13 +280,25 @@ public:
 	int getCurrentMaxFftWindow() const noexcept;
 	void clampFftWindowFamiliesToMax (int maxWindow) noexcept;
 
-	void setUiCustomPaletteColour (int index, juce::Colour colour);
-	juce::Colour getUiCustomPaletteColour (int index) const noexcept;
 	float getInputMeterPeak() const noexcept { return inputMeterPeak_.load (std::memory_order_relaxed); }
 	float getOutputMeterPeak() const noexcept { return outputMeterPeak_.load (std::memory_order_relaxed); }
 
+	using WetTelemetrySnapshot = TR::StreUIV2::StreWetTelemetry::Snapshot;
+	void beginWetTelemetryCapture() noexcept { wetTelemetry_.beginCapture(); }
+	void endWetTelemetryCapture() noexcept { wetTelemetry_.endCapture(); }
+	WetTelemetrySnapshot getWetTelemetrySnapshot() const noexcept { return wetTelemetry_.readLatest(); }
+
 	juce::AudioProcessorValueTreeState apvts;
 	static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+	TR::Modulation::State modulationState() const;
+	bool setModulationState(const TR::Modulation::State&);
+	std::uint64_t modulationStateGeneration() const noexcept;
+	std::array<float, TR::Modulation::macroCount> modulationMacroValues() const noexcept;
+	void setModulationMacroValue(int macro, float value);
+	TR::Modulation::Runtime::TelemetrySnapshot modulationTelemetry() const noexcept;
+	bool modulationDestinationValues(juce::StringRef id, float& base,
+	                                 float& effective) const noexcept;
+	friend struct StreNativeSidechainTestAccess;
 
 	struct WetFilterBiquadCoeffs { float b0 = 1.0f, b1 = 0.0f, b2 = 0.0f, a1 = 0.0f, a2 = 0.0f; };
 	struct WetFilterBiquadState  { float z1 = 0.0f, z2 = 0.0f; };
@@ -310,21 +306,18 @@ public:
 	PerfTrace perfTrace;
 
 private:
+	TR::Modulation::Integration::ParameterModulationBridge modulation;
+	TR::Modulation::Runtime::MidiEventBuffer modulationMidiEvents;
+	bool useNativeSidechainForTests_ = false;
+
 	struct UiStateKeys
 	{
-		static constexpr const char* editorWidth      = TR::SimpleUiStateKeys::editorWidth;
-		static constexpr const char* editorHeight     = TR::SimpleUiStateKeys::editorHeight;
-		static constexpr const char* useCustomPalette = TR::SimpleUiStateKeys::useCustomPalette;
-		static constexpr const char* crtEnabled       = TR::SimpleUiStateKeys::crtEnabled;
-		static constexpr const char* ioFxEnabled      = TR::SimpleUiStateKeys::ioFxEnabled;
-		static constexpr const char* ioExpanded       = "uiIoExpanded";
 		static constexpr const char* stretchWindow    = "stretchWindow";
 		static constexpr const char* grainWindow      = "grainWindow";
 		static constexpr const char* fft1Window       = "fft1Window";
 		static constexpr const char* fft2Window       = "fft2Window";
 		static constexpr const char* fftWindow        = "fftWindow";
 		static constexpr const char* triggerDelayMs   = "triggerDelayMs";
-		static constexpr auto customPalette = TR::SimpleUiStateKeys::customPalette;
 	};
 
 	enum class WindowFamily : int
@@ -335,10 +328,12 @@ private:
 		fft2    = 3
 	};
 
-	double currentSampleRate = 44100.0;
+	double currentSampleRate = 0.0;
+	float fiveMsSmoothStep_ = 1.0f;
 
     // Circular input buffer (shared by all engines)
-	static constexpr int kInputBufMaxLen = 2097152;  // 2^21, ~47.6s @ 44100
+	static constexpr double kInputHistorySeconds = 30.0;
+	static constexpr int kInputBufMaxLen = 8388608;  // 2^23: 30 s through 192 kHz, 64 MiB stereo cap
 	std::vector<float> inputBuf_[2];    // L, R
 	int inputBufWritePos_ = 0;
 	int inputBufLen_ = 0;
@@ -1486,6 +1481,9 @@ private:
 	// FFT / phase vocoder engine state
 	static constexpr int kMaxFftSize    = 8192;
 	static constexpr int kMaxFftBins    = kMaxFftSize / 2 + 1;
+	static constexpr int kMinFftOrder   = 6;
+	static constexpr int kMaxFftOrder   = 13;
+	static constexpr int kFftOrderCount = kMaxFftOrder - kMinFftOrder + 1;
 	static constexpr int kStftOutBufLen = kMaxFftSize * 2;
 	static constexpr int kDryDelayBufLen = kStftOutBufLen;
 
@@ -1538,9 +1536,11 @@ private:
 	StftState stftResizeScratch_;
 	Fft1FreezeSnapshot fft1FreezeSnapshot_;
 
-	std::unique_ptr<juce::dsp::FFT> fft_;
+	std::array<std::unique_ptr<juce::dsp::FFT>, kFftOrderCount> fftBank_;
+	std::array<std::vector<float>, kFftOrderCount> fftWindowBank_;
+	juce::dsp::FFT* fft_ = nullptr;
 	int   currentFftOrder_ = -1;
-	float fftWindow_[kMaxFftSize]     = {};
+	const float* fftWindow_ = nullptr;
 	float fftWork_[kMaxFftSize * 2]   = {};
 	float fftOutputPadBuf_[2][kMaxFftSize] = {};
 	static constexpr int kFftWetHistoryLen = 8192;
@@ -1625,7 +1625,7 @@ private:
 	int   fftOutputFadeReadPos_ = 0;
 	int   fftOutputFadeHoldSamples_ = 0;
 
-	void  ensureFft (int fftSize);
+	void  ensureFft (int fftSize) noexcept;
 	void  resetStftAtPos (double capturePos, int fftSize) noexcept;
 	void  resizeStftAtPos (double capturePos, int fftSize) noexcept;
 	void  clearStftOutputResidueForResize() noexcept;
@@ -1731,17 +1731,7 @@ private:
 	std::atomic<bool> windowFamiliesInitialised_ { false };
 
 	// JIT engine: deterministic drift/S&H sources shared by the per-engine mappings.
-	struct JitterEngine
-	{
-		float driftPhaseA = 0.0f;
-		float driftPhaseB = 0.0f;
-		float driftRateHzA = 0.0f;
-		float driftRateHzB = 0.0f;
-		float shCurr = 0.0f;
-		float shNext = 0.0f;
-		float shPhase = 0.0f;
-		juce::Random rng;
-	};
+	using JitterEngine = TR::Modulation::Runtime::DualSineSmoothRandomState;
 
 	struct JitterRuntimeValues
 	{
@@ -1828,8 +1818,8 @@ private:
 	// CHS D parameters
 	float chaosAmtD_                    = 0.0f;
 	float chaosAmtNormD_                = 0.0f;   // cached amtD * 0.01
-	float chaosShPeriodD_               = 8820.0f;
-	float smoothedChaosShPeriodD_       = 8820.0f;
+	float chaosShPeriodD_               = 0.0f;
+	float smoothedChaosShPeriodD_       = 0.0f;
 	float chaosDelayMaxSamples_         = 0.0f;
 	float smoothedChaosDelayMaxSamples_ = 0.0f;
 	float chaosGainMaxDb_               = 0.0f;
@@ -1862,8 +1852,8 @@ private:
 
 	// CHS F parameters
 	float chaosAmtF_                 = 0.0f;
-	float chaosShPeriodF_            = 8820.0f;
-	float smoothedChaosShPeriodF_    = 8820.0f;
+	float chaosShPeriodF_            = 0.0f;
+	float smoothedChaosShPeriodF_    = 0.0f;
 	float chaosFilterMaxOct_         = 0.0f;
 	float smoothedChaosFilterMaxOct_ = 0.0f;
 	float chaosFilterAmtSmoothed_    = 0.0f;
@@ -1910,15 +1900,10 @@ private:
 	float dcBlockPrevIn_[2]  = {};
 	float dcBlockPrevOut_[2] = {};
 
-	std::atomic<int> uiEditorWidth  { 360 };
-	std::atomic<int> uiEditorHeight { 752 };
-	std::atomic<int> uiUseCustomPalette { 0 };
-	std::atomic<int> uiCrtEnabled  { 0 };
 	std::atomic<int> triggerDelayMs { 0 };
-	std::atomic<int> uiIoFxEnabled { 1 };
-	std::atomic<juce::uint32> uiCustomPalette[4] {};
 	std::atomic<float> inputMeterPeak_ { 0.0f };
 	std::atomic<float> outputMeterPeak_ { 0.0f };
+	TR::StreUIV2::StreWetTelemetry wetTelemetry_;
 
 	std::atomic<float>* amountParam      = nullptr;
 	std::atomic<float>* pitchParam       = nullptr;
@@ -1936,6 +1921,7 @@ private:
 	std::atomic<float>* sumBusParam      = nullptr;
 	std::atomic<float>* limThresholdParam = nullptr;
 	std::atomic<float>* limModeParam     = nullptr;
+	std::atomic<float>* limQualityParam  = nullptr;
 	std::atomic<float>* invPolParam      = nullptr;
 	std::atomic<float>* invStrParam      = nullptr;
 	std::atomic<float>* mixModeParam     = nullptr;
@@ -1971,13 +1957,6 @@ private:
 	std::atomic<float>* chaosSpdParam     = nullptr;
 	std::atomic<float>* chaosAmtFilterParam = nullptr;
 	std::atomic<float>* chaosSpdFilterParam = nullptr;
-
-	std::atomic<float>* uiWidthParam   = nullptr;
-	std::atomic<float>* uiHeightParam  = nullptr;
-	std::atomic<float>* uiPaletteParam = nullptr;
-	std::atomic<float>* uiCrtParam     = nullptr;
-	std::atomic<float>* uiIoFxParam    = nullptr;
-	std::atomic<float>* uiColorParams[4] = { nullptr, nullptr, nullptr, nullptr };
 
 	// Generic smooth S&H + Drift chaos engine (per-sample advance)
 	inline void advanceChaosEngine (
@@ -2169,13 +2148,7 @@ private:
 		}
 	}
 
-    // Limiter state
-	static constexpr float kLimFloor = 1.0e-12f;
-	float limEnv1_[2] = { kLimFloor, kLimFloor };
-	float limEnv2_[2] = { kLimFloor, kLimFloor };
-	float limAtt1_  = 0.0f;
-	float limRel1_  = 0.0f;
-	float limRel2_  = 0.0f;
+	TR::DSP::LimiterBank limiterBank_;
 
 	inline void applyLimiter (float* leftData, float* rightData, int numSamples,
 	                         float thresholdGain) noexcept
@@ -2186,88 +2159,13 @@ private:
 	inline void applyLimiter (float* leftData, float* rightData, int numSamples,
 	                         float thresholdGainStart, float thresholdGainEnd) noexcept
 	{
-		const float thresholdStep = (numSamples > 1)
-			? (thresholdGainEnd - thresholdGainStart) / (float) (numSamples - 1)
-			: 0.0f;
-		float thresholdGain = thresholdGainStart;
-
-		for (int i = 0; i < numSamples; ++i)
-		{
-			const float peakL = std::abs (leftData[i]);
-			const float peakR = std::abs (rightData[i]);
-
-            // Stage 1 - leveler (2 ms attack, 10 ms release)
-			for (int ch = 0; ch < 2; ++ch)
-			{
-				const float p = (ch == 0) ? peakL : peakR;
-				if (p > limEnv1_[ch])
-					limEnv1_[ch] = limAtt1_ * limEnv1_[ch] + (1.0f - limAtt1_) * p;
-				else
-					limEnv1_[ch] = limRel1_ * limEnv1_[ch] + (1.0f - limRel1_) * p;
-				if (limEnv1_[ch] < kLimFloor) limEnv1_[ch] = kLimFloor;
-			}
-
-            // Stage 2 - brickwall (instant attack, 100 ms release)
-			for (int ch = 0; ch < 2; ++ch)
-			{
-				const float p = (ch == 0) ? peakL : peakR;
-				if (p > limEnv2_[ch])
-					limEnv2_[ch] = p;
-				else
-					limEnv2_[ch] = limRel2_ * limEnv2_[ch] + (1.0f - limRel2_) * p;
-				if (limEnv2_[ch] < kLimFloor) limEnv2_[ch] = kLimFloor;
-			}
-
-			// Stereo-linked gain reduction
-			float gr = 1.0f;
-			const float maxEnv1 = juce::jmax (limEnv1_[0], limEnv1_[1]);
-			const float maxEnv2 = juce::jmax (limEnv2_[0], limEnv2_[1]);
-			if (maxEnv1 > thresholdGain)
-				gr = juce::jmin (gr, thresholdGain / maxEnv1);
-			if (maxEnv2 > thresholdGain)
-				gr = juce::jmin (gr, thresholdGain / maxEnv2);
-
-			leftData[i]  *= gr;
-			rightData[i] *= gr;
-			thresholdGain += thresholdStep;
-		}
+		limiterBank_.fastProcessor().processStereoBufferInclusiveEnd (leftData, rightData, numSamples,
+		                                                thresholdGainStart, thresholdGainEnd);
 	}
 
 	inline void applyLimiterSample (float& sampleL, float& sampleR, float thresholdGain) noexcept
 	{
-		const float peakL = std::abs (sampleL);
-		const float peakR = std::abs (sampleR);
-
-		for (int ch = 0; ch < 2; ++ch)
-		{
-			const float p = (ch == 0) ? peakL : peakR;
-			if (p > limEnv1_[ch])
-				limEnv1_[ch] = limAtt1_ * limEnv1_[ch] + (1.0f - limAtt1_) * p;
-			else
-				limEnv1_[ch] = limRel1_ * limEnv1_[ch] + (1.0f - limRel1_) * p;
-			if (limEnv1_[ch] < kLimFloor) limEnv1_[ch] = kLimFloor;
-		}
-
-		for (int ch = 0; ch < 2; ++ch)
-		{
-			const float p = (ch == 0) ? peakL : peakR;
-			if (p > limEnv2_[ch])
-				limEnv2_[ch] = p;
-			else
-				limEnv2_[ch] = limRel2_ * limEnv2_[ch] + (1.0f - limRel2_) * p;
-			if (limEnv2_[ch] < kLimFloor) limEnv2_[ch] = kLimFloor;
-		}
-
-		float gr = 1.0f;
-		const float maxEnv1 = juce::jmax (limEnv1_[0], limEnv1_[1]);
-		const float maxEnv2 = juce::jmax (limEnv2_[0], limEnv2_[1]);
-		if (maxEnv1 > thresholdGain)
-			gr = juce::jmin (gr, thresholdGain / maxEnv1);
-		if (maxEnv2 > thresholdGain)
-			gr = juce::jmin (gr, thresholdGain / maxEnv2);
-
-		sampleL *= gr;
-		sampleR *= gr;
+		limiterBank_.fastProcessor().processStereo (sampleL, sampleR, thresholdGain);
 	}
 
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (STRETRAudioProcessor)

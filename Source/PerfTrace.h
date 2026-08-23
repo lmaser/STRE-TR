@@ -4,11 +4,11 @@
 #include <atomic>
 #include <cstdint>
 
-#ifndef GRATR_PERF_TRACE
- #define GRATR_PERF_TRACE 0
+#ifndef STRETR_PERF_TRACE
+ #define STRETR_PERF_TRACE 0
 #endif
 
-#if GRATR_PERF_TRACE
+#if STRETR_PERF_TRACE
 
 struct PerfBlockEntry
 {
@@ -105,7 +105,7 @@ public:
             dumpToFile (autoDumpPath);
     }
 
-    void enableDesktopAutoDump (const juce::String& filename = "gratr_perf_dump.csv")
+    void enableDesktopAutoDump (const juce::String& filename = "stretr_perf_dump.csv")
     {
         auto desktop = juce::File::getSpecialLocation (juce::File::userDesktopDirectory);
         setAutoDumpPath (desktop.getChildFile (filename).getFullPathName());
